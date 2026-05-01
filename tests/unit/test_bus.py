@@ -39,6 +39,9 @@ class TestLatest:
 
 
 class TestPublish:
+    # Float values in these tests are chosen to be exactly representable as
+    # IEEE 754 float32 so that == comparison survives the pack/unpack round-trip.
+    # Use pytest.approx for any future tests with non-exact values (e.g. 0.1, 0.3).
     def test_publish_then_latest_returns_message(self, bus):
         msg = AccelCmd(timestamp_ns=1000, ax=1.0, ay=-0.5)
         bus.publish("guidance/accel", msg)

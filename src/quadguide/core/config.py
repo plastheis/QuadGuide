@@ -140,10 +140,6 @@ def load_config(path: str, overrides: dict[str, str]) -> dict:
     with open(path) as f:
         config = yaml.safe_load(f)
 
-    missing = _REQUIRED_SECTIONS - config.keys()
-    if missing:
-        raise KeyError(f"Required config section(s) missing: {sorted(missing)}")
-
     for dotpath, str_value in overrides.items():
         parts = dotpath.split(".")
         node = config
@@ -155,6 +151,10 @@ def load_config(path: str, overrides: dict[str, str]) -> dict:
             node[leaf_key] = str_value.lower() in ("1", "true", "yes")
         else:
             node[leaf_key] = type(existing)(str_value)
+
+    missing = _REQUIRED_SECTIONS - config.keys()
+    if missing:
+        raise KeyError(f"Required config section(s) missing: {sorted(missing)}")
 
     return config
 

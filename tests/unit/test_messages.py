@@ -187,3 +187,13 @@ class TestRoundTrips:
         )
         recovered = HealthReport.unpack(msg.pack())
         assert recovered.process == "a" * 16
+
+    def test_health_report_truncates_multibyte_at_boundary(self):
+        # ☀ is 3 bytes (U+2600); 5 copies = 15 bytes, then "x" = 16 bytes total — fits
+        # 6 copies = 18 bytes — must truncate to 5 copies (15 bytes) not slice mid-codepoint
+        process = "☀" * 6  # 18 bytes; slicing at byte 16 cuts ☀ #6 mid-sequence
+        msg = HealthReport(timestamp_ns=0, process=process, state=ProcessState.OK, detail="")
+        recovered = HealthReport.unpack(msg.pack())
+        # Must not raise UnicodeDecodeError; must produce valid UTF-8 string
+        assert all(ord(c) == 0x2600 for c in recovered.process)
+        assert len(recovered.process) == 5  # 5 × ☀ = 15 bytes fits in 16

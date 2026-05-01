@@ -86,9 +86,9 @@ class Bus:
         try/finally ensures the lock is always released even if os.write raises.
         """
         state = self._get_state(topic)
+        data = msg.pack()  # pure computation — outside the lock to minimise hold time
         state.lock.acquire()
         try:
-            data = msg.pack()
             new_head = (state.head.value + 1) % self._ring_depth
             offset = new_head * state.slot_size
             state.shm.buf[offset : offset + state.slot_size] = data
@@ -124,9 +124,15 @@ class Bus:
         """
         for state in self._topics.values():
             state.shm.close()
-            state.shm.unlink()
-            os.close(state.r_fd)
-            os.close(state.w_fd)
+            try:
+                state.shm.unlink()
+            except FileNotFoundError:
+                pass
+            for fd in (state.r_fd, state.w_fd):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def subscribe_one(self, topic: str):
         """Block until a new message is published on topic, then return it.
@@ -170,5 +176,8 @@ class Bus:
         """
         for state in self._topics.values():
             state.shm.close()
-            os.close(state.r_fd)
-            os.close(state.w_fd)
+            for fd in (state.r_fd, state.w_fd):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass

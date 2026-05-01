@@ -263,7 +263,13 @@ class HealthReport:
     detail: str     # NOT on the wire — logged only; always "" after unpack
 
     def pack(self) -> bytes:
-        name_bytes = self.process.encode("utf-8")[:16].ljust(16, b"\x00")
+        raw = self.process.encode("utf-8")
+        if len(raw) > 16:
+            # Slicing bytes at position 16 can split a multibyte codepoint, leaving
+            # an invalid sequence that raises UnicodeDecodeError at the receiver.
+            # Decode with errors="ignore" drops any incomplete trailing sequence.
+            raw = raw[:16].decode("utf-8", errors="ignore").encode("utf-8")
+        name_bytes = raw.ljust(16, b"\x00")
         return _ST_HEALTH_REPORT.pack(
             self.timestamp_ns,
             name_bytes,
