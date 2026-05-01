@@ -1,0 +1,70 @@
+platform:
+  name: orange_pi5           # key into platform/factory.py PLATFORMS dict
+  camera:
+    backend: gstreamer       # "v4l2" | "gstreamer" | "virtual"
+    pipeline: "v4l2src device=/dev/video0 ! video/x-raw,width=640,height=480,framerate=60/1 ! appsink"
+    width: 640
+    height: 480
+    fps: 60
+  serial:
+    port: /dev/ttyS0
+    baud: 115200
+  inference:
+    device: rknn             # "cpu" | "cuda" | "rknn" | "tensorrt"
+    backbone: models/nanotrack_backbone.rknn
+    head: models/nanotrack_head.rknn
+  realtime:
+    kcf_cpu_core: 1
+    control_cpu_core: 3
+    control_sched_fifo: true
+    control_fifo_prio: 80
+
+airframe:
+  name: flix_micro
+  mass_kg: 0.18
+  inertia: [0.0012, 0.0012, 0.0020]
+  control_limits:
+    max_roll_deg: 35
+    max_pitch_deg: 35
+    max_roll_rate_dps: 200
+    max_pitch_rate_dps: 200
+
+tracker:
+  kcf:
+    detect_thresh: 0.5
+    sigma: 0.2
+    lambda_: 0.0001
+  nanotrack:
+    exemplar_sz: 127
+    instance_sz: 255
+    score_threshold: 0.7
+  fusion:
+    confidence_gate: 0.7
+    iou_divergence_thresh: 0.3
+    nano_staleness_ms: 100
+
+guidance:
+  N: 4.0
+  closing_vel_fallback: 2.0
+  fov_horizontal_rad: 1.047   # camera horizontal FoV (~60°)
+
+watchdog:
+  target_estimate_ms: 150
+  fc_attitude_ms: 50
+  guidance_accel_ms: 100
+
+mission:
+  mode: bench_hil             # "flight" | "bench_hil" | "swil"
+  hil:
+    target_model: constant_velocity
+    initial_offset_m: [2.0, 0.0, 0.0]
+    target_speed_mps: 1.5
+
+logging:
+  level: INFO
+  dir: /var/log/quadguide
+  max_bytes: 10485760         # 10 MB per file
+  backup_count: 3
+
+bus:
+  ring_depth: 8
