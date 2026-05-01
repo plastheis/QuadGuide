@@ -151,7 +151,10 @@ def load_config(path: str, overrides: dict[str, str]) -> dict:
             node = node[part]  # KeyError propagates if path is wrong
         leaf_key = parts[-1]
         existing = node[leaf_key]   # KeyError if leaf doesn't exist
-        node[leaf_key] = type(existing)(str_value)
+        if isinstance(existing, bool):
+            node[leaf_key] = str_value.lower() in ("1", "true", "yes")
+        else:
+            node[leaf_key] = type(existing)(str_value)
 
     return config
 

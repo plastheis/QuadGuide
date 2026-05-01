@@ -1,4 +1,5 @@
 import os
+import pathlib
 import tempfile
 import pytest
 from quadguide.core.config import (
@@ -9,7 +10,7 @@ from quadguide.core.config import (
     BusConfig,
 )
 
-CONFIG_PATH = "configs/config.yaml"
+CONFIG_PATH = str(pathlib.Path(__file__).parents[2] / "configs" / "config.yaml")
 
 
 class TestLoadConfig:
@@ -42,6 +43,11 @@ class TestLoadConfig:
         # Width is int in yaml; override must coerce string "320" to int 320
         config = load_config(CONFIG_PATH, {"platform.camera.width": "320"})
         assert config["platform"]["camera"]["width"] == 320
+
+    def test_override_bool_value(self):
+        # bool("false") == True in Python — override must handle bool specially
+        config = load_config(CONFIG_PATH, {"platform.realtime.control_sched_fifo": "false"})
+        assert config["platform"]["realtime"]["control_sched_fifo"] is False
 
     def test_override_unknown_path_raises(self):
         with pytest.raises(KeyError):
