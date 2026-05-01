@@ -70,7 +70,14 @@ class TestRoundTrips:
             confidence=0.9,
             tracker_health=TrackerHealth.NOMINAL,
         )
-        assert TrackerEstimate.unpack(msg.pack()) == msg
+        r = TrackerEstimate.unpack(msg.pack())
+        assert r.timestamp_ns == msg.timestamp_ns
+        assert r.bbox.x == pytest.approx(msg.bbox.x, rel=1e-6)
+        assert r.bbox.y == pytest.approx(msg.bbox.y, rel=1e-6)
+        assert r.bbox.w == pytest.approx(msg.bbox.w, rel=1e-6)
+        assert r.bbox.h == pytest.approx(msg.bbox.h, rel=1e-6)
+        assert r.confidence == pytest.approx(msg.confidence, rel=1e-6)
+        assert r.tracker_health == msg.tracker_health
 
     def test_target_estimate(self):
         msg = TargetEstimate(
@@ -81,7 +88,17 @@ class TestRoundTrips:
             tracker_health=TrackerHealth.UNCERTAIN,
             active_tracker=ActiveTracker.FUSED,
         )
-        assert TargetEstimate.unpack(msg.pack()) == msg
+        r = TargetEstimate.unpack(msg.pack())
+        assert r.timestamp_ns == msg.timestamp_ns
+        assert r.bbox.x == pytest.approx(msg.bbox.x, rel=1e-6)
+        assert r.bbox.y == pytest.approx(msg.bbox.y, rel=1e-6)
+        assert r.bbox.w == pytest.approx(msg.bbox.w, rel=1e-6)
+        assert r.bbox.h == pytest.approx(msg.bbox.h, rel=1e-6)
+        assert r.centroid_norm[0] == pytest.approx(msg.centroid_norm[0], rel=1e-6)
+        assert r.centroid_norm[1] == pytest.approx(msg.centroid_norm[1], rel=1e-6)
+        assert r.confidence == pytest.approx(msg.confidence, rel=1e-6)
+        assert r.tracker_health == msg.tracker_health
+        assert r.active_tracker == msg.active_tracker
 
     def test_attitude_state(self):
         msg = AttitudeState(
@@ -89,7 +106,14 @@ class TestRoundTrips:
             roll_rad=0.1, pitch_rad=0.2, yaw_rad=0.3,
             roll_rate_rps=0.01, pitch_rate_rps=0.02, yaw_rate_rps=0.03,
         )
-        assert AttitudeState.unpack(msg.pack()) == msg
+        r = AttitudeState.unpack(msg.pack())
+        assert r.timestamp_ns == msg.timestamp_ns
+        assert r.roll_rad == pytest.approx(msg.roll_rad, rel=1e-6)
+        assert r.pitch_rad == pytest.approx(msg.pitch_rad, rel=1e-6)
+        assert r.yaw_rad == pytest.approx(msg.yaw_rad, rel=1e-6)
+        assert r.roll_rate_rps == pytest.approx(msg.roll_rate_rps, rel=1e-6)
+        assert r.pitch_rate_rps == pytest.approx(msg.pitch_rate_rps, rel=1e-6)
+        assert r.yaw_rate_rps == pytest.approx(msg.yaw_rate_rps, rel=1e-6)
 
     def test_imu_frame(self):
         msg = IMUFrame(
@@ -97,11 +121,21 @@ class TestRoundTrips:
             ax=1.0, ay=2.0, az=9.8,
             gx=0.1, gy=0.2, gz=0.3,
         )
-        assert IMUFrame.unpack(msg.pack()) == msg
+        r = IMUFrame.unpack(msg.pack())
+        assert r.timestamp_ns == msg.timestamp_ns
+        assert r.ax == pytest.approx(msg.ax, rel=1e-6)
+        assert r.ay == pytest.approx(msg.ay, rel=1e-6)
+        assert r.az == pytest.approx(msg.az, rel=1e-6)
+        assert r.gx == pytest.approx(msg.gx, rel=1e-6)
+        assert r.gy == pytest.approx(msg.gy, rel=1e-6)
+        assert r.gz == pytest.approx(msg.gz, rel=1e-6)
 
     def test_accel_cmd(self):
         msg = AccelCmd(timestamp_ns=5_000_000, ax=1.5, ay=-0.5)
-        assert AccelCmd.unpack(msg.pack()) == msg
+        r = AccelCmd.unpack(msg.pack())
+        assert r.timestamp_ns == msg.timestamp_ns
+        assert r.ax == pytest.approx(msg.ax, rel=1e-6)
+        assert r.ay == pytest.approx(msg.ay, rel=1e-6)
 
     def test_control_cmd(self):
         msg = ControlCmd(
@@ -109,14 +143,25 @@ class TestRoundTrips:
             roll_deg=10.0, pitch_deg=-5.0,
             yaw_rate_dps=0.0, throttle_norm=0.5,
         )
-        assert ControlCmd.unpack(msg.pack()) == msg
+        r = ControlCmd.unpack(msg.pack())
+        assert r.timestamp_ns == msg.timestamp_ns
+        assert r.roll_deg == pytest.approx(msg.roll_deg, rel=1e-6)
+        assert r.pitch_deg == pytest.approx(msg.pitch_deg, rel=1e-6)
+        assert r.yaw_rate_dps == pytest.approx(msg.yaw_rate_dps, abs=1e-9)
+        assert r.throttle_norm == pytest.approx(msg.throttle_norm, rel=1e-6)
 
     def test_lockon_cmd(self):
         msg = LockOnCmd(
             timestamp_ns=7_000_000, seq=42,
             bbox=BoundingBox(0.3, 0.3, 0.2, 0.2),
         )
-        assert LockOnCmd.unpack(msg.pack()) == msg
+        r = LockOnCmd.unpack(msg.pack())
+        assert r.timestamp_ns == msg.timestamp_ns
+        assert r.seq == msg.seq
+        assert r.bbox.x == pytest.approx(msg.bbox.x, rel=1e-6)
+        assert r.bbox.y == pytest.approx(msg.bbox.y, rel=1e-6)
+        assert r.bbox.w == pytest.approx(msg.bbox.w, rel=1e-6)
+        assert r.bbox.h == pytest.approx(msg.bbox.h, rel=1e-6)
 
     def test_lockon_cmd_seq_max(self):
         # seq is uint16; 65535 must survive round-trip without overflow

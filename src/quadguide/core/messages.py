@@ -86,17 +86,6 @@ class BoundingBox:
     w: float  # width, normalised 0–1
     h: float  # height, normalised 0–1
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "x", _f32(self.x))
-        object.__setattr__(self, "y", _f32(self.y))
-        object.__setattr__(self, "w", _f32(self.w))
-        object.__setattr__(self, "h", _f32(self.h))
-
-
-def _f32(x: float) -> float:
-    """Round a Python float to single-precision (float32) so that pack/unpack round-trips are exact."""
-    return struct.unpack("!f", struct.pack("!f", x))[0]
-
 
 _ST_TRACKER_ESTIMATE = struct.Struct(FMT_TRACKER_ESTIMATE)
 _ST_TARGET_ESTIMATE  = struct.Struct(FMT_TARGET_ESTIMATE)
@@ -114,9 +103,6 @@ class TrackerEstimate:
     bbox: BoundingBox
     confidence: float
     tracker_health: TrackerHealth
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "confidence", _f32(self.confidence))
 
     def pack(self) -> bytes:
         return _ST_TRACKER_ESTIMATE.pack(
@@ -145,10 +131,6 @@ class TargetEstimate:
     confidence: float
     tracker_health: TrackerHealth
     active_tracker: ActiveTracker
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "centroid_norm", (_f32(self.centroid_norm[0]), _f32(self.centroid_norm[1])))
-        object.__setattr__(self, "confidence", _f32(self.confidence))
 
     def pack(self) -> bytes:
         return _ST_TARGET_ESTIMATE.pack(
@@ -183,14 +165,6 @@ class AttitudeState:
     pitch_rate_rps: float
     yaw_rate_rps: float
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "roll_rad", _f32(self.roll_rad))
-        object.__setattr__(self, "pitch_rad", _f32(self.pitch_rad))
-        object.__setattr__(self, "yaw_rad", _f32(self.yaw_rad))
-        object.__setattr__(self, "roll_rate_rps", _f32(self.roll_rate_rps))
-        object.__setattr__(self, "pitch_rate_rps", _f32(self.pitch_rate_rps))
-        object.__setattr__(self, "yaw_rate_rps", _f32(self.yaw_rate_rps))
-
     def pack(self) -> bytes:
         return _ST_ATTITUDE_STATE.pack(
             self.timestamp_ns,
@@ -213,14 +187,6 @@ class IMUFrame:
     gx: float
     gy: float
     gz: float
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "ax", _f32(self.ax))
-        object.__setattr__(self, "ay", _f32(self.ay))
-        object.__setattr__(self, "az", _f32(self.az))
-        object.__setattr__(self, "gx", _f32(self.gx))
-        object.__setattr__(self, "gy", _f32(self.gy))
-        object.__setattr__(self, "gz", _f32(self.gz))
 
     def pack(self) -> bytes:
         return _ST_IMU_FRAME.pack(
