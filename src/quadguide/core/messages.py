@@ -85,3 +85,231 @@ class BoundingBox:
     y: float  # top-left y, normalised 0–1
     w: float  # width, normalised 0–1
     h: float  # height, normalised 0–1
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "x", _f32(self.x))
+        object.__setattr__(self, "y", _f32(self.y))
+        object.__setattr__(self, "w", _f32(self.w))
+        object.__setattr__(self, "h", _f32(self.h))
+
+
+def _f32(x: float) -> float:
+    """Round a Python float to single-precision (float32) so that pack/unpack round-trips are exact."""
+    return struct.unpack("!f", struct.pack("!f", x))[0]
+
+
+_ST_TRACKER_ESTIMATE = struct.Struct(FMT_TRACKER_ESTIMATE)
+_ST_TARGET_ESTIMATE  = struct.Struct(FMT_TARGET_ESTIMATE)
+_ST_ATTITUDE_STATE   = struct.Struct(FMT_ATTITUDE_STATE)
+_ST_IMU_FRAME        = struct.Struct(FMT_IMU_FRAME)
+_ST_ACCEL_CMD        = struct.Struct(FMT_ACCEL_CMD)
+_ST_CONTROL_CMD      = struct.Struct(FMT_CONTROL_CMD)
+_ST_LOCKON_CMD       = struct.Struct(FMT_LOCKON_CMD)
+_ST_HEALTH_REPORT    = struct.Struct(FMT_HEALTH_REPORT)
+
+
+@dataclass(frozen=True)
+class TrackerEstimate:
+    timestamp_ns: int
+    bbox: BoundingBox
+    confidence: float
+    tracker_health: TrackerHealth
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "confidence", _f32(self.confidence))
+
+    def pack(self) -> bytes:
+        return _ST_TRACKER_ESTIMATE.pack(
+            self.timestamp_ns,
+            self.bbox.x, self.bbox.y, self.bbox.w, self.bbox.h,
+            self.confidence,
+            TrackerHealth._ord[self.tracker_health],
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> TrackerEstimate:
+        ts, x, y, w, h, conf, health_b = _ST_TRACKER_ESTIMATE.unpack(data)
+        return cls(
+            timestamp_ns=ts,
+            bbox=BoundingBox(x, y, w, h),
+            confidence=conf,
+            tracker_health=TrackerHealth._from_ord[health_b],
+        )
+
+
+@dataclass(frozen=True)
+class TargetEstimate:
+    timestamp_ns: int
+    bbox: BoundingBox
+    centroid_norm: tuple[float, float]
+    confidence: float
+    tracker_health: TrackerHealth
+    active_tracker: ActiveTracker
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "centroid_norm", (_f32(self.centroid_norm[0]), _f32(self.centroid_norm[1])))
+        object.__setattr__(self, "confidence", _f32(self.confidence))
+
+    def pack(self) -> bytes:
+        return _ST_TARGET_ESTIMATE.pack(
+            self.timestamp_ns,
+            self.bbox.x, self.bbox.y, self.bbox.w, self.bbox.h,
+            self.centroid_norm[0], self.centroid_norm[1],
+            self.confidence,
+            TrackerHealth._ord[self.tracker_health],
+            ActiveTracker._ord[self.active_tracker],
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> TargetEstimate:
+        ts, bx, by, bw, bh, cx, cy, conf, health_b, tracker_b = _ST_TARGET_ESTIMATE.unpack(data)
+        return cls(
+            timestamp_ns=ts,
+            bbox=BoundingBox(bx, by, bw, bh),
+            centroid_norm=(cx, cy),
+            confidence=conf,
+            tracker_health=TrackerHealth._from_ord[health_b],
+            active_tracker=ActiveTracker._from_ord[tracker_b],
+        )
+
+
+@dataclass(frozen=True)
+class AttitudeState:
+    timestamp_ns: int
+    roll_rad: float
+    pitch_rad: float
+    yaw_rad: float
+    roll_rate_rps: float
+    pitch_rate_rps: float
+    yaw_rate_rps: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "roll_rad", _f32(self.roll_rad))
+        object.__setattr__(self, "pitch_rad", _f32(self.pitch_rad))
+        object.__setattr__(self, "yaw_rad", _f32(self.yaw_rad))
+        object.__setattr__(self, "roll_rate_rps", _f32(self.roll_rate_rps))
+        object.__setattr__(self, "pitch_rate_rps", _f32(self.pitch_rate_rps))
+        object.__setattr__(self, "yaw_rate_rps", _f32(self.yaw_rate_rps))
+
+    def pack(self) -> bytes:
+        return _ST_ATTITUDE_STATE.pack(
+            self.timestamp_ns,
+            self.roll_rad, self.pitch_rad, self.yaw_rad,
+            self.roll_rate_rps, self.pitch_rate_rps, self.yaw_rate_rps,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> AttitudeState:
+        ts, roll, pitch, yaw, rr, pr, yr = _ST_ATTITUDE_STATE.unpack(data)
+        return cls(ts, roll, pitch, yaw, rr, pr, yr)
+
+
+@dataclass(frozen=True)
+class IMUFrame:
+    timestamp_ns: int
+    ax: float
+    ay: float
+    az: float
+    gx: float
+    gy: float
+    gz: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "ax", _f32(self.ax))
+        object.__setattr__(self, "ay", _f32(self.ay))
+        object.__setattr__(self, "az", _f32(self.az))
+        object.__setattr__(self, "gx", _f32(self.gx))
+        object.__setattr__(self, "gy", _f32(self.gy))
+        object.__setattr__(self, "gz", _f32(self.gz))
+
+    def pack(self) -> bytes:
+        return _ST_IMU_FRAME.pack(
+            self.timestamp_ns,
+            self.ax, self.ay, self.az,
+            self.gx, self.gy, self.gz,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> IMUFrame:
+        ts, ax, ay, az, gx, gy, gz = _ST_IMU_FRAME.unpack(data)
+        return cls(ts, ax, ay, az, gx, gy, gz)
+
+
+@dataclass(frozen=True)
+class AccelCmd:
+    timestamp_ns: int
+    ax: float
+    ay: float
+
+    def pack(self) -> bytes:
+        return _ST_ACCEL_CMD.pack(self.timestamp_ns, self.ax, self.ay)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> AccelCmd:
+        ts, ax, ay = _ST_ACCEL_CMD.unpack(data)
+        return cls(ts, ax, ay)
+
+
+@dataclass(frozen=True)
+class ControlCmd:
+    timestamp_ns: int
+    roll_deg: float
+    pitch_deg: float
+    yaw_rate_dps: float
+    throttle_norm: float
+
+    def pack(self) -> bytes:
+        return _ST_CONTROL_CMD.pack(
+            self.timestamp_ns,
+            self.roll_deg, self.pitch_deg,
+            self.yaw_rate_dps, self.throttle_norm,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> ControlCmd:
+        ts, roll, pitch, yaw_rate, throttle = _ST_CONTROL_CMD.unpack(data)
+        return cls(ts, roll, pitch, yaw_rate, throttle)
+
+
+@dataclass(frozen=True)
+class LockOnCmd:
+    timestamp_ns: int
+    seq: int  # uint16; wraps at 65535. Always compare with !=, never >
+    bbox: BoundingBox
+
+    def pack(self) -> bytes:
+        return _ST_LOCKON_CMD.pack(
+            self.timestamp_ns, self.seq,
+            self.bbox.x, self.bbox.y, self.bbox.w, self.bbox.h,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> LockOnCmd:
+        ts, seq, x, y, w, h = _ST_LOCKON_CMD.unpack(data)
+        return cls(ts, seq, BoundingBox(x, y, w, h))
+
+
+@dataclass(frozen=True)
+class HealthReport:
+    timestamp_ns: int
+    process: str    # max 16 UTF-8 bytes on the wire; longer names are truncated
+    state: ProcessState
+    detail: str     # NOT on the wire — logged only; always "" after unpack
+
+    def pack(self) -> bytes:
+        name_bytes = self.process.encode("utf-8")[:16].ljust(16, b"\x00")
+        return _ST_HEALTH_REPORT.pack(
+            self.timestamp_ns,
+            name_bytes,
+            ProcessState._ord[self.state],
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> HealthReport:
+        ts, name_bytes, state_b = _ST_HEALTH_REPORT.unpack(data)
+        return cls(
+            timestamp_ns=ts,
+            process=name_bytes.rstrip(b"\x00").decode("utf-8"),
+            state=ProcessState._from_ord[state_b],
+            detail="",
+        )
