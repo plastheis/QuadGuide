@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pytest *)",
+      "Bash(python3 -m pytest --version)",
+      "Bash(pip install *)",
+      "Read(//home/plas/**)",
+      "Read(//usr/**)",
+      "Bash(pip3 --version)",
+      "Bash(python3 -m pip install pytest)",
+      "Bash(apt list *)",
+      "Bash(dpkg -l python3-pytest)",
+      "Bash(sudo apt-get *)",
+      "Bash(python3 -c \"import sys; print\\(sys.path\\)\")",
+      "Bash(python3 -c \"import importlib.util; spec = importlib.util.find_spec\\('pytest'\\); print\\(spec\\)\")",
+      "Bash(python3 -m venv /home/plas/quadguide/.venv)",
+      "Bash(/home/plas/quadguide/.venv/bin/pip install *)",
+      "Bash(.venv/bin/pytest *)",
+      "Bash(git init *)",
+      "Bash(git *)",
+      "Bash(python3 *)",
+      "Bash(python *)",
+      "Bash(.venv/bin/python3 *)",
+      "Bash(PYTHONPATH=/home/plas/quadguide/src /home/plas/quadguide/.venv/bin/python3 *)",
+      "Bash(/home/plas/quadguide/.venv/bin/python -m pytest /home/plas/quadguide/tests/unit/test_messages.py -v)",
+      "Bash(.venv/bin/python -m pytest tests/unit/test_config.py -v)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(pip show *)",
+      "Bash(/home/plas/quadguide/.venv/bin/pytest *)",
+      "Bash(git show *)",
+      "Read(//tmp/**)"
+    ]
+  }
+}
