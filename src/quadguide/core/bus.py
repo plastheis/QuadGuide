@@ -127,3 +127,48 @@ class Bus:
             state.shm.unlink()
             os.close(state.r_fd)
             os.close(state.w_fd)
+
+    def subscribe_one(self, topic: str):
+        """Block until a new message is published on topic, then return it.
+
+        IMPORTANT: the lock is NOT held during the blocking select.select call.
+        Holding it would deadlock — publish cannot acquire the lock to complete
+        its drain+write. The lock is only acquired briefly inside latest().
+
+        Constraint: at most one process may block on a given topic at a time.
+        The pipe holds one wakeup byte; two concurrent subscribers on the same
+        topic means one will miss a wakeup signal.
+        """
+        state = self._get_state(topic)
+        select.select([state.r_fd], [], [])  # blocks; O_NONBLOCK on fd doesn't affect select
+        os.read(state.r_fd, 1)              # drain the wakeup byte (fd is ready, won't block)
+        return self.latest(topic)
+
+    def subscribe_any(self, topics: list[str]) -> tuple[str, object]:
+        """Block until any of the listed topics receives a publish.
+
+        Returns (topic_name, msg). Only the first ready fd is consumed per call.
+        If multiple topics fire simultaneously, select.select may return multiple
+        ready fds, but only ready[0] is processed. The remaining fds retain their
+        wakeup bytes and will fire immediately on the next call — this is correct,
+        not a missed message.
+        """
+        states = [self._get_state(t) for t in topics]  # KeyError if any unknown
+        r_fds = [s.r_fd for s in states]
+        ready, _, _ = select.select(r_fds, [], [])
+        idx = r_fds.index(ready[0])
+        os.read(states[idx].r_fd, 1)
+        topic_name = topics[idx]
+        return topic_name, self.latest(topic_name)
+
+    def detach(self) -> None:
+        """Close this process's fd references to shared memory and pipes.
+
+        Called by worker processes in their SIGTERM handler — NOT by the parent.
+        Uses shm.close() only, never shm.unlink(). Only the parent (Bus.close())
+        owns the unlink lifecycle.
+        """
+        for state in self._topics.values():
+            state.shm.close()
+            os.close(state.r_fd)
+            os.close(state.w_fd)

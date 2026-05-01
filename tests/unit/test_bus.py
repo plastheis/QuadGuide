@@ -1,4 +1,6 @@
 import pytest
+import threading
+import time
 from quadguide.core.bus import Bus, TOPICS
 from quadguide.core.messages import AccelCmd, ControlCmd
 
@@ -69,3 +71,59 @@ class TestPublish:
         bus.publish("control/cmd", ctrl)
         assert bus.latest("guidance/accel") == accel
         assert bus.latest("control/cmd") == ctrl
+
+
+class TestSubscribeOne:
+    def test_blocks_until_publish(self, bus):
+        msg = AccelCmd(timestamp_ns=999, ax=3.0, ay=1.5)
+
+        def publisher():
+            time.sleep(0.05)
+            bus.publish("guidance/accel", msg)
+
+        t = threading.Thread(target=publisher)
+        t.start()
+        start = time.monotonic()
+        received = bus.subscribe_one("guidance/accel")
+        elapsed = time.monotonic() - start
+        t.join()
+
+        assert received == msg
+        assert elapsed >= 0.04, (
+            f"subscribe_one returned too quickly ({elapsed:.3f}s) — "
+            "pipe blocking is broken"
+        )
+
+    def test_unknown_topic_raises(self, bus):
+        with pytest.raises(KeyError):
+            bus.subscribe_one("nonexistent/topic")
+
+
+class TestSubscribeAny:
+    def test_wakes_on_first_publish(self, bus):
+        msg = ControlCmd(
+            timestamp_ns=5000, roll_deg=5.0, pitch_deg=-2.0,
+            yaw_rate_dps=0.0, throttle_norm=0.5,
+        )
+
+        def publisher():
+            time.sleep(0.02)
+            bus.publish("control/cmd", msg)
+
+        t = threading.Thread(target=publisher)
+        t.start()
+        topic, received = bus.subscribe_any(["guidance/accel", "control/cmd"])
+        t.join()
+
+        assert topic == "control/cmd"
+        assert received == msg
+
+    def test_unknown_topic_in_list_raises(self, bus):
+        with pytest.raises(KeyError):
+            bus.subscribe_any(["guidance/accel", "nonexistent/topic"])
+
+
+class TestDetach:
+    def test_detach_does_not_raise(self):
+        b = Bus(ring_depth=2)
+        b.detach()  # must not raise; no unlink, just close local references
