@@ -1,6 +1,4 @@
 import struct
-import threading
-import time
 import pytest
 from quadguide.core.messages import (
     TrackerHealth, ActiveTracker, ProcessState,
@@ -147,7 +145,7 @@ class TestRoundTrips:
         assert r.timestamp_ns == msg.timestamp_ns
         assert r.roll_deg == pytest.approx(msg.roll_deg, rel=1e-6)
         assert r.pitch_deg == pytest.approx(msg.pitch_deg, rel=1e-6)
-        assert r.yaw_rate_dps == pytest.approx(msg.yaw_rate_dps, abs=1e-9)
+        assert r.yaw_rate_dps == pytest.approx(msg.yaw_rate_dps, abs=1e-9)  # abs= required: rel= against 0.0 resolves to 0 tolerance
         assert r.throttle_norm == pytest.approx(msg.throttle_norm, rel=1e-6)
 
     def test_lockon_cmd(self):
