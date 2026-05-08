@@ -71,10 +71,9 @@ class NanoTracker:
         # Head: takes exemplar and search features
         z_arr  = list(self._z_feat.values())[0]
         x_arr  = list(x_feat.values())[0]
-        out    = self._runtime.infer(self._head, {"z": z_arr, "x": x_arr})
-        out_vals = list(out.values())
-        score_map = out_vals[0]  # (1, 1, H, W)
-        bbox_map  = out_vals[1]  # (1, 4, H, W) ltrb
+        out       = self._runtime.infer(self._head, {"z": z_arr, "x": x_arr})
+        score_map = out["score"]  # (1, 1, H, W)
+        bbox_map  = out["bbox"]   # (1, 4, H, W) ltrb
 
         (cx_n, cy_n, w_n, h_n), conf = decode_response(
             score_map, bbox_map, stride=_STRIDE, instance_sz=self._cfg.instance_sz
