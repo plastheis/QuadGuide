@@ -73,7 +73,7 @@ def _crop_and_resize(
     pad_t = max(0, -y1);  pad_b = max(0, y2 - h)
 
     x1c, y1c = max(0, x1), max(0, y1)
-    x2c, y2c = min(w, x2), min(h, y2)
+    x2c, y2c = max(0, min(w, x2)), max(0, min(h, y2))
     crop = frame[y1c:y2c, x1c:x2c]
 
     if pad_l or pad_r or pad_t or pad_b:
@@ -85,5 +85,5 @@ def _crop_and_resize(
         crop = canvas
 
     pil  = Image.fromarray(crop[:, :, ::-1])      # BGR → RGB for PIL
-    pil  = pil.resize((out_sz, out_sz), Image.BILINEAR)
+    pil  = pil.resize((out_sz, out_sz), Image.Resampling.BILINEAR)
     return np.array(pil)[:, :, ::-1]              # RGB → BGR, uint8
