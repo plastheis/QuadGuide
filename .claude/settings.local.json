@@ -29,7 +29,8 @@
       "Bash(pip show *)",
       "Bash(/home/plas/quadguide/.venv/bin/pytest *)",
       "Bash(git show *)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(/home/plas/quadguide/.venv/bin/python *)"
     ]
   }
 }
