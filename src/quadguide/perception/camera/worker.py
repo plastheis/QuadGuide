@@ -1,0 +1,60 @@
+from __future__ import annotations
+import signal
+import time
+
+from quadguide.core.bus import Bus
+from quadguide.core.clock import monotonic_ns
+from quadguide.core.frame_buffer import FrameBuffer
+from quadguide.core.logging import setup_logging
+from quadguide.core.messages import HealthReport, ProcessState
+from quadguide.perception.camera.sources import CameraSource, USBCamera, CSICamera, VirtualCamera
+
+__all__ = ["run", "run_from_config"]
+
+_SOURCES = {"v4l2": USBCamera, "gstreamer": CSICamera, "virtual": VirtualCamera}
+_HEALTH_EVERY = 60  # publish health every N frames
+
+
+def run(source: CameraSource, frame_buffer: FrameBuffer, bus: Bus,
+        config: dict | None = None) -> None:
+    """Camera worker process entry point.
+
+    Opens source, writes frames into frame_buffer, publishes system/health.
+    Runs until SIGTERM sets the stop flag.
+    """
+    log = setup_logging("camera", config or {})
+    stop = False
+
+    def _on_sigterm(sig, frame):
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+    source.open()
+    log.info("camera: source opened")
+    i = 0
+    try:
+        while not stop:
+            frame, ts = source.read()
+            frame_buffer.write_frame(frame, ts)
+            i += 1
+            if i % _HEALTH_EVERY == 0:
+                bus.publish(
+                    "system/health",
+                    HealthReport(monotonic_ns(), "camera", ProcessState.OK, ""),
+                )
+    except Exception as exc:
+        log.error(f"camera: fatal error: {exc}")
+    finally:
+        source.close()
+        bus.detach()
+        log.info("camera: stopped")
+
+
+def run_from_config(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
+    """Construct a CameraSource from config and call run()."""
+    from quadguide.core.config import cfg_platform
+    pcfg = cfg_platform(config)
+    source_cls = _SOURCES[pcfg.camera.backend]
+    run(source_cls(pcfg.camera), frame_buffer, bus, config)
