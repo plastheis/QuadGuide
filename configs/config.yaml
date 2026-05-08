@@ -10,9 +10,9 @@ platform:
     port: /dev/ttyS0
     baud: 115200
   inference:
-    device: rknn             # "cpu" | "cuda" | "rknn" | "tensorrt"
-    backbone: models/nanotrack_backbone.rknn
-    head: models/nanotrack_head.rknn
+    device: cpu             # "cpu" | "cuda" | "rknn" | "tensorrt"
+    backbone: models/nanotrack_backbone.onnx
+    head: models/nanotrack_head.onnx
   realtime:
     kcf_cpu_core: 1
     control_cpu_core: 3

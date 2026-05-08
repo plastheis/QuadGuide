@@ -30,7 +30,12 @@
       "Bash(/home/plas/quadguide/.venv/bin/pytest *)",
       "Bash(git show *)",
       "Read(//tmp/**)",
-      "Bash(/home/plas/quadguide/.venv/bin/python *)"
+      "Bash(/home/plas/quadguide/.venv/bin/python *)",
+      "Bash(./.venv/bin/python *)",
+      "Bash(PYTHONPATH=/home/plas/quadguide/src /home/plas/quadguide/.venv/bin/python *)",
+      "Bash(PYTHONPATH=/home/plas/quadguide/src .venv/bin/python *)",
+      "Bash(.venv/bin/pip uninstall *)",
+      "Bash(echo \"---EXIT:$?\")"
     ]
   }
 }
