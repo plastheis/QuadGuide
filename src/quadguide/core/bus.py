@@ -21,15 +21,15 @@ from quadguide.core.messages import (
 __all__ = ["Bus", "TOPICS"]
 
 TOPICS: dict[str, tuple[type, str]] = {
-    "kcf/estimate":    (TrackerEstimate, FMT_TRACKER_ESTIMATE),
-    "nano/estimate":   (TrackerEstimate, FMT_TRACKER_ESTIMATE),
-    "target/estimate": (TargetEstimate,  FMT_TARGET_ESTIMATE),
-    "fc/attitude":     (AttitudeState,   FMT_ATTITUDE_STATE),
-    "fc/imu":          (IMUFrame,        FMT_IMU_FRAME),
-    "guidance/accel":  (AccelCmd,        FMT_ACCEL_CMD),
-    "control/cmd":     (ControlCmd,      FMT_CONTROL_CMD),
-    "lockon/cmd":      (LockOnCmd,       FMT_LOCKON_CMD),
-    "system/health":   (HealthReport,    FMT_HEALTH_REPORT),
+    "ccv_tracker/estimate": (TrackerEstimate, FMT_TRACKER_ESTIMATE),
+    "ncv_tracker/estimate": (TrackerEstimate, FMT_TRACKER_ESTIMATE),
+    "target/estimate":      (TargetEstimate,  FMT_TARGET_ESTIMATE),
+    "fc/attitude":          (AttitudeState,   FMT_ATTITUDE_STATE),
+    "fc/imu":               (IMUFrame,        FMT_IMU_FRAME),
+    "guidance/accel":       (AccelCmd,        FMT_ACCEL_CMD),
+    "control/cmd":          (ControlCmd,      FMT_CONTROL_CMD),
+    "lockon/cmd":           (LockOnCmd,       FMT_LOCKON_CMD),
+    "system/health":        (HealthReport,    FMT_HEALTH_REPORT),
 }
 
 

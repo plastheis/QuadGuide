@@ -17,7 +17,7 @@ class TestTopicRegistry:
         b = Bus(ring_depth=2)
         try:
             expected = {
-                "kcf/estimate", "nano/estimate", "target/estimate",
+                "ccv_tracker/estimate", "ncv_tracker/estimate", "target/estimate",
                 "fc/attitude", "fc/imu", "guidance/accel",
                 "control/cmd", "lockon/cmd", "system/health",
             }
