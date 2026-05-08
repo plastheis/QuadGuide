@@ -56,6 +56,7 @@ class CCVTrackerWorker:
                     HealthReport(monotonic_ns(), "ccv_tracker", ProcessState.OK, ""),
                 )
 
+        self._tracker.close()
         self._bus.detach()
         log.info("ccv_tracker: stopped")
 
