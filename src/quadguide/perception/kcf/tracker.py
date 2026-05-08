@@ -16,14 +16,12 @@ class KCFTracker:
         self._config      = config
         self._tracker     = None
         self._initialized = False
-        self._frame_shape: tuple[int, int] | None = None  # (height, width)
 
     def init(self, frame: np.ndarray, bbox: BoundingBox) -> None:
         """Initialise (or re-initialise) KCF on the given frame and bbox."""
         import cv2
         h, w = frame.shape[:2]
-        self._frame_shape = (h, w)
-        self._tracker     = self._build_cv_tracker()
+        self._tracker = self._build_cv_tracker()
         bbox_px = (
             int(bbox.x * w),
             int(bbox.y * h),
