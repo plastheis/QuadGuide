@@ -46,6 +46,14 @@ def run(source: CameraSource, frame_buffer: FrameBuffer, bus: Bus,
                 )
     except Exception as exc:
         log.error(f"camera: fatal error: {exc}")
+        try:
+            bus.publish(
+                "system/health",
+                HealthReport(monotonic_ns(), "camera", ProcessState.FAILSAFE, str(exc)),
+            )
+        except Exception:
+            pass
+        raise
     finally:
         source.close()
         bus.detach()
@@ -56,5 +64,10 @@ def run_from_config(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     """Construct a CameraSource from config and call run()."""
     from quadguide.core.config import cfg_platform
     pcfg = cfg_platform(config)
-    source_cls = _SOURCES[pcfg.camera.backend]
+    source_cls = _SOURCES.get(pcfg.camera.backend)
+    if source_cls is None:
+        raise ValueError(
+            f"Unknown camera backend {pcfg.camera.backend!r}. "
+            f"Valid values: {sorted(_SOURCES)}"
+        )
     run(source_cls(pcfg.camera), frame_buffer, bus, config)

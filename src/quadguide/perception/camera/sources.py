@@ -46,8 +46,8 @@ class USBCamera(CameraSource):
             raise RuntimeError("USBCamera: failed to open /dev/video0")
 
     def read(self) -> tuple[np.ndarray, int]:
-        ts = time.monotonic_ns()
         ret, frame = self._cap.read()
+        ts = time.monotonic_ns()
         if not ret:
             raise RuntimeError("USBCamera: frame capture failed")
         return frame, ts
@@ -72,8 +72,8 @@ class CSICamera(CameraSource):
             raise RuntimeError(f"CSICamera: failed to open pipeline: {self._pipeline!r}")
 
     def read(self) -> tuple[np.ndarray, int]:
-        ts = time.monotonic_ns()
         ret, frame = self._cap.read()
+        ts = time.monotonic_ns()
         if not ret:
             raise RuntimeError("CSICamera: frame capture failed")
         return frame, ts
