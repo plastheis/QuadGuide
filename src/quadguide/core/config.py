@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import yaml
 
 
@@ -67,10 +67,18 @@ class KCFConfig:
 
 
 @dataclass(frozen=True)
+class MOSSEConfig:
+    pass  # OpenCV MOSSE exposes no tunable parameters
+
+
+@dataclass(frozen=True)
 class TrackerConfig:
+    ccv: str          # "kcf" | "mosse"
+    ncv: str          # "nanotrack"
     kcf: KCFConfig
     nanotrack: NanotrackConfig
     fusion: FusionConfig
+    mosse: MOSSEConfig = field(default_factory=MOSSEConfig)
 
 
 @dataclass(frozen=True)
@@ -207,6 +215,8 @@ def cfg_airframe(d: dict) -> AirframeConfig:
 def cfg_tracker(d: dict) -> TrackerConfig:
     t = d["tracker"]
     return TrackerConfig(
+        ccv=t["ccv"],
+        ncv=t["ncv"],
         kcf=KCFConfig(
             detect_thresh=t["kcf"]["detect_thresh"],
             sigma=t["kcf"]["sigma"],
@@ -222,6 +232,7 @@ def cfg_tracker(d: dict) -> TrackerConfig:
             iou_divergence_thresh=t["fusion"]["iou_divergence_thresh"],
             nano_staleness_ms=t["fusion"]["nano_staleness_ms"],
         ),
+        mosse=MOSSEConfig(),
     )
 
 

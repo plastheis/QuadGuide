@@ -116,3 +116,19 @@ class TestAccessors:
     def test_cfg_bus_defaults_when_section_absent(self):
         bus = cfg_bus({})
         assert bus == BusConfig(ring_depth=8)
+
+    def test_cfg_tracker_ccv_field(self):
+        config = load_config(CONFIG_PATH, {})
+        tracker = cfg_tracker(config)
+        assert tracker.ccv == "kcf"
+
+    def test_cfg_tracker_ncv_field(self):
+        config = load_config(CONFIG_PATH, {})
+        tracker = cfg_tracker(config)
+        assert tracker.ncv == "nanotrack"
+
+    def test_cfg_tracker_mosse_is_mosse_config(self):
+        from quadguide.core.config import MOSSEConfig
+        config = load_config(CONFIG_PATH, {})
+        tracker = cfg_tracker(config)
+        assert isinstance(tracker.mosse, MOSSEConfig)

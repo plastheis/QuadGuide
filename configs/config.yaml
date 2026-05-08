@@ -30,6 +30,9 @@ airframe:
     max_pitch_rate_dps: 200
 
 tracker:
+  ccv: kcf            # "kcf" | "mosse"
+  ncv: nanotrack      # "nanotrack"
+  mosse: {}           # no tunable params
   kcf:
     detect_thresh: 0.5
     sigma: 0.2
