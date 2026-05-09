@@ -98,16 +98,56 @@ async def _sse(app: FastAPI):
     while True:
         await asyncio.sleep(_SSE_RATE)
         estimate = app.state.bus.latest("target/estimate")
+        ccv      = app.state.bus.latest("ccv_tracker/estimate")
+        ncv      = app.state.bus.latest("ncv_tracker/estimate")
         attitude = app.state.bus.latest("fc/attitude")
+        imu      = app.state.bus.latest("fc/imu")
+        accel    = app.state.bus.latest("guidance/accel")
+        control  = app.state.bus.latest("control/cmd")
         report   = app.state.bus.latest("system/health")
         if report is not None:
             app.state.process_health[report.process] = report.state.value
         data = {
-            "tracker_health": estimate.tracker_health.value if estimate else None,
-            "confidence":     estimate.confidence            if estimate else None,
-            "roll_deg":       math.degrees(attitude.roll_rad)  if attitude else None,
-            "pitch_deg":      math.degrees(attitude.pitch_rad) if attitude else None,
-            "health":         dict(app.state.process_health),
+            # target/estimate
+            "tracker_health": estimate.tracker_health.value  if estimate else None,
+            "active_tracker": estimate.active_tracker.value  if estimate else None,
+            "confidence":     estimate.confidence             if estimate else None,
+            "bbox_x":         estimate.bbox.x                 if estimate else None,
+            "bbox_y":         estimate.bbox.y                 if estimate else None,
+            "bbox_w":         estimate.bbox.w                 if estimate else None,
+            "bbox_h":         estimate.bbox.h                 if estimate else None,
+            "centroid_x":     estimate.centroid_norm[0]       if estimate else None,
+            "centroid_y":     estimate.centroid_norm[1]       if estimate else None,
+            # ccv_tracker/estimate
+            "ccv_health": ccv.tracker_health.value if ccv else None,
+            "ccv_conf":   ccv.confidence            if ccv else None,
+            # ncv_tracker/estimate
+            "ncv_health": ncv.tracker_health.value if ncv else None,
+            "ncv_conf":   ncv.confidence            if ncv else None,
+            # fc/attitude
+            "roll_deg":       math.degrees(attitude.roll_rad)       if attitude else None,
+            "pitch_deg":      math.degrees(attitude.pitch_rad)      if attitude else None,
+            "yaw_deg":        math.degrees(attitude.yaw_rad)        if attitude else None,
+            "roll_rate_dps":  math.degrees(attitude.roll_rate_rps)  if attitude else None,
+            "pitch_rate_dps": math.degrees(attitude.pitch_rate_rps) if attitude else None,
+            "yaw_rate_dps":   math.degrees(attitude.yaw_rate_rps)   if attitude else None,
+            # fc/imu
+            "imu_ax": imu.ax if imu else None,
+            "imu_ay": imu.ay if imu else None,
+            "imu_az": imu.az if imu else None,
+            "imu_gx": imu.gx if imu else None,
+            "imu_gy": imu.gy if imu else None,
+            "imu_gz": imu.gz if imu else None,
+            # guidance/accel
+            "accel_ax": accel.ax if accel else None,
+            "accel_ay": accel.ay if accel else None,
+            # control/cmd
+            "ctrl_roll_deg":     control.roll_deg       if control else None,
+            "ctrl_pitch_deg":    control.pitch_deg      if control else None,
+            "ctrl_yaw_rate_dps": control.yaw_rate_dps   if control else None,
+            "ctrl_throttle":     control.throttle_norm   if control else None,
+            # system/health
+            "health": dict(app.state.process_health),
         }
         yield f"data: {json.dumps(data)}\n\n"
 

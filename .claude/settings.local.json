@@ -1,4 +1,10 @@
 {
+
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+
   "permissions": {
     "allow": [
       "Bash(pytest *)",
@@ -35,7 +41,11 @@
       "Bash(PYTHONPATH=/home/plas/quadguide/src /home/plas/quadguide/.venv/bin/python *)",
       "Bash(PYTHONPATH=/home/plas/quadguide/src .venv/bin/python *)",
       "Bash(.venv/bin/pip uninstall *)",
-      "Bash(echo \"---EXIT:$?\")"
+      "Bash(echo \"---EXIT:$?\")",
+      "Bash(pip list *)",
+      "Bash(pkill -f \"pytest.*test_ground_server\")",
+      "Bash(pkill -f \"pytest.*ground\")",
+      "Bash(.venv/bin/pip show *)"
     ]
   }
 }

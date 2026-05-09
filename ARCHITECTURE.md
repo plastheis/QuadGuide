@@ -57,16 +57,16 @@ level and means any process can crash and be restarted by systemd without
 corrupting another process's hardware state.
 
 
-| Process          | Owned resource                |
-| ------------------ | ------------------------------- |
-| camera worker    | `/dev/video0` or CSI pipeline |
-| kcf worker       | CPU core 1                    |
-| nanotrack worker | `/dev/rknpu0` (NPU)           |
-| fusion worker    | none — pure computation      |
-| link worker      | UART serial port              |
-| guidance worker  | none — pure computation      |
-| control worker   | CPU core 3 (SCHED_FIFO)       |
-| ground worker    | TCP port 8080                 |
+| Process                         | Owned resource                |
+| --------------------------------- | ------------------------------- |
+| camera worker                   | `/dev/video0` or CSI pipeline |
+| ccv worker (kcf or mosse)       | CPU core 1                    |
+| ncv worker (nanotrack)          | `/dev/rknpu0` (NPU)           |
+| fusion worker                   | none — pure computation      |
+| link worker                     | UART serial port              |
+| guidance worker                 | none — pure computation      |
+| control worker                  | CPU core 3 (SCHED_FIFO)       |
+| ground worker                   | TCP port 8080                 |
 
 ### 2.2 Python multiprocessing, not threading
 
@@ -148,11 +148,15 @@ quadguide/
 │   ├── core/                   # shared primitives — no imports from other modules
 │   ├── platform/               # SBC hardware abstraction
 │   ├── inference/              # NPU/GPU runtime abstraction
-│   ├── perception/             # four workers: camera, kcf, nanotrack, fusion
+│   ├── perception/             # workers: camera, ccv (kcf/mosse), ncv (nanotrack), fusion
 │   │   ├── camera/
 │   │   ├── kcf/
+│   │   ├── mosse/
 │   │   ├── nanotrack/
-│   │   └── fusion/
+│   │   ├── fusion/
+│   │   ├── ccv_tracker_worker.py   # generic IPC loop for classical CV tracker slot
+│   │   ├── ncv_tracker_worker.py   # generic IPC loop for neural CV tracker slot
+│   │   └── tracker_factories.py    # CCV_TRACKERS / NCV_TRACKERS registry + constructors
 │   ├── link/                   # UART ↔ ESP-FC bridge
 │   ├── guidance/               # proportional navigation
 │   ├── control/                # attitude command + real-time loop
@@ -179,8 +183,9 @@ quadguide/
                     │  SHARED MEMORY                                      │
                     │                                                     │
                     │  frame_buffer (shm ring, 4 slots, ~1MB each)        │
-                    │  bus topics (shm rings, small structs):             │
-                    │    kcf/estimate   nano/estimate   target/estimate   │
+                    │  bus topics (shm rings, small structs):                   │
+                    │    ccv_tracker/estimate   ncv_tracker/estimate          │
+                    │    target/estimate                                       │
                     │    fc/attitude    fc/imu          guidance/accel    │
                     │    control/cmd    system/health   lockon/cmd        │
                     └─────────────────────────────────────────────────────┘
@@ -196,13 +201,14 @@ quadguide/
                     │ both read frame_buffer      │
                     ↓                            ↓
 
-[kcf worker]                        [nanotrack worker]
+[ccv worker]                        [ncv worker]
+  (kcf or mosse, via CCVTrackerWorker) (nanotrack, via NCVTrackerWorker)
   CPU core 1                          owns /dev/rknpu0
   loop (rate: ~200Hz):                loop (rate: ~30Hz):
     f = frame_buffer.read_latest()      f = frame_buffer.read_latest()
-    est = kcf.update(f)                 est = nanotrack.update(f)
+    est = tracker.update(f)             est = tracker.update(f)
     bus.publish(                        bus.publish(
-      "kcf/estimate", est)               "nano/estimate", est)
+      "ccv_tracker/estimate", est)       "ncv_tracker/estimate", est)
 
                     ↓                            ↓
                     └──────────┬─────────────────┘
@@ -211,8 +217,8 @@ quadguide/
 [fusion worker]
   loop:
     topic, msg = bus.subscribe_any(
-      ["kcf/estimate", "nano/estimate"])
-    update latest_{kcf,nano}
+      ["ccv_tracker/estimate", "ncv_tracker/estimate"])
+    update latest_{ccv,ncv}
     estimate = fuse(latest_kcf, latest_nano)
     bus.publish("target/estimate", estimate)
 
@@ -262,13 +268,13 @@ operator clicks bbox in browser
   → POST /lockon {"x":0.4,"y":0.3,"w":0.1,"h":0.1}
   → ground/server.py
   → bus.publish("lockon/cmd", LockOnCmd(bbox, timestamp_ns, seq=next_seq()))
-  → kcf/worker.py reads lockon/cmd
+  → CCVTrackerWorker reads lockon/cmd
       if cmd.seq != last_lockon_seq:
-          kcf.init(frame_buffer.read_latest(), cmd.bbox)
+          tracker.init(frame_buffer.read_latest(), cmd.bbox)
           last_lockon_seq = cmd.seq
-  → nanotrack/worker.py reads lockon/cmd
+  → NCVTrackerWorker reads lockon/cmd
       if cmd.seq != last_lockon_seq:
-          nanotrack.init(frame_buffer.read_latest(), cmd.bbox)
+          tracker.init(frame_buffer.read_latest(), cmd.bbox)
           last_lockon_seq = cmd.seq
   → both trackers now tracking
   → fusion worker begins producing TargetEstimate with tracker_health=TrackerHealth.NOMINAL
@@ -379,19 +385,34 @@ All inter-process data structures as frozen dataclasses. Every message carries
 of truth for what crosses process boundaries.
 
 Each dataclass is accompanied by a `struct` format string constant (prefixed
-`FMT_`) that fully describes its wire layout. Health states are expressed as
-a `TrackerHealth` enum (a `str` subclass so it serialises without extra logic)
-rather than bare strings — this eliminates typo-class bugs and makes exhaustive
-matching possible.
+`FMT_`) that fully describes its wire layout. All enums are `str` subclasses
+decorated with `@_byte_enum`, which adds `_ord` and `_from_ord` dicts for O(1)
+wire encoding/decoding without `struct` format overhead. All message dataclasses
+expose `pack() → bytes` and `unpack(data: bytes)` class methods — the hot path
+never uses `pickle`.
 
 ```python
 from enum import Enum
 
+@_byte_enum
 class TrackerHealth(str, Enum):
     NOMINAL   = "nominal"
     UNCERTAIN = "uncertain"
     LOST      = "lost"
     NO_LOCK   = "no_lock"
+
+@_byte_enum
+class ActiveTracker(str, Enum):
+    KCF   = "kcf"
+    NANO  = "nano"
+    FUSED = "fused"
+
+@_byte_enum
+class ProcessState(str, Enum):
+    OK       = "ok"
+    DEGRADED = "degraded"
+    FAILSAFE = "failsafe"
+    DEAD     = "dead"
 
 @dataclass(frozen=True)
 class BoundingBox:
@@ -400,8 +421,8 @@ class BoundingBox:
     w: float        # width, normalised 0–1
     h: float        # height, normalised 0–1
 
-# Wire: timestamp(Q=u64) + bbox(4f) + confidence(f) + health(B) = 29 bytes
-FMT_TRACKER_ESTIMATE = "!QffffB"
+# Wire: timestamp(Q=u64) + bbox.x,y,w,h(4f) + confidence(f) + health(B) = 29 bytes
+FMT_TRACKER_ESTIMATE = "!QfffffB"
 
 @dataclass(frozen=True)
 class TrackerEstimate:
@@ -410,8 +431,8 @@ class TrackerEstimate:
     confidence: float           # 0–1
     tracker_health: TrackerHealth
 
-# Wire: timestamp(Q) + bbox(4f) + centroid(2f) + confidence(f) + health(B) + tracker(B) = 38 bytes
-FMT_TARGET_ESTIMATE = "!QffffffBB"
+# Wire: timestamp(Q) + bbox.x,y,w,h(4f) + centroid.x,y(2f) + confidence(f) + health(B) + tracker(B) = 38 bytes
+FMT_TARGET_ESTIMATE = "!QfffffffBB"
 
 @dataclass(frozen=True)
 class TargetEstimate:
@@ -420,7 +441,7 @@ class TargetEstimate:
     centroid_norm: tuple[float, float]  # (-1,1) range, (0,0) = image centre
     confidence: float
     tracker_health: TrackerHealth
-    active_tracker: str                 # "kcf" | "nano" | "fused"
+    active_tracker: ActiveTracker
 
 # Wire: timestamp(Q) + 6×float = 32 bytes
 FMT_ATTITUDE_STATE = "!Qffffff"
@@ -482,9 +503,9 @@ FMT_HEALTH_REPORT = "!Q16sB"
 @dataclass(frozen=True)
 class HealthReport:
     timestamp_ns: int
-    process: str
-    state: str              # "ok" | "degraded" | "failsafe" | "dead"
-    detail: str             # human-readable, not on the wire
+    process: str        # max 16 UTF-8 bytes on the wire; longer names are truncated
+    state: ProcessState
+    detail: str         # NOT on the wire — logged only; always "" after unpack
 ```
 
 **`core/bus.py`**
@@ -518,6 +539,10 @@ Provides:
 - `Bus.subscribe_any(topics: list[str]) → tuple[str, dataclass]` — blocks until
   any of the listed topics receives a new message; returns `(topic, msg)`
   (implemented via `select.select` over topic pipe read-ends)
+- `Bus.close() → None` — unlinks all shared memory and closes pipe fds; called by
+  the parent process after all workers have joined
+- `Bus.detach() → None` — closes this process's fd references to shm and pipes
+  without unlinking; called by worker processes in their SIGTERM handler
 
 Ring size per topic is configured in `config.yaml` under `bus.ring_depth`
 (default 8). The bus object is initialised once in `scripts/run.py` and passed
@@ -536,10 +561,15 @@ bus because frames are numpy arrays (~1MB), not small structs.
   comfortable margin and costs ~3MB additional shared memory.
 - An atomic integer (via `multiprocessing.Value`) holds the index of the most
   recently completed write
-- `FrameBuffer.write_frame(arr: np.ndarray) → None` — advances slot index,
-  writes, marks ready
-- `FrameBuffer.read_latest() → tuple[np.ndarray, int]` — returns a view of the
-  latest ready slot and its timestamp_ns; does NOT copy
+- `FrameBuffer.write_frame(arr: np.ndarray, timestamp_ns: int | None = None) → None`
+  — advances slot index, writes timestamp then frame bytes; defaults to
+  `time.monotonic_ns()` if timestamp_ns is not provided
+- `FrameBuffer.read_latest() → tuple[np.ndarray | None, int]` — returns a
+  zero-copy numpy view of the latest slot and its timestamp_ns; returns `(None, 0)`
+  if no frame has been written yet
+- `FrameBuffer.close() → None` — releases this process's shm reference (workers call this)
+- `FrameBuffer.unlink() → None` — destroys the shm segment; only the parent process
+  should call this, after all workers have joined
 - Reader processes must consume or copy the frame before the camera worker
   overwrites the slot
 
@@ -629,10 +659,6 @@ file imports RKNN, TensorRT, or ONNX directly.
 whether it is on-device (import succeeds) or on x86 sim (uses `rknn.api.RKNN`
 from rknn-toolkit2 for simulation). The nanotrack worker never needs to know which.
 
-**`inference/tensorrt.py`**
-`TensorRTRuntime` — loads `.engine` file, allocates CUDA input/output buffers,
-runs `context.execute_async_v2()`. For Jetson Orin target.
-
 **`inference/factory.py`**
 `get_runtime(config) → NPURuntime`. Reads `config["platform"]["inference"]["device"]`,
 returns the correct runtime instance. To add a new NPU: add one entry here and
@@ -640,12 +666,14 @@ one implementation file.
 
 ```python
 RUNTIMES = {
-    "cpu":      OnnxCPURuntime,
-    "cuda":     OnnxCUDARuntime,
-    "rknn":     RKNNRuntime,
-    "tensorrt": TensorRTRuntime,
+    "cpu":  OnnxCPURuntime,
+    "cuda": OnnxCUDARuntime,
+    "rknn": RKNNRuntime,
 }
 ```
+
+Note: `TensorRTRuntime` (for Jetson Orin) is planned but not yet implemented.
+Add `inference/tensorrt.py` and a `"tensorrt"` entry here when needed.
 
 ---
 
@@ -679,19 +707,52 @@ on SIGTERM:
 - `VirtualCamera(CameraSource)` — reads from `hil/virtual_source.py`; used in
   HIL mode; selected when `config.mission.mode != "flight"`
 
+#### perception/ccv_tracker_worker.py
+
+`CCVTrackerWorker` — generic IPC loop for the classical CV tracker slot. Wraps
+any tracker implementing `init(frame, bbox)`, `update(frame) → TrackerEstimate`,
+and `close()`. Publishes to `ccv_tracker/estimate`. Sets CPU affinity on
+construction if `cpu_core` is provided.
+
+```
+signal.signal(SIGTERM, _handle_sigterm)
+os.sched_setaffinity(0, {cpu_core})    # no-op on dev machine
+loop (until SIGTERM):
+    _check_lockon()    # seq-guarded reinit on new lockon/cmd
+    frame, _ = frame_buffer.read_latest()
+    if frame is not None:
+        est = tracker.update(frame)
+        bus.publish("ccv_tracker/estimate", est)
+    every 50 iterations: bus.publish("system/health", HealthReport(...))
+tracker.close()
+bus.detach()
+```
+
+#### perception/ncv_tracker_worker.py
+
+`NCVTrackerWorker` — generic IPC loop for the neural CV tracker slot. Same
+contract as `CCVTrackerWorker` but no CPU affinity pinning (NPU handles its own
+scheduling). Publishes to `ncv_tracker/estimate`. Calls `tracker.close()` on
+SIGTERM to release the NPU handle before exit — critical for RKNN.
+
+#### perception/tracker_factories.py
+
+Registry of available CCV and NCV trackers. Selected via `config.tracker.ccv`
+and `config.tracker.ncv`.
+
+```python
+CCV_TRACKERS = {"kcf": KCFTracker, "mosse": MOSSETracker}
+NCV_TRACKERS = {"nanotrack": NanoTracker}
+
+get_ccv_tracker(config) → tracker instance
+get_ncv_tracker(config, runtime) → tracker instance
+```
+
 #### perception/kcf/
 
-**`kcf/worker.py`** — process entry point
-
-```
-platform.set_realtime(core=config.kcf_cpu_core, prio=0)
-kcf = KCFTracker(config.tracker.kcf)
-loop:
-    check bus for lockon/cmd → if new: kcf.init(frame_buffer.read_latest(), cmd.bbox)
-    frame, ts = frame_buffer.read_latest()
-    est = kcf.update(frame)
-    bus.publish("kcf/estimate", est)
-```
+**`kcf/worker.py`** — thin process entry point; constructs `KCFTracker` and
+`CCVTrackerWorker`, then calls `worker.run()`. The full IPC loop is in
+`CCVTrackerWorker`.
 
 Rate is not artificially limited — KCF runs as fast as the CPU allows (~200Hz
 typical). This is intentional: KCF is the high-rate fallback tracker.
@@ -703,24 +764,23 @@ typical). This is intentional: KCF is the high-rate fallback tracker.
 - `update(frame: np.ndarray) → TrackerEstimate` — returns confidence 0 if
   tracking fails
 
+#### perception/mosse/
+
+**`mosse/tracker.py`**
+
+- `MOSSETracker()` — wraps `cv2.legacy.TrackerMOSSE.create()`; no tunable params
+- `init(frame, bbox)`, `update(frame) → TrackerEstimate`, `close()` (no-op)
+- Confidence is binary: 1.0 on success, 0.0 on failure; health is `NOMINAL` or
+  `LOST`, never `UNCERTAIN`
+
+**`mosse/worker.py`** — thin process entry point; constructs `MOSSETracker` and
+`CCVTrackerWorker`, then calls `worker.run()`.
+
 #### perception/nanotrack/
 
-**`nanotrack/worker.py`** — process entry point
-
-```
-runtime = get_runtime(config)
-backbone_model = runtime.load(config.inference.backbone)
-head_model = runtime.load(config.inference.head)
-tracker = NanoTracker(runtime, backbone_model, head_model, config.tracker.nanotrack)
-loop:
-    check bus for lockon/cmd → if new: tracker.init(frame_buffer.read_latest(), cmd.bbox)
-    frame, ts = frame_buffer.read_latest()
-    est = tracker.update(frame)
-    bus.publish("nano/estimate", est)
-on SIGTERM:
-    runtime.close()     # release NPU handle — critical, else NPU wedges
-    exit cleanly
-```
+**`nanotrack/worker.py`** — thin process entry point; constructs `NanoTracker`
+and `NCVTrackerWorker`, then calls `worker.run()`. The full IPC loop (including
+SIGTERM / `tracker.close()`) is in `NCVTrackerWorker`.
 
 Rate is bottlenecked by NPU inference time (~30Hz on OPi5). This is expected —
 NanoTrack is the high-accuracy, low-rate tracker.
@@ -749,26 +809,26 @@ NanoTrack is the high-accuracy, low-rate tracker.
 **`fusion/worker.py`** — process entry point
 
 ```
-latest_kcf: TrackerEstimate | None = None
-latest_nano: TrackerEstimate | None = None
+latest_ccv: TrackerEstimate | None = None
+latest_ncv: TrackerEstimate | None = None
 loop:
-    topic, msg = bus.subscribe_any(["kcf/estimate", "nano/estimate"])
-    if topic == "kcf/estimate":  latest_kcf = msg
-    else:                        latest_nano = msg
-    estimate = fuse(latest_kcf, latest_nano, config.tracker.fusion)
+    topic, msg = bus.subscribe_any(["ccv_tracker/estimate", "ncv_tracker/estimate"])
+    if topic == "ccv_tracker/estimate":  latest_ccv = msg
+    else:                                latest_ncv = msg
+    estimate = fuse(latest_ccv, latest_ncv, config.tracker.fusion)
     bus.publish("target/estimate", estimate)
 ```
 
 Fusion runs on every new arrival from either tracker. It does not wait for both.
 This means guidance always has the freshest possible estimate at the rate of
-whichever tracker last updated (~200 Hz dominated by KCF; NanoTrack contributes
-at ~30 Hz).
+whichever tracker last updated (~200 Hz dominated by the CCV tracker; NCV
+contributes at ~30 Hz).
 
 The `subscribe_any` call is the only use of blocking multi-topic wait in the
 entire system. All other workers use `bus.latest()` (non-blocking poll).
 
 **`fusion/fusion.py`**
-`fuse(kcf: TrackerEstimate | None, nano: TrackerEstimate | None, cfg) → TargetEstimate`
+`fuse(ccv: TrackerEstimate | None, ncv: TrackerEstimate | None, cfg) → TargetEstimate`
 
 Logic:
 
@@ -1038,17 +1098,17 @@ Single-file web UI (vanilla JS, no framework):
 ## 7. Inter-Process Communication Summary
 
 
-| Topic             | Type                  | Producer         | Consumers                            | Approx rate      |
-| ------------------- | ----------------------- | ------------------ | -------------------------------------- | ------------------ |
-| frame_buffer      | shm ring (np.ndarray) | camera worker    | kcf worker, nanotrack worker         | 30–60 Hz        |
-| `kcf/estimate`    | TrackerEstimate       | kcf worker       | fusion worker                        | ~200 Hz          |
-| `nano/estimate`   | TrackerEstimate       | nanotrack worker | fusion worker                        | ~30 Hz           |
-| `target/estimate` | TargetEstimate        | fusion worker    | guidance, control (watchdog), ground | ~200 Hz          |
+| Topic                    | Type                  | Producer         | Consumers                            | Approx rate      |
+| -------------------------- | ----------------------- | ------------------ | -------------------------------------- | ------------------ |
+| frame_buffer             | shm ring (np.ndarray) | camera worker    | ccv worker, ncv worker               | 30–60 Hz        |
+| `ccv_tracker/estimate`   | TrackerEstimate       | ccv worker       | fusion worker                        | ~200 Hz          |
+| `ncv_tracker/estimate`   | TrackerEstimate       | ncv worker       | fusion worker                        | ~30 Hz           |
+| `target/estimate`        | TargetEstimate        | fusion worker    | guidance, control (watchdog), ground | ~200 Hz          |
 | `fc/attitude`     | AttitudeState         | link worker      | guidance, control (watchdog), ground | 100–200 Hz      |
 | `fc/imu`          | IMUFrame              | link worker      | ground                               | 200+ Hz          |
 | `guidance/accel`  | AccelCmd              | guidance worker  | control worker                       | 50 Hz            |
 | `control/cmd`     | ControlCmd            | control worker   | link worker                          | 100 Hz           |
-| `lockon/cmd`      | LockOnCmd             | ground worker    | kcf worker, nanotrack worker         | event-driven     |
+| `lockon/cmd`      | LockOnCmd             | ground worker    | ccv worker, ncv worker               | event-driven     |
 | `system/health`   | HealthReport          | all workers      | ground worker                        | 5 Hz per process |
 
 ---
@@ -1077,7 +1137,8 @@ SIGTERM is sent to all workers by systemd. Each worker:
 3. Releases owned resources (camera, NPU handle, serial port)
 4. Exits with code 0
 
-The nanotrack worker MUST release the NPU handle on exit. If it is killed with
+The ncv worker (nanotrack) MUST release the NPU handle on exit. `NCVTrackerWorker`
+calls `tracker.close()` in its SIGTERM handler for this purpose. If killed with
 SIGKILL (e.g. timeout), the `/dev/rknpu0` handle may be left open and the NPU
 will require a reboot or driver reload to recover. The systemd `TimeoutStopSec`
 for `qg-nano.service` should be set to at least 2s to allow clean shutdown.
@@ -1172,4 +1233,4 @@ No other source files change.
 - **MSP_SET_RAW_RC rate** is capped at ~100Hz by ESP-FC. The control loop runs
   at 100Hz to match. Faster commands will queue in the serial buffer.
 - **NPU handle leak on SIGKILL.** Clean shutdown (SIGTERM) is required for the
-  nanotrack worker. See Section 8.
+  ncv worker (nanotrack). See Section 8.
