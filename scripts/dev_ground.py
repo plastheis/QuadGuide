@@ -38,13 +38,14 @@ def main() -> None:
     args = parser.parse_args()
 
     bus = Bus()
-    fb  = FrameBuffer()
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open camera {args.camera}")
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    fb  = FrameBuffer(width=640, height=480)
 
     stop = threading.Event()
     cam_thread = threading.Thread(target=_camera_loop, args=(cap, fb, stop), daemon=True)
