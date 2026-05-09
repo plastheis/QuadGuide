@@ -37,12 +37,7 @@ def main() -> None:
     parser.add_argument("--camera", type=int, default=0)
     args = parser.parse_args()
 
-    bus = Bus(topics=[
-        "target/estimate",
-        "fc/attitude",
-        "system/health",
-        "lockon/cmd",
-    ])
+    bus = Bus()
     fb  = FrameBuffer()
 
     cap = cv2.VideoCapture(args.camera)
