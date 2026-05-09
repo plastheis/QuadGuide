@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>quadguide ground</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #111; color: #ccc; font-family: monospace; font-size: 13px; display: flex; flex-direction: column; align-items: center; padding: 12px; gap: 12px; }
+  h1 { font-size: 14px; letter-spacing: 2px; color: #888; }
+  #view { position: relative; width: 640px; height: 480px; }
+  #stream { position: absolute; top: 0; left: 0; width: 640px; height: 480px; }
+  #overlay { position: absolute; top: 0; left: 0; width: 640px; height: 480px; cursor: crosshair; }
+  #hud { width: 640px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .cell { background: #1a1a1a; border: 1px solid #333; padding: 6px 10px; }
+  .label { color: #555; font-size: 11px; }
+  .val { color: #0f0; font-size: 15px; font-weight: bold; }
+  #controls { color: #444; font-size: 11px; }
+</style>
+</head>
+<body>
+<h1>QUADGUIDE GROUND</h1>
+<div id="view">
+  <img id="stream" src="/stream" alt="stream">
+  <canvas id="overlay" width="640" height="480"></canvas>
+</div>
+<div id="hud">
+  <div class="cell"><div class="label">TRACKER</div><div class="val" id="hud-tracker">—</div></div>
+  <div class="cell"><div class="label">CONFIDENCE</div><div class="val" id="hud-conf">—</div></div>
+  <div class="cell"><div class="label">ROLL / PITCH</div><div class="val" id="hud-att">— / —</div></div>
+  <div class="cell"><div class="label">CROSSHAIR SIZE</div><div class="val" id="hud-size">160 px</div></div>
+  <div class="cell" id="hud-health-cell" style="grid-column: span 2;"><div class="label">PROCESS HEALTH</div><div class="val" id="hud-health">—</div></div>
+</div>
+<div id="controls">[ + ] grow &nbsp; [ - ] shrink &nbsp; [ Enter ] lock on &nbsp; [ Esc ] cancel lock</div>
+<script>
+const canvas  = document.getElementById('overlay');
+const ctx     = canvas.getContext('2d');
+const W = 640, H = 480;
+
+let crosshairSize = 160;   // side length in pixels
+const STEP = 20;
+const MIN_SIZE = 40;
+const MAX_SIZE = Math.min(W, H) - 20;
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function drawCrosshair() {
+  ctx.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2;
+  const half = crosshairSize / 2;
+  const arm  = crosshairSize * 0.25;  // length of corner L-arms
+
+  ctx.strokeStyle = '#00ff00';
+  ctx.lineWidth   = 2;
+  ctx.beginPath();
+
+  // horizontal centre line (left edge to right edge of square)
+  ctx.moveTo(cx - half, cy);
+  ctx.lineTo(cx + half, cy);
+
+  // vertical centre line
+  ctx.moveTo(cx, cy - half);
+  ctx.lineTo(cx, cy + half);
+
+  ctx.stroke();
+
+  // corner L-shapes
+  const corners = [
+    [cx - half, cy - half,  arm,    0,  0,  arm],   // top-left
+    [cx + half, cy - half, -arm,    0,  0,  arm],   // top-right
+    [cx - half, cy + half,  arm,    0,  0, -arm],   // bottom-left
+    [cx + half, cy + half, -arm,    0,  0, -arm],   // bottom-right
+  ];
+  ctx.beginPath();
+  for (const [ox, oy, dx1, dy1, dx2, dy2] of corners) {
+    ctx.moveTo(ox + dx1, oy + dy1);
+    ctx.lineTo(ox,       oy      );
+    ctx.lineTo(ox + dx2, oy + dy2);
+  }
+  ctx.stroke();
+
+  document.getElementById('hud-size').textContent = crosshairSize + ' px';
+}
+
+drawCrosshair();
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === '+' || e.key === '=') {
+    crosshairSize = clamp(crosshairSize + STEP, MIN_SIZE, MAX_SIZE);
+    drawCrosshair();
+  } else if (e.key === '-' || e.key === '_') {
+    crosshairSize = clamp(crosshairSize - STEP, MIN_SIZE, MAX_SIZE);
+    drawCrosshair();
+  } else if (e.key === 'Enter') {
+    sendLockon();
+  }
+});
+
+function sendLockon() {
+  const cx = W / 2, cy = H / 2;
+  const half = crosshairSize / 2;
+  const body = {
+    x: (cx - half) / W,
+    y: (cy - half) / H,
+    w: crosshairSize / W,
+    h: crosshairSize / H,
+  };
+  fetch('/lockon', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  }).catch(() => {});
+}
+
+// SSE telemetry
+const sse = new EventSource('/telemetry');
+sse.onmessage = (ev) => {
+  let d;
+  try { d = JSON.parse(ev.data); } catch { return; }
+
+  document.getElementById('hud-tracker').textContent =
+    d.tracker_health != null ? d.tracker_health : '—';
+  document.getElementById('hud-conf').textContent =
+    d.confidence != null ? d.confidence.toFixed(2) : '—';
+  document.getElementById('hud-att').textContent =
+    (d.roll_deg != null ? d.roll_deg.toFixed(1) : '—') + ' / ' +
+    (d.pitch_deg != null ? d.pitch_deg.toFixed(1) : '—');
+
+  if (d.health) {
+    const parts = Object.entries(d.health).map(([k, v]) => `${k}:${v}`);
+    document.getElementById('hud-health').textContent = parts.join('  ') || '—';
+  }
+};
+</script>
+</body>
+</html>
