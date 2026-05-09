@@ -1,10 +1,8 @@
 {
-
   "attribution": {
     "commit": "",
     "pr": ""
   },
-
   "permissions": {
     "allow": [
       "Bash(pytest *)",
@@ -45,7 +43,9 @@
       "Bash(pip list *)",
       "Bash(pkill -f \"pytest.*test_ground_server\")",
       "Bash(pkill -f \"pytest.*ground\")",
-      "Bash(.venv/bin/pip show *)"
+      "Bash(.venv/bin/pip show *)",
+      "Bash(git filter-branch *)",
+      "Bash(FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --msg-filter 'sed \"/^Co-Authored-By:.*[Cc]laude/d\"' -- --all)"
     ]
   }
 }
