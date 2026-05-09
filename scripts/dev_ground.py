@@ -27,7 +27,7 @@ def _camera_loop(cap: cv2.VideoCapture, fb: FrameBuffer, stop: threading.Event) 
         ok, frame = cap.read()
         if not ok:
             break
-        fb.write(frame)
+        fb.write_frame(frame)
     cap.release()
 
 
