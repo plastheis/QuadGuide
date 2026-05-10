@@ -40,7 +40,7 @@ class NCVTrackerWorker:
             frame, frame_ts = self._fb.read_latest()
             if frame is not None:
                 est = self._tracker.update(frame)
-                latency_ns = monotonic_ns() - frame_ts if frame_ts > 0 else 0
+                latency_ns = min(monotonic_ns() - frame_ts, 0xFFFF_FFFF) if frame_ts > 0 else 0
                 est = dataclasses.replace(est, latency_ns=latency_ns)
                 self._bus.publish("ncv_tracker/estimate", est)
             i += 1
