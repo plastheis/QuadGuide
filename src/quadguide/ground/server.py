@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -34,6 +35,8 @@ def create_app(bus, frame_buffer) -> FastAPI:
         app.state.frame_buffer   = frame_buffer
         app.state.lockon_seq     = 0
         app.state.process_health: dict[str, str] = {}
+        app.state.latency_window: deque = deque(maxlen=20)
+        app.state.test_mode_break_after_one = False
         task = asyncio.create_task(_health_task(app))
         try:
             yield
@@ -98,6 +101,15 @@ async def _sse(app: FastAPI):
     while True:
         await asyncio.sleep(_SSE_RATE)
         estimate = app.state.bus.latest("target/estimate")
+        lat_ms = estimate.latency_ns / 1e6 if estimate and estimate.latency_ns > 0 else None
+        if lat_ms is not None:
+            app.state.latency_window.append(estimate.latency_ns)
+        avg_ms = (
+            sum(app.state.latency_window) / len(app.state.latency_window) / 1e6
+            if app.state.latency_window else None
+        )
+        # If in test mode, break after yielding once
+        should_break = getattr(app.state, "test_mode_break_after_one", False)
         ccv      = app.state.bus.latest("ccv_tracker/estimate")
         ncv      = app.state.bus.latest("ncv_tracker/estimate")
         attitude = app.state.bus.latest("fc/attitude")
@@ -158,8 +170,13 @@ async def _sse(app: FastAPI):
             "ctrl_throttle":     control.throttle_norm   if control else None,
             # system/health
             "health": dict(app.state.process_health),
+            # latency
+            "latency_ms":     lat_ms,
+            "latency_avg_ms": avg_ms,
         }
         yield f"data: {json.dumps(data)}\n\n"
+        if should_break:
+            break
 
 
 async def _health_task(app: FastAPI) -> None:

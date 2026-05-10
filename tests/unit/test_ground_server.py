@@ -1,7 +1,10 @@
+import json
 import pytest
 from starlette.testclient import TestClient
 
-from quadguide.core.messages import BoundingBox, LockOnCmd
+from quadguide.core.messages import (
+    ActiveTracker, BoundingBox, LockOnCmd, TargetEstimate, TrackerHealth,
+)
 from quadguide.ground.server import create_app
 
 
@@ -74,3 +77,83 @@ def test_lockon_seq_increments(bus_client):
     assert cmds[1].seq == 2
 
 
+@pytest.fixture
+def client_with_estimate():
+    class _EstimateBus(_MockBus):
+        def latest(self, topic: str):
+            if topic == "target/estimate":
+                return TargetEstimate(
+                    timestamp_ns=1_000_000_000,
+                    bbox=BoundingBox(0.2, 0.2, 0.3, 0.3),
+                    centroid_norm=(0.0, 0.0),
+                    confidence=0.9,
+                    tracker_health=TrackerHealth.NOMINAL,
+                    active_tracker=ActiveTracker.CCV,
+                    latency_ns=5_000_000,  # 5 ms
+                )
+            return None
+    app = create_app(_EstimateBus(), _MockFrameBuffer())
+    with TestClient(app) as c:
+        yield c
+
+
+def _read_one_sse_event(client, path: str) -> dict:
+    # For SSE testing, we use a workaround to break out of infinite streaming.
+    # We set a flag on the app to break after one event, run the request in a thread
+    # with a timeout, then restore the flag.
+    import threading
+    import time
+
+    # Set a test mode flag that will make _sse break after yielding one event
+    client.app.state.test_mode_break_after_one = True
+
+    result = []
+    error = []
+
+    def fetch():
+        try:
+            # Use stream() which should now break after getting one event
+            with client.stream("GET", path) as resp:
+                for line in resp.iter_lines():
+                    if line.startswith("data:"):
+                        result.append(json.loads(line[len("data:"):].strip()))
+                        return
+                if not result:
+                    error.append("No SSE data line received")
+        except Exception as e:
+            error.append(f"{type(e).__name__}: {e}")
+        finally:
+            client.app.state.test_mode_break_after_one = False
+
+    thread = threading.Thread(target=fetch)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout=2.0)
+
+    if error:
+        raise AssertionError(error[0])
+    if not result:
+        raise AssertionError("SSE stream timed out or no data received")
+    return result[0]
+
+
+def test_telemetry_includes_latency_keys(client):
+    data = _read_one_sse_event(client, "/telemetry")
+    assert "latency_ms" in data
+    assert "latency_avg_ms" in data
+
+
+def test_telemetry_latency_null_when_no_estimate(client):
+    data = _read_one_sse_event(client, "/telemetry")
+    assert data["latency_ms"] is None
+    assert data["latency_avg_ms"] is None
+
+
+def test_telemetry_latency_ms_matches_estimate(client_with_estimate):
+    data = _read_one_sse_event(client_with_estimate, "/telemetry")
+    assert data["latency_ms"] == pytest.approx(5.0, rel=0.01)
+
+
+def test_telemetry_latency_avg_ms_after_one_sample(client_with_estimate):
+    data = _read_one_sse_event(client_with_estimate, "/telemetry")
+    assert data["latency_avg_ms"] == pytest.approx(5.0, rel=0.01)
