@@ -1,4 +1,5 @@
 from __future__ import annotations
+import dataclasses
 import signal
 
 from quadguide.core.bus import Bus
@@ -36,9 +37,11 @@ class NCVTrackerWorker:
         i = 0
         while not self._stop:
             self._check_lockon()
-            frame, _ = self._fb.read_latest()
+            frame, frame_ts = self._fb.read_latest()
             if frame is not None:
                 est = self._tracker.update(frame)
+                latency_ns = monotonic_ns() - frame_ts if frame_ts > 0 else 0
+                est = dataclasses.replace(est, latency_ns=latency_ns)
                 self._bus.publish("ncv_tracker/estimate", est)
             i += 1
             if i % _HEALTH_EVERY == 0:
