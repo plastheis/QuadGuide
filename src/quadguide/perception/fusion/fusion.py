@@ -30,6 +30,7 @@ def _passthrough(est: TrackerEstimate, label: ActiveTracker) -> TargetEstimate:
         confidence=est.confidence,
         tracker_health=est.tracker_health,
         active_tracker=label,
+        latency_ns=est.latency_ns,
     )
 
 
@@ -79,6 +80,7 @@ def fuse(
         fused_bbox = ncv.bbox
         fused_conf = ncv.confidence
         active = ActiveTracker.NCV
+        latency_ns = ncv.latency_ns
     else:
         total = ccv.confidence + ncv.confidence
         if total == 0.0:
@@ -94,6 +96,7 @@ def fuse(
         )
         fused_conf = max(ccv.confidence, ncv.confidence)
         active = ActiveTracker.FUSED
+        latency_ns = ccv.latency_ns
 
     # IoU divergence: penalise confidence and flag health
     health = TrackerHealth.NOMINAL
@@ -108,4 +111,5 @@ def fuse(
         confidence=fused_conf,
         tracker_health=health,
         active_tracker=active,
+        latency_ns=latency_ns,
     )
