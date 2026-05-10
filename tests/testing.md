@@ -105,7 +105,7 @@ Tests for `src/quadguide/core/messages.py`. Covers enum ordinal encoding, struct
 | `test_active_tracker_round_trip` | Same for `ActiveTracker` | PASSED |
 | `test_process_state_round_trip` | Same for `ProcessState` | PASSED |
 | `test_tracker_health_is_str` | `TrackerHealth.NOMINAL == "nominal"` — confirms `str` subclass behaviour for logging/JSON | PASSED |
-| `test_active_tracker_is_str` | `ActiveTracker.KCF == "kcf"` | PASSED |
+| `test_active_tracker_is_str` | `ActiveTracker.CCV == "ccv"` | PASSED |
 | `test_process_state_is_str` | `ProcessState.OK == "ok"` | PASSED |
 
 ### TestFormatSizes

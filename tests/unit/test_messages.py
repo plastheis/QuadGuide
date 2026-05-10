@@ -28,7 +28,7 @@ class TestEnumOrdinals:
         assert TrackerHealth.NOMINAL == "nominal"
 
     def test_active_tracker_is_str(self):
-        assert ActiveTracker.KCF == "kcf"
+        assert ActiveTracker.CCV == "ccv"
 
     def test_process_state_is_str(self):
         assert ProcessState.OK == "ok"

@@ -19,7 +19,7 @@ def _estimate(health: TrackerHealth) -> TargetEstimate:
         centroid_norm=(0.0, 0.0),
         confidence=0.9,
         tracker_health=health,
-        active_tracker=ActiveTracker.KCF,
+        active_tracker=ActiveTracker.CCV,
     )
 
 

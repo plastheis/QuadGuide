@@ -48,8 +48,8 @@ def fuse(
     requiring the other slot to be present.
 
     Full fusion: when both trackers are publishing:
-      1. Staleness-check NCV (drop if older than cfg.nano_staleness_ms).
-      2. If nano confidence > cfg.confidence_gate → use nano bbox.
+      1. Staleness-check NCV (drop if older than cfg.ncv_staleness_ms).
+      2. If ncv confidence > cfg.confidence_gate → use ncv bbox.
       3. Otherwise → weighted-average bbox by confidence.
       4. IoU divergence check → UNCERTAIN health + confidence penalty.
     """
@@ -58,7 +58,7 @@ def fuse(
     # drop NCV estimate if it has gone stale
     if ncv is not None:
         age_ms = (now_ns - ncv.timestamp_ns) / 1_000_000
-        if age_ms > cfg.nano_staleness_ms:
+        if age_ms > cfg.ncv_staleness_ms:
             ncv = None
 
     # passthrough: only one tracker is present
@@ -67,7 +67,7 @@ def fuse(
     if ncv is None:
         return _passthrough(ccv, ActiveTracker.CCV)  # type: ignore[arg-type]
     if ccv is None:
-        return _passthrough(ncv, ActiveTracker.NANO)
+        return _passthrough(ncv, ActiveTracker.NCV)
 
     # both present — propagate NO_LOCK if neither has initialised
     if (ccv.tracker_health == TrackerHealth.NO_LOCK
@@ -78,7 +78,7 @@ def fuse(
     if ncv.confidence > cfg.confidence_gate:
         fused_bbox = ncv.bbox
         fused_conf = ncv.confidence
-        active = ActiveTracker.NANO
+        active = ActiveTracker.NCV
     else:
         total = ccv.confidence + ncv.confidence
         if total == 0.0:

@@ -33,7 +33,7 @@ class TrackerHealth(str, Enum):
 @_byte_enum
 class ActiveTracker(str, Enum):
     CCV   = "ccv"   # classical CV slot (kcf, mosse, …)
-    NANO  = "nano"  # neural CV slot (nanotrack, …)
+    NCV   = "ncv"   # neural CV slot (nanotrack, …)
     FUSED = "fused"
 
 

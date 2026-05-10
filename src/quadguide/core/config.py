@@ -49,7 +49,7 @@ class GuidanceConfig:
 class FusionConfig:
     confidence_gate: float
     iou_divergence_thresh: float
-    nano_staleness_ms: int
+    ncv_staleness_ms: int
 
 
 @dataclass(frozen=True)
@@ -230,7 +230,7 @@ def cfg_tracker(d: dict) -> TrackerConfig:
         fusion=FusionConfig(
             confidence_gate=t["fusion"]["confidence_gate"],
             iou_divergence_thresh=t["fusion"]["iou_divergence_thresh"],
-            nano_staleness_ms=t["fusion"]["nano_staleness_ms"],
+            ncv_staleness_ms=t["fusion"]["ncv_staleness_ms"],
         ),
         mosse=MOSSEConfig(),
     )
