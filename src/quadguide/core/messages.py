@@ -49,13 +49,12 @@ class ProcessState(str, Enum):
 # Byte-count comments show the arithmetic; if a comment disagrees with
 # struct.calcsize(fmt), the format string wins.
 
-FMT_TRACKER_ESTIMATE = "!QfffffB"
-# Q(8) + bbox.x,y,w,h(4×f=16) + confidence(f=4) + health(B=1) = 29 bytes
+FMT_TRACKER_ESTIMATE = "!QfffffBI"
+# Q(8) + bbox.x,y,w,h(4×f=16) + confidence(f=4) + health(B=1) + latency_ns(I=4) = 33 bytes
 
-FMT_TARGET_ESTIMATE = "!QfffffffBB"
+FMT_TARGET_ESTIMATE = "!QfffffffBBI"
 # Q(8) + bbox.x,y,w,h(4×f=16) + centroid_x,y(2×f=8) + confidence(f=4)
-#   + tracker_health(B=1) + active_tracker(B=1) = 38 bytes
-# NOTE: architecture.md had "!QffffffBB" (6 f's = 34 bytes) — corrected here.
+#   + tracker_health(B=1) + active_tracker(B=1) + latency_ns(I=4) = 42 bytes
 
 FMT_ATTITUDE_STATE = "!Qffffff"
 # Q(8) + roll,pitch,yaw,roll_rate,pitch_rate,yaw_rate(6×f=24) = 32 bytes
@@ -103,6 +102,7 @@ class TrackerEstimate:
     bbox: BoundingBox
     confidence: float
     tracker_health: TrackerHealth
+    latency_ns: int = 0  # set by tracker worker via dataclasses.replace; 0 = no frame yet
 
     def pack(self) -> bytes:
         return _ST_TRACKER_ESTIMATE.pack(
@@ -110,16 +110,18 @@ class TrackerEstimate:
             self.bbox.x, self.bbox.y, self.bbox.w, self.bbox.h,
             self.confidence,
             TrackerHealth._ord[self.tracker_health],
+            self.latency_ns,
         )
 
     @classmethod
     def unpack(cls, data: bytes) -> TrackerEstimate:
-        ts, x, y, w, h, conf, health_b = _ST_TRACKER_ESTIMATE.unpack(data)
+        ts, x, y, w, h, conf, health_b, latency = _ST_TRACKER_ESTIMATE.unpack(data)
         return cls(
             timestamp_ns=ts,
             bbox=BoundingBox(x, y, w, h),
             confidence=conf,
             tracker_health=TrackerHealth._from_ord[health_b],
+            latency_ns=latency,
         )
 
 
@@ -131,6 +133,7 @@ class TargetEstimate:
     confidence: float
     tracker_health: TrackerHealth
     active_tracker: ActiveTracker
+    latency_ns: int = 0  # set by fusion from the active tracker's latency_ns
 
     def pack(self) -> bytes:
         return _ST_TARGET_ESTIMATE.pack(
@@ -140,11 +143,13 @@ class TargetEstimate:
             self.confidence,
             TrackerHealth._ord[self.tracker_health],
             ActiveTracker._ord[self.active_tracker],
+            self.latency_ns,
         )
 
     @classmethod
     def unpack(cls, data: bytes) -> TargetEstimate:
-        ts, bx, by, bw, bh, cx, cy, conf, health_b, tracker_b = _ST_TARGET_ESTIMATE.unpack(data)
+        ts, bx, by, bw, bh, cx, cy, conf, health_b, tracker_b, latency = \
+            _ST_TARGET_ESTIMATE.unpack(data)
         return cls(
             timestamp_ns=ts,
             bbox=BoundingBox(bx, by, bw, bh),
@@ -152,6 +157,7 @@ class TargetEstimate:
             confidence=conf,
             tracker_health=TrackerHealth._from_ord[health_b],
             active_tracker=ActiveTracker._from_ord[tracker_b],
+            latency_ns=latency,
         )
 
 

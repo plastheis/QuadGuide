@@ -36,10 +36,10 @@ class TestEnumOrdinals:
 
 class TestFormatSizes:
     def test_tracker_estimate(self):
-        assert struct.calcsize(FMT_TRACKER_ESTIMATE) == 29
+        assert struct.calcsize(FMT_TRACKER_ESTIMATE) == 33
 
     def test_target_estimate(self):
-        assert struct.calcsize(FMT_TARGET_ESTIMATE) == 38
+        assert struct.calcsize(FMT_TARGET_ESTIMATE) == 42
 
     def test_attitude_state(self):
         assert struct.calcsize(FMT_ATTITUDE_STATE) == 32
@@ -67,6 +67,7 @@ class TestRoundTrips:
             bbox=BoundingBox(0.1, 0.2, 0.3, 0.4),
             confidence=0.9,
             tracker_health=TrackerHealth.NOMINAL,
+            latency_ns=12_345_678,
         )
         r = TrackerEstimate.unpack(msg.pack())
         assert r.timestamp_ns == msg.timestamp_ns
@@ -76,6 +77,7 @@ class TestRoundTrips:
         assert r.bbox.h == pytest.approx(msg.bbox.h, rel=1e-6)
         assert r.confidence == pytest.approx(msg.confidence, rel=1e-6)
         assert r.tracker_health == msg.tracker_health
+        assert r.latency_ns == msg.latency_ns
 
     def test_target_estimate(self):
         msg = TargetEstimate(
@@ -85,6 +87,7 @@ class TestRoundTrips:
             confidence=0.85,
             tracker_health=TrackerHealth.UNCERTAIN,
             active_tracker=ActiveTracker.FUSED,
+            latency_ns=8_000_000,
         )
         r = TargetEstimate.unpack(msg.pack())
         assert r.timestamp_ns == msg.timestamp_ns
@@ -97,6 +100,7 @@ class TestRoundTrips:
         assert r.confidence == pytest.approx(msg.confidence, rel=1e-6)
         assert r.tracker_health == msg.tracker_health
         assert r.active_tracker == msg.active_tracker
+        assert r.latency_ns == msg.latency_ns
 
     def test_attitude_state(self):
         msg = AttitudeState(
