@@ -403,8 +403,8 @@ class TrackerHealth(str, Enum):
 
 @_byte_enum
 class ActiveTracker(str, Enum):
-    KCF   = "kcf"
-    NANO  = "nano"
+    CCV   = "ccv"   # classical CV slot (kcf, mosse, …)
+    NANO  = "nano"  # neural CV slot (nanotrack, …)
     FUSED = "fused"
 
 @_byte_enum
@@ -711,48 +711,82 @@ on SIGTERM:
 
 `CCVTrackerWorker` — generic IPC loop for the classical CV tracker slot. Wraps
 any tracker implementing `init(frame, bbox)`, `update(frame) → TrackerEstimate`,
-and `close()`. Publishes to `ccv_tracker/estimate`. Sets CPU affinity on
-construction if `cpu_core` is provided.
+`name() → str`, and `close()`. Publishes to `ccv_tracker/estimate`. Sets CPU
+affinity on construction if `cpu_core` is provided.
+
+The process name for logging and `system/health` is derived from the tracker:
+`"ccv_{tracker.name()}"` (e.g. `"ccv_kcf"`, `"ccv_mosse"`). This means the
+ground station health grid and log file name both reflect the active algorithm.
 
 ```
 signal.signal(SIGTERM, _handle_sigterm)
 os.sched_setaffinity(0, {cpu_core})    # no-op on dev machine
+proc_name = f"ccv_{tracker.name()}"
 loop (until SIGTERM):
     _check_lockon()    # seq-guarded reinit on new lockon/cmd
     frame, _ = frame_buffer.read_latest()
     if frame is not None:
         est = tracker.update(frame)
         bus.publish("ccv_tracker/estimate", est)
-    every 50 iterations: bus.publish("system/health", HealthReport(...))
+    every 50 iterations: bus.publish("system/health", HealthReport(proc_name, ...))
 tracker.close()
 bus.detach()
 ```
+
+`run_from_config(config, bus, frame_buffer)` — constructs the CCV tracker
+selected by `config.tracker.ccv` via `get_ccv_tracker` and runs it. This is
+the entry point for any caller that should not know which algorithm is active —
+dev launchers, `run.py`, etc. The specific `kcf/worker.py` and `mosse/worker.py`
+entry points exist only for direct systemd service invocation.
 
 #### perception/ncv_tracker_worker.py
 
 `NCVTrackerWorker` — generic IPC loop for the neural CV tracker slot. Same
 contract as `CCVTrackerWorker` but no CPU affinity pinning (NPU handles its own
-scheduling). Publishes to `ncv_tracker/estimate`. Calls `tracker.close()` on
-SIGTERM to release the NPU handle before exit — critical for RKNN.
+scheduling). Process name derived as `"ncv_{tracker.name()}"`. Publishes to
+`ncv_tracker/estimate`. Calls `tracker.close()` on SIGTERM to release the NPU
+handle before exit — critical for RKNN.
 
 #### perception/tracker_factories.py
 
 Registry of available CCV and NCV trackers. Selected via `config.tracker.ccv`
-and `config.tracker.ncv`.
+and `config.tracker.ncv`. Each entry is a constructor callable that takes the
+typed config objects — adding a new tracker is one dict entry plus one file,
+no if-chains anywhere else.
 
 ```python
-CCV_TRACKERS = {"kcf": KCFTracker, "mosse": MOSSETracker}
-NCV_TRACKERS = {"nanotrack": NanoTracker}
+CCV_TRACKERS = {
+    "kcf":   lambda tcfg: KCFTracker(tcfg.kcf),
+    "mosse": lambda tcfg: MOSSETracker(),
+}
+NCV_TRACKERS = {
+    "nanotrack": lambda tcfg, pcfg, runtime: NanoTracker(
+        runtime, runtime.load(pcfg.inference.backbone),
+        runtime.load(pcfg.inference.head), tcfg.nanotrack,
+    ),
+}
 
 get_ccv_tracker(config) → tracker instance
 get_ncv_tracker(config, runtime) → tracker instance
 ```
 
+#### Tracker algorithm contract
+
+Every tracker class (CCV or NCV) must implement:
+
+| Method | Signature | Notes |
+|--------|-----------|-------|
+| `name` | `() → str` | Short lowercase identifier, e.g. `"kcf"`, `"mosse"`, `"nanotrack"`. Used in health-report process names and ground-station telemetry. |
+| `init` | `(frame, bbox) → None` | Initialise or reinitialise on a new target. |
+| `update` | `(frame) → TrackerEstimate` | Returns `NO_LOCK` before first `init`, `LOST` on tracking failure. |
+| `close` | `() → None` | Release resources (NPU handle, OpenCV tracker). |
+
 #### perception/kcf/
 
-**`kcf/worker.py`** — thin process entry point; constructs `KCFTracker` and
-`CCVTrackerWorker`, then calls `worker.run()`. The full IPC loop is in
-`CCVTrackerWorker`.
+**`kcf/worker.py`** — thin process entry point for the KCF systemd service.
+Constructs `KCFTracker` and `CCVTrackerWorker`, then calls `worker.run()`.
+The full IPC loop is in `CCVTrackerWorker`. Do not import this from dev
+launchers — use `ccv_tracker_worker.run_from_config` instead.
 
 Rate is not artificially limited — KCF runs as fast as the CPU allows (~200Hz
 typical). This is intentional: KCF is the high-rate fallback tracker.
@@ -760,27 +794,29 @@ typical). This is intentional: KCF is the high-rate fallback tracker.
 **`kcf/tracker.py`**
 
 - `KCFTracker(config)` — wraps `cv2.TrackerKCF_create()`
-- `init(frame: np.ndarray, bbox: BoundingBox) → None`
-- `update(frame: np.ndarray) → TrackerEstimate` — returns confidence 0 if
-  tracking fails
+- `name() → str` — returns `"kcf"`
+- `init(frame, bbox)`, `update(frame) → TrackerEstimate`, `close()` (no-op)
+- Returns confidence 0 if tracking fails
 
 #### perception/mosse/
 
 **`mosse/tracker.py`**
 
 - `MOSSETracker()` — wraps `cv2.legacy.TrackerMOSSE.create()`; no tunable params
+- `name() → str` — returns `"mosse"`
 - `init(frame, bbox)`, `update(frame) → TrackerEstimate`, `close()` (no-op)
 - Confidence is binary: 1.0 on success, 0.0 on failure; health is `NOMINAL` or
   `LOST`, never `UNCERTAIN`
 
-**`mosse/worker.py`** — thin process entry point; constructs `MOSSETracker` and
-`CCVTrackerWorker`, then calls `worker.run()`.
+**`mosse/worker.py`** — thin process entry point for the MOSSE systemd service.
+Constructs `MOSSETracker` and `CCVTrackerWorker`, then calls `worker.run()`.
 
 #### perception/nanotrack/
 
-**`nanotrack/worker.py`** — thin process entry point; constructs `NanoTracker`
-and `NCVTrackerWorker`, then calls `worker.run()`. The full IPC loop (including
-SIGTERM / `tracker.close()`) is in `NCVTrackerWorker`.
+**`nanotrack/worker.py`** — thin process entry point for the NanoTrack systemd
+service. Constructs `NanoTracker` and `NCVTrackerWorker`, then calls
+`worker.run()`. The full IPC loop (including SIGTERM / `tracker.close()`) is in
+`NCVTrackerWorker`.
 
 Rate is bottlenecked by NPU inference time (~30Hz on OPi5). This is expected —
 NanoTrack is the high-accuracy, low-rate tracker.
@@ -788,6 +824,7 @@ NanoTrack is the high-accuracy, low-rate tracker.
 **`nanotrack/tracker.py`**
 
 - `NanoTracker(runtime, backbone, head, config)`
+- `name() → str` — returns `"nanotrack"`
 - `init(frame, bbox)` — runs backbone on exemplar crop, stores template features
 - `update(frame) → TrackerEstimate` — runs backbone on search region, head to
   score and regress bbox, returns confidence from score map peak
@@ -816,7 +853,8 @@ loop:
     if topic == "ccv_tracker/estimate":  latest_ccv = msg
     else:                                latest_ncv = msg
     estimate = fuse(latest_ccv, latest_ncv, config.tracker.fusion)
-    bus.publish("target/estimate", estimate)
+    if estimate is not None:
+        bus.publish("target/estimate", estimate)
 ```
 
 Fusion runs on every new arrival from either tracker. It does not wait for both.
@@ -826,26 +864,33 @@ contributes at ~30 Hz).
 
 The `subscribe_any` call is the only use of blocking multi-topic wait in the
 entire system. All other workers use `bus.latest()` (non-blocking poll).
+`InterruptedError` from `subscribe_any` on SIGTERM is caught and causes a clean exit.
 
 **`fusion/fusion.py`**
-`fuse(ccv: TrackerEstimate | None, ncv: TrackerEstimate | None, cfg) → TargetEstimate`
+`fuse(ccv: TrackerEstimate | None, ncv: TrackerEstimate | None, cfg) → TargetEstimate | None`
+
+Returns `None` before any estimate has arrived (startup transient — worker skips publish).
 
 Logic:
 
-1. If neither has a lock → return `tracker_health=TrackerHealth.NO_LOCK`
-2. Staleness check: compare `nano.timestamp_ns` to `monotonic_ns()` **at the
-   time of this fuse() call** (not to the KCF timestamp). If the delta exceeds
-   `cfg.nano_staleness_ms` → treat nano as None. Using call-time monotonic_ns
-   is critical: NPU inference time can vary (e.g. cold start, RKNN queue depth),
-   so the gap between when NanoTrack published and when fusion evaluates can
-   differ from the gap between NanoTrack and KCF timestamps.
-3. Confidence gate: if `nano.confidence > cfg.confidence_gate`
-   → use nano bbox as primary, label `active_tracker="nano"`
-4. IoU divergence check: if both present and `iou(kcf.bbox, nano.bbox) < cfg.iou_divergence_thresh`
-   → confidence is penalised, health = `TrackerHealth.UNCERTAIN`
+1. Staleness check: drop NCV estimate if `monotonic_ns() - ncv.timestamp_ns > cfg.nano_staleness_ms`.
+   Using call-time monotonic_ns is critical: NPU inference time can vary (e.g. cold
+   start, RKNN queue depth), so the gap between NanoTrack publish and fusion evaluate
+   can differ from the gap between NanoTrack and CCV timestamps.
+2. **Passthrough** — if only one tracker is publishing (the other is `None`), its
+   estimate is forwarded directly with no fusion arithmetic. `active_tracker` is set
+   to `ActiveTracker.CCV` or `ActiveTracker.NANO` accordingly. This means the system
+   works correctly when only a CCV tracker is running (no NPU) or only an NCV tracker.
+   `tracker_health` propagates unchanged, so `NO_LOCK` before first lock-on flows
+   through to guidance and control without special-casing in the fusion layer.
+3. Both `NO_LOCK` → passthrough CCV with `NO_LOCK` health (no fusion needed).
+4. Confidence gate: if `ncv.confidence > cfg.confidence_gate`
+   → use nano bbox as primary, label `active_tracker=ActiveTracker.NANO`
 5. Otherwise: weighted average of bboxes by respective confidence scores,
-   label `active_tracker="fused"`
-6. Compute `centroid_norm` from fused bbox: `((x + w/2 - 0.5) * 2, (y + h/2 - 0.5) * 2)`
+   label `active_tracker=ActiveTracker.FUSED`
+6. IoU divergence check: if `iou(ccv.bbox, ncv.bbox) < cfg.iou_divergence_thresh`
+   → confidence is penalised by 50%, health = `TrackerHealth.UNCERTAIN`
+7. Compute `centroid_norm` from fused bbox: `((x + w/2 - 0.5) * 2, (y + h/2 - 0.5) * 2)`
 
 ---
 
@@ -1074,7 +1119,10 @@ FastAPI endpoints:
 
 - `GET /stream` — MJPEG stream of annotated camera frames at ~15Hz
 - `GET /telemetry` — Server-Sent Events; pushes latest `TargetEstimate`,
-  `AttitudeState`, and all `HealthReport` messages as JSON every 100ms
+  `AttitudeState`, and all `HealthReport` messages as JSON every 100ms.
+  Also includes `ccv_algo` and `ncv_algo` strings derived from health-report
+  process names (e.g. `"ccv_kcf"` → `ccv_algo: "kcf"`). These update whenever
+  a new health report arrives and require no additional bus topic.
 - `POST /lockon` — body `{"x","y","w","h"}` normalised; publishes `LockOnCmd`
 - `GET /health` — returns JSON summary of all process health states
 

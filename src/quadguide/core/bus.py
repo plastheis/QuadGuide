@@ -144,10 +144,19 @@ class Bus:
         Constraint: at most one process may block on a given topic at a time.
         The pipe holds one wakeup byte; two concurrent subscribers on the same
         topic means one will miss a wakeup signal.
+
+        The retry loop handles a race where publish() drains the wakeup byte
+        (under lock) between select returning and our os.read — EAGAIN means
+        a concurrent publish beat us to it; re-enter select and try again.
         """
         state = self._get_state(topic)
-        select.select([state.r_fd], [], [])  # blocks; O_NONBLOCK on fd doesn't affect select
-        os.read(state.r_fd, 1)              # drain the wakeup byte (fd is ready, won't block)
+        while True:
+            select.select([state.r_fd], [], [])
+            try:
+                os.read(state.r_fd, 1)
+                break
+            except BlockingIOError:
+                continue  # concurrent publish drained the byte; re-select
         return self.latest(topic)
 
     def subscribe_any(self, topics: list[str]) -> tuple[str, object]:
@@ -158,14 +167,22 @@ class Bus:
         ready fds, but only ready[0] is processed. The remaining fds retain their
         wakeup bytes and will fire immediately on the next call — this is correct,
         not a missed message.
+
+        The retry loop handles a race where publish() drains the wakeup byte
+        (under lock) between select returning and our os.read — EAGAIN means
+        a concurrent publish beat us to it; re-enter select and try again.
         """
         states = [self._get_state(t) for t in topics]  # KeyError if any unknown
         r_fds = [s.r_fd for s in states]
-        ready, _, _ = select.select(r_fds, [], [])
-        idx = r_fds.index(ready[0])
-        os.read(states[idx].r_fd, 1)
-        topic_name = topics[idx]
-        return topic_name, self.latest(topic_name)
+        while True:
+            ready, _, _ = select.select(r_fds, [], [])
+            idx = r_fds.index(ready[0])
+            try:
+                os.read(states[idx].r_fd, 1)
+                break
+            except BlockingIOError:
+                continue  # concurrent publish drained the byte; re-select
+        return topics[idx], self.latest(topics[idx])
 
     def detach(self) -> None:
         """Close this process's fd references to shared memory and pipes.

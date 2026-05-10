@@ -62,5 +62,8 @@ class MOSSETracker:
             tracker_health=TrackerHealth.LOST,
         )
 
+    def name(self) -> str:
+        return "mosse"
+
     def close(self) -> None:
         pass

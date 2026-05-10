@@ -27,11 +27,12 @@ class NCVTrackerWorker:
         self._config       = config or {}
         self._last_seq: int | None = None
         self._stop         = False
+        self._proc_name    = f"ncv_{tracker.name()}"
 
     def run(self) -> None:
-        log = setup_logging("ncv_tracker", self._config)
+        log = setup_logging(self._proc_name, self._config)
         signal.signal(signal.SIGTERM, self._handle_sigterm)
-        log.info("ncv_tracker: started")
+        log.info(f"{self._proc_name}: started")
         i = 0
         while not self._stop:
             self._check_lockon()
@@ -43,12 +44,12 @@ class NCVTrackerWorker:
             if i % _HEALTH_EVERY == 0:
                 self._bus.publish(
                     "system/health",
-                    HealthReport(monotonic_ns(), "ncv_tracker", ProcessState.OK, ""),
+                    HealthReport(monotonic_ns(), self._proc_name, ProcessState.OK, ""),
                 )
 
         self._tracker.close()  # release NPU handle before exit
         self._bus.detach()
-        log.info("ncv_tracker: stopped")
+        log.info(f"{self._proc_name}: stopped")
 
     def _check_lockon(self) -> None:
         cmd: LockOnCmd | None = self._bus.latest("lockon/cmd")

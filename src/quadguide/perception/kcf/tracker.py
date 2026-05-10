@@ -60,6 +60,9 @@ class KCFTracker:
             tracker_health=TrackerHealth.LOST,
         )
 
+    def name(self) -> str:
+        return "kcf"
+
     def close(self) -> None:
         pass
 

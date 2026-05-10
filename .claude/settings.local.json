@@ -45,7 +45,9 @@
       "Bash(pkill -f \"pytest.*ground\")",
       "Bash(.venv/bin/pip show *)",
       "Bash(git filter-branch *)",
-      "Bash(FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --msg-filter 'sed \"/^Co-Authored-By:.*[Cc]laude/d\"' -- --all)"
+      "Bash(FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --msg-filter 'sed \"/^Co-Authored-By:.*[Cc]laude/d\"' -- --all)",
+      "Read(//var/log/**)",
+      "Read(//var/log/quadguide/**)"
     ]
   }
 }

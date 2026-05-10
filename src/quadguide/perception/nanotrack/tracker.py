@@ -110,5 +110,8 @@ class NanoTracker:
             tracker_health=health,
         )
 
+    def name(self) -> str:
+        return "nanotrack"
+
     def close(self) -> None:
         self._runtime.close()

@@ -107,6 +107,14 @@ async def _sse(app: FastAPI):
         report   = app.state.bus.latest("system/health")
         if report is not None:
             app.state.process_health[report.process] = report.state.value
+        # Derive active algo names from health process keys ("ccv_kcf" → "kcf")
+        ccv_algo = next(
+            (k[4:] for k in app.state.process_health if k.startswith("ccv_")), None
+        )
+        ncv_algo = next(
+            (k[4:] for k in app.state.process_health if k.startswith("ncv_")), None
+        )
+
         data = {
             # target/estimate
             "tracker_health": estimate.tracker_health.value  if estimate else None,
@@ -119,9 +127,11 @@ async def _sse(app: FastAPI):
             "centroid_x":     estimate.centroid_norm[0]       if estimate else None,
             "centroid_y":     estimate.centroid_norm[1]       if estimate else None,
             # ccv_tracker/estimate
+            "ccv_algo":   ccv_algo,
             "ccv_health": ccv.tracker_health.value if ccv else None,
             "ccv_conf":   ccv.confidence            if ccv else None,
             # ncv_tracker/estimate
+            "ncv_algo":   ncv_algo,
             "ncv_health": ncv.tracker_health.value if ncv else None,
             "ncv_conf":   ncv.confidence            if ncv else None,
             # fc/attitude

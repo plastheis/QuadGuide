@@ -38,5 +38,5 @@ def draw_overlay(frame: np.ndarray, estimate: TargetEstimate | None) -> bytes:
 
 
 def _encode(frame: np.ndarray) -> bytes:
-    _, buf = cv2.imencode(".jpg", frame, _JPEG_PARAMS)
+    _, buf = cv2.imencode(".jpg", np.ascontiguousarray(frame), _JPEG_PARAMS)
     return buf.tobytes()

@@ -69,8 +69,10 @@
   <!-- CCV / NCV -->
   <div class="section wide2">
     <div class="sec-title">TRACKERS</div>
+    <div class="row"><span class="lbl">ccv algo</span><span class="val dim" id="h-ccv-algo">—</span></div>
     <div class="row"><span class="lbl">ccv health</span><span class="val dim" id="h-ccv-health">—</span></div>
     <div class="row"><span class="lbl">ccv conf</span><span class="val dim" id="h-ccv-conf">—</span></div>
+    <div class="row"><span class="lbl">ncv algo</span><span class="val dim" id="h-ncv-algo">—</span></div>
     <div class="row"><span class="lbl">ncv health</span><span class="val dim" id="h-ncv-health">—</span></div>
     <div class="row"><span class="lbl">ncv conf</span><span class="val dim" id="h-ncv-conf">—</span></div>
   </div>
@@ -245,8 +247,10 @@ sse.onmessage = (ev) => {
   set('h-bbox-wh',  d.bbox_w     != null ? f(d.bbox_w, 3)     + ' / ' + f(d.bbox_h, 3)     : null);
 
   // trackers
+  set('h-ccv-algo',   d.ccv_algo);
   set('h-ccv-health', d.ccv_health);
   set('h-ccv-conf',   f(d.ccv_conf, 2));
+  set('h-ncv-algo',   d.ncv_algo);
   set('h-ncv-health', d.ncv_health);
   set('h-ncv-conf',   f(d.ncv_conf, 2));
 
