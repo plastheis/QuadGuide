@@ -96,7 +96,7 @@ def fuse(
         )
         fused_conf = max(ccv.confidence, ncv.confidence)
         active = ActiveTracker.FUSED
-        latency_ns = ccv.latency_ns
+        latency_ns = ccv.latency_ns  # CCV is the canonical latency reference in blended mode
 
     # IoU divergence: penalise confidence and flag health
     health = TrackerHealth.NOMINAL
