@@ -52,7 +52,8 @@
       "Bash(pkill *)",
       "Bash(jobs *)",
       "Bash(timeout 60 tail -f /tmp/claude-1000/-home-plas-quadguide/eb414035-a1b9-4f4a-aeb0-b8576e19d1b8/tasks/bwwdyhixo.output)",
-      "Bash(echo \"EXIT CODE: $?\")"
+      "Bash(echo \"EXIT CODE: $?\")",
+      "Bash(gh api *)"
     ]
   }
 }

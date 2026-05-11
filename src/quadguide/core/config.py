@@ -73,12 +73,12 @@ class MOSSEConfig:
 
 @dataclass(frozen=True)
 class TrackerConfig:
-    ccv: str          # "kcf" | "mosse"
-    ncv: str          # "nanotrack"
-    kcf: KCFConfig
-    nanotrack: NanotrackConfig
     fusion: FusionConfig
-    mosse: MOSSEConfig = field(default_factory=MOSSEConfig)
+    ccv: str | None = None          # "kcf" | "mosse" | None
+    ncv: str | None = None          # "nanotrack" | None
+    kcf: KCFConfig | None = None
+    nanotrack: NanotrackConfig | None = None
+    mosse: MOSSEConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -214,25 +214,27 @@ def cfg_airframe(d: dict) -> AirframeConfig:
 
 def cfg_tracker(d: dict) -> TrackerConfig:
     t = d["tracker"]
+    kcf_raw = t.get("kcf")
+    nt_raw = t.get("nanotrack")
     return TrackerConfig(
-        ccv=t["ccv"],
-        ncv=t["ncv"],
-        kcf=KCFConfig(
-            detect_thresh=t["kcf"]["detect_thresh"],
-            sigma=t["kcf"]["sigma"],
-            lambda_=t["kcf"]["lambda_"],
-        ),
-        nanotrack=NanotrackConfig(
-            exemplar_sz=t["nanotrack"]["exemplar_sz"],
-            instance_sz=t["nanotrack"]["instance_sz"],
-            score_threshold=t["nanotrack"]["score_threshold"],
-        ),
         fusion=FusionConfig(
             confidence_gate=t["fusion"]["confidence_gate"],
             iou_divergence_thresh=t["fusion"]["iou_divergence_thresh"],
             ncv_staleness_ms=t["fusion"]["ncv_staleness_ms"],
         ),
-        mosse=MOSSEConfig(),
+        ccv=t.get("ccv"),
+        ncv=t.get("ncv"),
+        kcf=KCFConfig(
+            detect_thresh=kcf_raw["detect_thresh"],
+            sigma=kcf_raw["sigma"],
+            lambda_=kcf_raw["lambda_"],
+        ) if kcf_raw else None,
+        nanotrack=NanotrackConfig(
+            exemplar_sz=nt_raw["exemplar_sz"],
+            instance_sz=nt_raw["instance_sz"],
+            score_threshold=nt_raw["score_threshold"],
+        ) if nt_raw else None,
+        mosse=MOSSEConfig() if "mosse" in t else None,
     )
 
 

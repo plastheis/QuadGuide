@@ -12,12 +12,15 @@ from quadguide.perception.fusion.fusion import fuse
 __all__ = ["run"]
 
 _HEALTH_EVERY = 100
-_SUBSCRIBE_TOPICS = ["ccv_tracker/estimate", "ncv_tracker/estimate"]
-
-
 def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     log = setup_logging("fusion", config)
-    fcfg = cfg_tracker(config).fusion
+    tcfg = cfg_tracker(config)
+    fcfg = tcfg.fusion
+    subscribe_topics = []
+    if tcfg.ccv is not None:
+        subscribe_topics.append("ccv_tracker/estimate")
+    if tcfg.ncv is not None:
+        subscribe_topics.append("ncv_tracker/estimate")
     stop = False
 
     def _on_sigterm(sig, frame):
@@ -33,7 +36,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     log.info("fusion: started")
     while not stop:
         try:
-            topic, msg = bus.subscribe_any(_SUBSCRIBE_TOPICS)
+            topic, msg = bus.subscribe_any(subscribe_topics)
         except (InterruptedError, OSError):
             break
 
