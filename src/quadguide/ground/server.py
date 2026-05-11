@@ -36,7 +36,6 @@ def create_app(bus, frame_buffer) -> FastAPI:
         app.state.lockon_seq     = 0
         app.state.process_health: dict[str, str] = {}
         app.state.latency_window: deque = deque(maxlen=20)
-        app.state.test_mode_break_after_one = False
         task = asyncio.create_task(_health_task(app))
         try:
             yield
@@ -108,8 +107,6 @@ async def _sse(app: FastAPI):
             sum(app.state.latency_window) / len(app.state.latency_window) / 1e6
             if app.state.latency_window else None
         )
-        # If in test mode, break after yielding once
-        should_break = getattr(app.state, "test_mode_break_after_one", False)
         ccv      = app.state.bus.latest("ccv_tracker/estimate")
         ncv      = app.state.bus.latest("ncv_tracker/estimate")
         attitude = app.state.bus.latest("fc/attitude")
@@ -175,8 +172,6 @@ async def _sse(app: FastAPI):
             "latency_avg_ms": avg_ms,
         }
         yield f"data: {json.dumps(data)}\n\n"
-        if should_break:
-            break
 
 
 async def _health_task(app: FastAPI) -> None:

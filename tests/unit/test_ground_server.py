@@ -1,5 +1,6 @@
 import json
 import pytest
+import asyncio
 from starlette.testclient import TestClient
 
 from quadguide.core.messages import (
@@ -77,6 +78,37 @@ def test_lockon_seq_increments(bus_client):
     assert cmds[1].seq == 2
 
 
+async def _get_one_sse_event_async(app) -> dict:
+    """
+    Reads one SSE event directly from the async generator without using TestClient.
+    """
+    from quadguide.ground.server import _sse
+
+    gen = _sse(app)
+    async for line in gen:
+        if line.startswith("data:"):
+            return json.loads(line[len("data:"):].strip())
+    raise AssertionError("no SSE event received")
+
+
+def _read_one_sse_event(client, path: str) -> dict:
+    """
+    Reads one SSE event from the streaming endpoint.
+    Uses asyncio to drive the async generator directly.
+    """
+    # Run the async generator in a limited scope
+    async def get_event():
+        return await _get_one_sse_event_async(client.app)
+
+    # Run with a timeout to prevent infinite loops
+    try:
+        return asyncio.run(asyncio.wait_for(get_event(), timeout=1.0))
+    except asyncio.TimeoutError:
+        raise AssertionError("SSE stream timed out")
+    except Exception as e:
+        raise AssertionError(f"Failed to read SSE event: {e}")
+
+
 @pytest.fixture
 def client_with_estimate():
     class _EstimateBus(_MockBus):
@@ -95,46 +127,6 @@ def client_with_estimate():
     app = create_app(_EstimateBus(), _MockFrameBuffer())
     with TestClient(app) as c:
         yield c
-
-
-def _read_one_sse_event(client, path: str) -> dict:
-    # For SSE testing, we use a workaround to break out of infinite streaming.
-    # We set a flag on the app to break after one event, run the request in a thread
-    # with a timeout, then restore the flag.
-    import threading
-    import time
-
-    # Set a test mode flag that will make _sse break after yielding one event
-    client.app.state.test_mode_break_after_one = True
-
-    result = []
-    error = []
-
-    def fetch():
-        try:
-            # Use stream() which should now break after getting one event
-            with client.stream("GET", path) as resp:
-                for line in resp.iter_lines():
-                    if line.startswith("data:"):
-                        result.append(json.loads(line[len("data:"):].strip()))
-                        return
-                if not result:
-                    error.append("No SSE data line received")
-        except Exception as e:
-            error.append(f"{type(e).__name__}: {e}")
-        finally:
-            client.app.state.test_mode_break_after_one = False
-
-    thread = threading.Thread(target=fetch)
-    thread.daemon = True
-    thread.start()
-    thread.join(timeout=2.0)
-
-    if error:
-        raise AssertionError(error[0])
-    if not result:
-        raise AssertionError("SSE stream timed out or no data received")
-    return result[0]
 
 
 def test_telemetry_includes_latency_keys(client):
