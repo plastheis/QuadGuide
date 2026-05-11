@@ -78,31 +78,18 @@ def test_lockon_seq_increments(bus_client):
     assert cmds[1].seq == 2
 
 
-async def _get_one_sse_event_async(app) -> dict:
-    """
-    Reads one SSE event directly from the async generator without using TestClient.
-    """
+def _read_one_sse_event(client) -> dict:
+    # TestClient.stream() hangs on infinite SSE generators; drive _sse directly.
     from quadguide.ground.server import _sse
 
-    gen = _sse(app)
-    async for line in gen:
-        if line.startswith("data:"):
-            return json.loads(line[len("data:"):].strip())
-    raise AssertionError("no SSE event received")
+    async def _one():
+        async for line in _sse(client.app):
+            if line.startswith("data:"):
+                return json.loads(line[len("data:"):].strip())
+        raise AssertionError("no SSE event received")
 
-
-def _read_one_sse_event(client, path: str) -> dict:
-    """
-    Reads one SSE event from the streaming endpoint.
-    Uses asyncio to drive the async generator directly.
-    """
-    # Run the async generator in a limited scope
-    async def get_event():
-        return await _get_one_sse_event_async(client.app)
-
-    # Run with a timeout to prevent infinite loops
     try:
-        return asyncio.run(asyncio.wait_for(get_event(), timeout=1.0))
+        return asyncio.run(asyncio.wait_for(_one(), timeout=1.0))
     except asyncio.TimeoutError:
         raise AssertionError("SSE stream timed out")
     except Exception as e:
@@ -130,22 +117,22 @@ def client_with_estimate():
 
 
 def test_telemetry_includes_latency_keys(client):
-    data = _read_one_sse_event(client, "/telemetry")
+    data = _read_one_sse_event(client)
     assert "latency_ms" in data
     assert "latency_avg_ms" in data
 
 
 def test_telemetry_latency_null_when_no_estimate(client):
-    data = _read_one_sse_event(client, "/telemetry")
+    data = _read_one_sse_event(client)
     assert data["latency_ms"] is None
     assert data["latency_avg_ms"] is None
 
 
 def test_telemetry_latency_ms_matches_estimate(client_with_estimate):
-    data = _read_one_sse_event(client_with_estimate, "/telemetry")
+    data = _read_one_sse_event(client_with_estimate)
     assert data["latency_ms"] == pytest.approx(5.0, rel=0.01)
 
 
 def test_telemetry_latency_avg_ms_after_one_sample(client_with_estimate):
-    data = _read_one_sse_event(client_with_estimate, "/telemetry")
+    data = _read_one_sse_event(client_with_estimate)
     assert data["latency_avg_ms"] == pytest.approx(5.0, rel=0.01)
