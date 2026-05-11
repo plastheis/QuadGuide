@@ -50,6 +50,11 @@ class FusionConfig:
     confidence_gate: float
     iou_divergence_thresh: float
     ncv_staleness_ms: int
+    algorithm: str = "confidence_weighted"  # "confidence_weighted" | "iou_gated" | "passthrough"
+    fast_tracker: str = "ccv"              # "ccv" | "ncv" — which tracker is the high-rate sync source
+    iou_velocity_ema_alpha: float = 0.3    # iou_gated: EMA smoothing for velocity dead-reckoning
+    iou_thresh_high: float = 0.7           # iou_gated: above this, light blend toward slow tracker
+    iou_thresh_low: float = 0.3            # iou_gated: below this, use slow tracker directly
 
 
 @dataclass(frozen=True)
@@ -221,6 +226,11 @@ def cfg_tracker(d: dict) -> TrackerConfig:
             confidence_gate=t["fusion"]["confidence_gate"],
             iou_divergence_thresh=t["fusion"]["iou_divergence_thresh"],
             ncv_staleness_ms=t["fusion"]["ncv_staleness_ms"],
+            algorithm=t["fusion"].get("algorithm", "confidence_weighted"),
+            fast_tracker=t["fusion"].get("fast_tracker", "ccv"),
+            iou_velocity_ema_alpha=t["fusion"].get("iou_velocity_ema_alpha", 0.3),
+            iou_thresh_high=t["fusion"].get("iou_thresh_high", 0.7),
+            iou_thresh_low=t["fusion"].get("iou_thresh_low", 0.3),
         ),
         ccv=t.get("ccv"),
         ncv=t.get("ncv"),
