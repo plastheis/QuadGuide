@@ -1,5 +1,6 @@
 import json
 import pytest
+import asyncio
 from starlette.testclient import TestClient
 
 from quadguide.core.messages import (
@@ -77,12 +78,35 @@ def test_lockon_seq_increments(bus_client):
     assert cmds[1].seq == 2
 
 
-def _read_one_sse_event(client, path: str) -> dict:
-    with client.stream("GET", path) as resp:
-        for line in resp.iter_lines():
-            if line.startswith("data:"):
-                return json.loads(line[len("data:"):].strip())
+async def _get_one_sse_event_async(app) -> dict:
+    """
+    Reads one SSE event directly from the async generator without using TestClient.
+    """
+    from quadguide.ground.server import _sse
+
+    gen = _sse(app)
+    async for line in gen:
+        if line.startswith("data:"):
+            return json.loads(line[len("data:"):].strip())
     raise AssertionError("no SSE event received")
+
+
+def _read_one_sse_event(client, path: str) -> dict:
+    """
+    Reads one SSE event from the streaming endpoint.
+    Uses asyncio to drive the async generator directly.
+    """
+    # Run the async generator in a limited scope
+    async def get_event():
+        return await _get_one_sse_event_async(client.app)
+
+    # Run with a timeout to prevent infinite loops
+    try:
+        return asyncio.run(asyncio.wait_for(get_event(), timeout=1.0))
+    except asyncio.TimeoutError:
+        raise AssertionError("SSE stream timed out")
+    except Exception as e:
+        raise AssertionError(f"Failed to read SSE event: {e}")
 
 
 @pytest.fixture
