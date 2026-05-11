@@ -116,9 +116,16 @@
   </div>
 
   <!-- CROSSHAIR SIZE -->
-  <div class="section">
+  <div class="section wide2">
     <div class="sec-title">CROSSHAIR</div>
     <div class="row"><span class="lbl">size</span><span class="val" id="hud-size">160 px</span></div>
+  </div>
+
+  <!-- LATENCY -->
+  <div class="section wide2">
+    <div class="sec-title">LATENCY</div>
+    <div class="row"><span class="lbl">latest</span><span class="val dim" id="h-lat-latest">—</span></div>
+    <div class="row"><span class="lbl">avg (20)</span><span class="val dim" id="h-lat-avg">—</span></div>
   </div>
 
   <!-- SYSTEM HEALTH -->
@@ -279,6 +286,12 @@ sse.onmessage = (ev) => {
   set('h-c-pitch',    f(d.ctrl_pitch_deg,    1, '°'));
   set('h-c-yaw-rate', f(d.ctrl_yaw_rate_dps, 1, '°/s'));
   set('h-c-throttle', f(d.ctrl_throttle,     3));
+
+  // latency
+  const avgMs = d.latency_avg_ms;
+  const latClass = avgMs == null ? '' : avgMs > 100 ? 'danger' : avgMs > 50 ? 'warn' : '';
+  set('h-lat-latest', f(d.latency_ms,     1, ' ms'));
+  set('h-lat-avg',    f(d.latency_avg_ms, 1, ' ms'), latClass);
 
   // system/health
   if (d.health) {
