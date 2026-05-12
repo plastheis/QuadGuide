@@ -4,10 +4,10 @@ from quadguide.core.messages import (
     TrackerHealth, ActiveTracker, ProcessState,
     BoundingBox, TrackerEstimate, TargetEstimate,
     AttitudeState, IMUFrame, AccelCmd, ControlCmd,
-    LockOnCmd, HealthReport,
+    LockOnCmd, HealthReport, ArmCmd,
     FMT_TRACKER_ESTIMATE, FMT_TARGET_ESTIMATE,
     FMT_ATTITUDE_STATE, FMT_IMU_FRAME, FMT_ACCEL_CMD,
-    FMT_CONTROL_CMD, FMT_LOCKON_CMD, FMT_HEALTH_REPORT,
+    FMT_CONTROL_CMD, FMT_LOCKON_CMD, FMT_HEALTH_REPORT, FMT_ARM_CMD,
 )
 
 
@@ -201,3 +201,19 @@ class TestRoundTrips:
         # Must not raise UnicodeDecodeError; must produce valid UTF-8 string
         assert all(ord(c) == 0x2600 for c in recovered.process)
         assert len(recovered.process) == 5  # 5 × ☀ = 15 bytes fits in 16
+
+
+class TestArmCmd:
+    def test_format_size(self):
+        assert struct.calcsize(FMT_ARM_CMD) == 9  # Q(8) + B(1)
+
+    def test_round_trip_armed_true(self):
+        msg = ArmCmd(timestamp_ns=1_000_000, armed=True)
+        r = ArmCmd.unpack(msg.pack())
+        assert r.timestamp_ns == 1_000_000
+        assert r.armed is True
+
+    def test_round_trip_armed_false(self):
+        msg = ArmCmd(timestamp_ns=2_000_000, armed=False)
+        r = ArmCmd.unpack(msg.pack())
+        assert r.armed is False

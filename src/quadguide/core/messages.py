@@ -7,10 +7,10 @@ __all__ = [
     "TrackerHealth", "ActiveTracker", "ProcessState",
     "BoundingBox",
     "TrackerEstimate", "TargetEstimate", "AttitudeState", "IMUFrame",
-    "AccelCmd", "ControlCmd", "LockOnCmd", "HealthReport",
+    "AccelCmd", "ControlCmd", "LockOnCmd", "HealthReport", "ArmCmd",
     "FMT_TRACKER_ESTIMATE", "FMT_TARGET_ESTIMATE", "FMT_ATTITUDE_STATE",
     "FMT_IMU_FRAME", "FMT_ACCEL_CMD", "FMT_CONTROL_CMD",
-    "FMT_LOCKON_CMD", "FMT_HEALTH_REPORT",
+    "FMT_LOCKON_CMD", "FMT_HEALTH_REPORT", "FMT_ARM_CMD",
 ]
 
 
@@ -77,6 +77,9 @@ FMT_HEALTH_REPORT = "!Q16sB"
 # detail is NOT on the wire — logged only.
 # pack() truncates process name to 16 UTF-8 bytes before packing.
 
+FMT_ARM_CMD = "!QB"
+# Q(8) + armed(B=1) = 9 bytes
+
 
 @dataclass(frozen=True)
 class BoundingBox:
@@ -94,6 +97,7 @@ _ST_ACCEL_CMD        = struct.Struct(FMT_ACCEL_CMD)
 _ST_CONTROL_CMD      = struct.Struct(FMT_CONTROL_CMD)
 _ST_LOCKON_CMD       = struct.Struct(FMT_LOCKON_CMD)
 _ST_HEALTH_REPORT    = struct.Struct(FMT_HEALTH_REPORT)
+_ST_ARM_CMD          = struct.Struct(FMT_ARM_CMD)
 
 
 @dataclass(frozen=True)
@@ -291,3 +295,17 @@ class HealthReport:
             state=ProcessState._from_ord[state_b],
             detail="",
         )
+
+
+@dataclass(frozen=True)
+class ArmCmd:
+    timestamp_ns: int
+    armed: bool
+
+    def pack(self) -> bytes:
+        return _ST_ARM_CMD.pack(self.timestamp_ns, int(self.armed))
+
+    @classmethod
+    def unpack(cls, data: bytes) -> ArmCmd:
+        ts, armed_b = _ST_ARM_CMD.unpack(data)
+        return cls(timestamp_ns=ts, armed=bool(armed_b))
