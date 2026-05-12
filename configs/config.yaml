@@ -7,8 +7,10 @@ platform:
     height: 480
     fps: 60
   serial:
-    port: /dev/ttyS0
-    baud: 115200
+    port: /dev/ttyS0      # UART device path — change per SBC (e.g. /dev/ttyAMA0 on RPi4)
+    baud: 420000          # CRSF standard — do not change without matching FC config
+    rx_pin: "GPIO15"      # wiring reference only — not used by driver
+    tx_pin: "GPIO14"      # wiring reference only — not used by driver
   inference:
     device: cpu             # "cpu" | "cuda" | "rknn" | "tensorrt"
     backbone: models/nanotrack_backbone.onnx
@@ -55,6 +57,10 @@ watchdog:
   target_estimate_ms: 150
   fc_attitude_ms: 50
   guidance_accel_ms: 100
+
+link:
+  tx_rate_hz: 50          # RC channels uplink rate to FC (Hz) — must stay constant to keep FC out of failsafe
+  diff_lowpass_alpha: 0.3 # LP filter alpha for attitude-derived body rates (0=heavy smooth, 1=raw)
 
 mission:
   mode: bench_hil             # "flight" | "bench_hil" | "swil"
