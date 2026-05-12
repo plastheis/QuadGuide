@@ -136,3 +136,34 @@ def test_telemetry_latency_ms_matches_estimate(client_with_estimate):
 def test_telemetry_latency_avg_ms_after_one_sample(client_with_estimate):
     data = _read_one_sse_event(client_with_estimate)
     assert data["latency_avg_ms"] == pytest.approx(5.0, rel=0.01)
+
+
+from quadguide.core.messages import ArmCmd
+
+
+def test_arm_returns_ok(client):
+    resp = client.post("/arm", json={"armed": True})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+
+
+def test_arm_publishes_arm_cmd_true(bus_client):
+    bus, client = bus_client
+    client.post("/arm", json={"armed": True})
+    arm_msgs = [(t, m) for t, m in bus.published if t == "arm/cmd"]
+    assert len(arm_msgs) == 1
+    assert isinstance(arm_msgs[0][1], ArmCmd)
+    assert arm_msgs[0][1].armed is True
+
+
+def test_arm_publishes_arm_cmd_false(bus_client):
+    bus, client = bus_client
+    client.post("/arm", json={"armed": False})
+    arm_msgs = [(t, m) for t, m in bus.published if t == "arm/cmd"]
+    assert len(arm_msgs) == 1
+    assert arm_msgs[0][1].armed is False
+
+
+def test_arm_missing_field_returns_422(client):
+    resp = client.post("/arm", json={})
+    assert resp.status_code == 422

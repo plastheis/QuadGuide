@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from quadguide.core.clock import monotonic_ns
-from quadguide.core.messages import BoundingBox, HealthReport, LockOnCmd, ProcessState
+from quadguide.core.messages import ArmCmd, BoundingBox, HealthReport, LockOnCmd, ProcessState
 from quadguide.ground import overlay
 
 _STATIC      = Path(__file__).parent / "static"
@@ -74,6 +74,12 @@ def create_app(bus, frame_buffer) -> FastAPI:
         request.app.state.bus.publish("lockon/cmd", cmd)
         return {"ok": True}
 
+    @app.post("/arm")
+    async def arm(body: _ArmBody, request: Request):
+        cmd = ArmCmd(timestamp_ns=monotonic_ns(), armed=body.armed)
+        request.app.state.bus.publish("arm/cmd", cmd)
+        return {"ok": True}
+
     return app
 
 
@@ -82,6 +88,10 @@ class _LockOnBody(BaseModel):
     y: float
     w: float
     h: float
+
+
+class _ArmBody(BaseModel):
+    armed: bool
 
 
 async def _mjpeg(app: FastAPI):

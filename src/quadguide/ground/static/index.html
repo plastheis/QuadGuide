@@ -42,6 +42,11 @@
   .hentry .hstate.dead     { color: #f44; }
   .hentry .hstate.unknown  { color: #333; }
 
+  .btn { background: #222; border: 1px solid #444; color: #ccc; font-family: monospace;
+         font-size: 11px; padding: 3px 10px; cursor: pointer; }
+  .btn:hover { background: #333; }
+  .btn.armed  { border-color: #f44; color: #f44; }
+
   #controls { color: #333; font-size: 11px; }
 </style>
 </head>
@@ -116,9 +121,19 @@
   </div>
 
   <!-- CROSSHAIR SIZE -->
-  <div class="section wide2">
+  <div class="section">
     <div class="sec-title">CROSSHAIR</div>
     <div class="row"><span class="lbl">size</span><span class="val" id="hud-size">160 px</span></div>
+  </div>
+
+  <!-- ARM CONTROL -->
+  <div class="section">
+    <div class="sec-title">ARM CONTROL</div>
+    <div class="row"><span class="lbl">status</span><span class="val dim" id="h-arm-state">DISARMED</span></div>
+    <div class="row" style="margin-top:5px;gap:6px;">
+      <button class="btn" id="btn-arm">ARM</button>
+      <button class="btn" id="btn-disarm">DISARM</button>
+    </div>
   </div>
 
   <!-- LATENCY -->
@@ -136,7 +151,7 @@
 
 </div>
 
-<div id="controls">[ + ] grow &nbsp; [ - ] shrink &nbsp; [ Enter ] lock on &nbsp; [ Esc ] cancel lock</div>
+<div id="controls">[ + ] grow &nbsp; [ - ] shrink &nbsp; [ Enter ] lock on &nbsp; [ Esc ] cancel &nbsp; [ a ] arm &nbsp; [ d ] disarm</div>
 
 <script>
 'use strict';
@@ -200,6 +215,10 @@ document.addEventListener('keydown', (e) => {
     drawCrosshair();
   } else if (e.key === 'Enter') {
     sendLockon();
+  } else if (e.key === 'a') {
+    sendArm(true);
+  } else if (e.key === 'd') {
+    sendArm(false);
   }
 });
 
@@ -315,6 +334,27 @@ sse.onerror = () => {
   document.getElementById('health-grid').innerHTML =
     '<span class="hstate danger">connection lost</span>';
 };
+
+// ── Arm control ────────────────────────────────────────────────────────────
+
+let _armed = false;
+
+function sendArm(armed) {
+  fetch('/arm', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({armed}),
+  }).then(r => r.json()).then(() => {
+    _armed = armed;
+    const el = document.getElementById('h-arm-state');
+    el.textContent = armed ? 'ARMED' : 'DISARMED';
+    el.className = 'val ' + (armed ? 'danger' : 'dim');
+    document.getElementById('btn-arm').classList.toggle('armed', armed);
+  }).catch(() => {});
+}
+
+document.getElementById('btn-arm').addEventListener('click', () => sendArm(true));
+document.getElementById('btn-disarm').addEventListener('click', () => sendArm(false));
 </script>
 </body>
 </html>
