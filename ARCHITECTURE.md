@@ -14,7 +14,7 @@ tracking quadcopter. It runs on a companion computer (initially Raspberry Pi 4,
 target RK3576 or RK3588 board) mounted on the airframe. It receives camera frames, runs two
 parallel object trackers, fuses their outputs, computes proportional navigation
 guidance commands, and sends roll/pitch setpoints to an ESP-FC flight controller
-over UART using the MSP v2 protocol.
+over UART using the CRSF protocol (420000 baud, bidirectional).
 
 ### Companion repo
 
@@ -35,7 +35,7 @@ library. Tracker algorithm code is ported manually from quadtrack into
 │  perception ──→ guidance        │
 │  guidance ──→ control           │
 │  control ──→ UART ──→ ESP-FC    │
-│  ESP-FC ──→ UART ──→ link       │
+│  ESP-FC ──→ UART ──→            │
 │  link ──→ bus (attitude/IMU)    │
 └─────────────────────────────────┘
 ```
@@ -224,12 +224,16 @@ quadguide/
 
 [link worker]                               [ground worker]
   rx loop:                                    subscribe all topics
-    parse MSP frames from UART                serve web UI on :8080
-    bus.publish("fc/attitude", att)           handle POST /lockon
-    bus.publish("fc/imu", imu)                  → bus.publish("lockon/cmd", cmd)
-  tx loop:                                    stream annotated MJPEG
-    cmd = bus.latest("control/cmd")
-    write MSP_SET_RAW_RC to UART
+    parse CRSF frames from UART (420kbaud)    serve web UI on :8080
+    decode ATTITUDE (0x1E)                    handle POST /lockon
+    differentiate angles → body rates           → bus.publish("lockon/cmd", cmd)
+    bus.publish("fc/attitude", att)           handle POST /arm
+    bus.publish("fc/imu", imu)                  → bus.publish("arm/cmd", cmd)
+  tx loop (50 Hz, starts immediately):       stream annotated MJPEG
+    cmd     = bus.latest("control/cmd")
+    arm_cmd = bus.latest("arm/cmd")
+    write CRSF RC_CHANNELS_PACKED to UART
+    (FC enters failsafe if uplink stops)
 
                     ↓ target/estimate
                     ↓ fc/attitude
@@ -915,23 +919,23 @@ cause.
 On serial disconnect: log error, attempt reconnect every 500ms, publish
 `HealthReport("link", "degraded")` during outage.
 
-**`link/msp.py`**
-MSP v2 protocol implementation.
+**`link/crsf.py`**
+CRSF protocol implementation. No bus or serial dependencies.
+- `CRSF_SYNC = 0xC8`, `CRSF_ATTITUDE = 0x1E`, `CRSF_RC_CHANNELS = 0x16`
+- `crc8(data: bytes) → int` — CRC8 with poly 0xD5, precomputed lookup table
+- `CRSFFrame` dataclass: `type`, `payload`, `timestamp_ns`
+- `CRSFParser` — stateful byte-by-byte parser; states: WAIT_SYNC → READ_LEN → READ_TYPE → READ_PAYLOAD → READ_CRC; resets on bad length or CRC mismatch
+- `build_frame(type, payload) → bytes` — `[0xC8][len][type][payload][crc]`
+- `pack_channels(channels: list[int]) → bytes` — packs 16 × 11-bit values into 22 bytes, LSB-first
 
-- `encode_cmd(cmd_id: int, payload: bytes) → bytes` — builds `$X<` framed packet
-  with CRC8-DVB-S2
-- `MSPParser` — stateful byte-by-byte parser; calls callback on complete frame
-- `MSPFrame` dataclass: `cmd_id`, `payload`, `timestamp_ns`
+**`link/differentiator.py`**
+`AttitudeDifferentiator(alpha: float)` — finite-difference body rate estimator with per-axis first-order LP filter. Yaw uses shortest-path angular difference to handle ±180° wrap. `alpha=1.0` = no filtering, `alpha→0` = heavy smoothing.
 
 **`link/espfc.py`**
-ESP-FC specific knowledge:
-
-- `parse_attitude(frame: MSPFrame) → AttitudeState` — `MSP_ATTITUDE` (cmd 108)
-- `parse_imu(frame: MSPFrame) → IMUFrame` — `MSP_RAW_IMU` (cmd 102)
-- `encode_rc(cmd: ControlCmd) → bytes` — maps roll/pitch/yaw/throttle to 8
-  RC channel values (1000–2000 µs) for `MSP_SET_RAW_RC` (cmd 200)
-- RC channel mapping: ch1=roll, ch2=pitch, ch3=throttle, ch4=yaw;
-  ch5-8 are held at mid (1500) unless arming logic requires otherwise
+ESP-FC specific encoding/decoding.
+- `decode_attitude(frame, diff) → (AttitudeState, IMUFrame)` — unpacks int16 pitch/roll/yaw (units: 100 µrad), calls differentiator for body rates, returns `AttitudeState` with angles+rates and `IMUFrame` with gx/gy/gz from diff, ax=ay=az=0
+- `encode_rc(cmd, armed) → bytes` — maps ControlCmd to CRSF RC_CHANNELS_PACKED; CH1=roll, CH2=pitch, CH3=throttle, CH4=yaw, CH5=arm (1811 armed / 172 disarmed), CH6–16=992
+- `us_to_ticks(us) → int`, `ticks_to_us(ticks) → float` — standard CRSF conversion
 
 **`link/serial_port.py`**
 
@@ -1152,8 +1156,9 @@ Single-file web UI (vanilla JS, no framework):
 | `ccv_tracker/estimate`   | TrackerEstimate       | ccv worker       | fusion worker                        | ~200 Hz          |
 | `ncv_tracker/estimate`   | TrackerEstimate       | ncv worker       | fusion worker                        | ~30 Hz           |
 | `target/estimate`        | TargetEstimate        | fusion worker    | guidance, control (watchdog), ground | ~200 Hz          |
-| `fc/attitude`     | AttitudeState         | link worker      | guidance, control (watchdog), ground | 100–200 Hz      |
-| `fc/imu`          | IMUFrame              | link worker      | ground                               | 200+ Hz          |
+| `fc/attitude`     | AttitudeState         | link worker      | guidance, control (watchdog), ground | 50–100 Hz        |
+| `fc/imu`          | IMUFrame              | link worker      | ground                               | 50–100 Hz (gx/gy/gz derived; ax=ay=az=0) |
+| `arm/cmd`         | ArmCmd                | ground worker    | link worker                          | event-driven     |
 | `guidance/accel`  | AccelCmd              | guidance worker  | control worker                       | 50 Hz            |
 | `control/cmd`     | ControlCmd            | control worker   | link worker                          | 100 Hz           |
 | `lockon/cmd`      | LockOnCmd             | ground worker    | ccv worker, ncv worker               | event-driven     |
@@ -1278,7 +1283,9 @@ No other source files change.
 - **No re-acquisition.** If the target is lost (`tracker_health="lost"`), the
   system enters failsafe level flight. Re-acquisition requires a new lock-on
   command from the operator.
-- **MSP_SET_RAW_RC rate** is capped at ~100Hz by ESP-FC. The control loop runs
-  at 100Hz to match. Faster commands will queue in the serial buffer.
+- **CRSF uplink rate** defaults to 50 Hz (configurable via `link.tx_rate_hz`). The uplink
+  must be continuous — if it stops, the FC enters failsafe. Body rates in `fc/attitude`
+  and `fc/imu` are finite-difference approximations of Euler angles, not raw gyro data.
+  Raw gyro accuracy requires a direct IMU connection to the companion computer.
 - **NPU handle leak on SIGKILL.** Clean shutdown (SIGTERM) is required for the
   ncv worker (nanotrack). See Section 8.
