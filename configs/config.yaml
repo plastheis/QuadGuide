@@ -7,7 +7,7 @@ platform:
     height: 480
     fps: 60
   serial:
-    port: /dev/ttyS0      # UART device path — change per SBC (e.g. /dev/ttyAMA0 on RPi4)
+    port: /dev/ttyAMA0    # UART device path — change per SBC (e.g. /dev/ttyAMA0 on RPi4)
     baud: 420000          # CRSF standard — do not change without matching FC config
     rx_pin: "GPIO15"      # wiring reference only — not used by driver
     tx_pin: "GPIO14"      # wiring reference only — not used by driver

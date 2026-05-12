@@ -53,7 +53,14 @@
       "Bash(jobs *)",
       "Bash(timeout 60 tail -f /tmp/claude-1000/-home-plas-quadguide/eb414035-a1b9-4f4a-aeb0-b8576e19d1b8/tasks/bwwdyhixo.output)",
       "Bash(echo \"EXIT CODE: $?\")",
-      "Bash(gh api *)"
+      "Bash(gh api *)",
+      "Bash(grep -E \"\\\\.\\(cpp|hpp\\)$\")",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "WebFetch(domain:medium.com)",
+      "Bash(PYTHONPATH=/home/plas/quadguide/src python3 *)"
     ]
   }
 }
