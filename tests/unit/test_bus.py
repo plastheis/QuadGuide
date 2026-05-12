@@ -13,20 +13,20 @@ def bus():
 
 
 class TestTopicRegistry:
-    def test_all_nine_topics_registered(self):
+    def test_all_ten_topics_registered(self):
         b = Bus(ring_depth=2)
         try:
             expected = {
                 "ccv_tracker/estimate", "ncv_tracker/estimate", "target/estimate",
                 "fc/attitude", "fc/imu", "guidance/accel",
-                "control/cmd", "lockon/cmd", "system/health",
+                "control/cmd", "lockon/cmd", "system/health", "arm/cmd",
             }
             assert set(b._topics.keys()) == expected
         finally:
             b.close()
 
-    def test_topics_constant_has_nine_entries(self):
-        assert len(TOPICS) == 9
+    def test_topics_constant_has_ten_entries(self):
+        assert len(TOPICS) == 10
 
 
 class TestLatest:
