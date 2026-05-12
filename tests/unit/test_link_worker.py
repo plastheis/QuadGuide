@@ -30,7 +30,7 @@ class _FakeBus:
 
 
 def test_rx_loop_publishes_attitude_and_imu():
-    payload = struct.pack(">hhh", 1000, 500, -200)  # pitch, roll, yaw (raw int16)
+    payload = struct.pack(">hhh", 500, 1000, -200)  # roll, pitch, yaw (raw int16)
     frame_bytes = build_frame(CRSF_ATTITUDE, payload)
 
     serial = _FakeSerial(frame_bytes)

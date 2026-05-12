@@ -36,8 +36,8 @@ def test_ticks_to_us_full_low():
 
 # ── decode_attitude ───────────────────────────────────────────────────────
 
-def _make_attitude_frame(pitch_raw: int, roll_raw: int, yaw_raw: int) -> CRSFFrame:
-    payload = struct.pack(">hhh", pitch_raw, roll_raw, yaw_raw)
+def _make_attitude_frame(roll_raw: int, pitch_raw: int, yaw_raw: int) -> CRSFFrame:
+    payload = struct.pack(">hhh", roll_raw, pitch_raw, yaw_raw)
     frame = build_frame(CRSF_ATTITUDE, payload)
     # Build CRSFFrame directly (timestamp doesn't matter for unit test)
     return CRSFFrame(type=CRSF_ATTITUDE, payload=payload, timestamp_ns=int(1e9))
@@ -67,7 +67,7 @@ def test_decode_attitude_imu_gyro_matches_att_rates():
     decode_attitude(_make_attitude_frame(0, 0, 0), diff)
     # Second frame: 1 second later, 1 rad change in roll
     frame2 = CRSFFrame(type=CRSF_ATTITUDE,
-                       payload=struct.pack(">hhh", 0, 10000, 0),
+                       payload=struct.pack(">hhh", 10000, 0, 0),
                        timestamp_ns=int(2e9))
     att, imu = decode_attitude(frame2, diff)
     assert imu.gx == pytest.approx(att.roll_rate_rps,  rel=1e-5)

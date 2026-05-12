@@ -16,7 +16,7 @@ _ARM_LOW      = 172   # 1000 µs — disarmed
 
 def decode_attitude(frame: CRSFFrame, diff: AttitudeDifferentiator
                     ) -> tuple[AttitudeState, IMUFrame]:
-    pitch_raw, roll_raw, yaw_raw = struct.unpack(">hhh", frame.payload[:6])
+    roll_raw, pitch_raw, yaw_raw = struct.unpack(">hhh", frame.payload[:6])
     roll_rad  = roll_raw  * 1e-4
     pitch_rad = pitch_raw * 1e-4
     yaw_rad   = yaw_raw   * 1e-4
