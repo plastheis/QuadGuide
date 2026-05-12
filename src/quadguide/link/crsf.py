@@ -49,3 +49,61 @@ def pack_channels(channels: list[int]) -> bytes:
     for i, ch in enumerate(channels):
         bits |= (ch & 0x7FF) << (i * 11)
     return bits.to_bytes(22, "little")
+
+
+class _State(IntEnum):
+    WAIT_SYNC    = 0
+    READ_LEN     = 1
+    READ_TYPE    = 2
+    READ_PAYLOAD = 3
+    READ_CRC     = 4
+
+
+class CRSFParser:
+    def __init__(self):
+        self._state     = _State.WAIT_SYNC
+        self._len       = 0
+        self._type      = 0
+        self._payload   = bytearray()
+        self._remaining = 0
+
+    def feed(self, byte: int) -> CRSFFrame | None:
+        if self._state == _State.WAIT_SYNC:
+            if byte == CRSF_SYNC:
+                self._state = _State.READ_LEN
+
+        elif self._state == _State.READ_LEN:
+            if byte < 2 or byte > _MAX_LEN:
+                self._reset()
+            else:
+                self._len       = byte
+                self._remaining = byte - 2  # payload bytes = len - type(1) - crc(1)
+                self._state     = _State.READ_TYPE
+
+        elif self._state == _State.READ_TYPE:
+            self._type    = byte
+            self._payload = bytearray()
+            self._state   = _State.READ_PAYLOAD if self._remaining > 0 else _State.READ_CRC
+
+        elif self._state == _State.READ_PAYLOAD:
+            self._payload.append(byte)
+            self._remaining -= 1
+            if self._remaining == 0:
+                self._state = _State.READ_CRC
+
+        elif self._state == _State.READ_CRC:
+            self._state = _State.WAIT_SYNC
+            expected = crc8(bytes([self._type]) + self._payload)
+            if byte == expected:
+                return CRSFFrame(
+                    type=self._type,
+                    payload=bytes(self._payload),
+                    timestamp_ns=time.monotonic_ns(),
+                )
+            # CRC mismatch — drop frame silently
+
+        return None
+
+    def _reset(self) -> None:
+        self._state   = _State.WAIT_SYNC
+        self._payload = bytearray()

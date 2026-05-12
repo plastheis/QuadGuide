@@ -3,6 +3,7 @@ import pytest
 from quadguide.link.crsf import (
     crc8, build_frame, pack_channels,
     CRSFFrame, CRSF_SYNC, CRSF_ATTITUDE, CRSF_RC_CHANNELS,
+    CRSFParser,
 )
 
 
@@ -102,3 +103,89 @@ def test_pack_channels_all_independent():
     bits_mod  = int.from_bytes(packed_mod, "little")
     assert (bits_base >> 0) & 0x7FF == (bits_mod >> 0) & 0x7FF  # ch1 unchanged
     assert (bits_mod >> 22) & 0x7FF == 500                       # ch3 changed
+
+
+# --- CRSFParser ---
+
+class TestCRSFParser:
+    def _feed_all(self, parser: CRSFParser, data: bytes) -> list[CRSFFrame]:
+        results = []
+        for b in data:
+            frame = parser.feed(b)
+            if frame is not None:
+                results.append(frame)
+        return results
+
+    def test_parses_attitude_frame(self):
+        payload = struct.pack(">hhh", 100, 200, 300)
+        frame_bytes = build_frame(CRSF_ATTITUDE, payload)
+        parser = CRSFParser()
+        frames = self._feed_all(parser, frame_bytes)
+        assert len(frames) == 1
+        assert frames[0].type == CRSF_ATTITUDE
+        assert frames[0].payload == payload
+
+    def test_parses_rc_channels_frame(self):
+        payload = pack_channels([992] * 16)
+        frame_bytes = build_frame(CRSF_RC_CHANNELS, payload)
+        parser = CRSFParser()
+        frames = self._feed_all(parser, frame_bytes)
+        assert len(frames) == 1
+        assert frames[0].type == CRSF_RC_CHANNELS
+
+    def test_returns_none_until_frame_complete(self):
+        payload = struct.pack(">hhh", 0, 0, 0)
+        frame_bytes = build_frame(CRSF_ATTITUDE, payload)
+        parser = CRSFParser()
+        # All but the last byte should return None
+        for b in frame_bytes[:-1]:
+            assert parser.feed(b) is None
+        # Last byte completes the frame
+        assert parser.feed(frame_bytes[-1]) is not None
+
+    def test_ignores_non_sync_bytes(self):
+        parser = CRSFParser()
+        for b in [0x00, 0x01, 0xFF, 0xAA, 0x42]:
+            assert parser.feed(b) is None
+
+    def test_rejects_crc_mismatch(self):
+        payload = struct.pack(">hhh", 100, 200, 300)
+        frame_bytes = bytearray(build_frame(CRSF_ATTITUDE, payload))
+        frame_bytes[-1] ^= 0xFF  # corrupt CRC
+        parser = CRSFParser()
+        frames = self._feed_all(parser, bytes(frame_bytes))
+        assert len(frames) == 0
+
+    def test_recovers_after_crc_mismatch(self):
+        # Bad frame followed by a good frame — parser must recover
+        payload = struct.pack(">hhh", 100, 200, 300)
+        bad = bytearray(build_frame(CRSF_ATTITUDE, payload))
+        bad[-1] ^= 0xFF
+        good = build_frame(CRSF_ATTITUDE, payload)
+        parser = CRSFParser()
+        frames = self._feed_all(parser, bytes(bad) + good)
+        assert len(frames) == 1
+
+    def test_parses_two_consecutive_frames(self):
+        payload = struct.pack(">hhh", 1, 2, 3)
+        frame_bytes = build_frame(CRSF_ATTITUDE, payload) * 2
+        parser = CRSFParser()
+        frames = self._feed_all(parser, frame_bytes)
+        assert len(frames) == 2
+
+    def test_resets_on_oversized_length(self):
+        # Feed a sync byte followed by an invalid length (> 62)
+        parser = CRSFParser()
+        assert parser.feed(CRSF_SYNC) is None
+        assert parser.feed(63) is None  # invalid len, should reset
+        # Next valid frame should still parse
+        payload = struct.pack(">hhh", 0, 0, 0)
+        frames = self._feed_all(parser, build_frame(CRSF_ATTITUDE, payload))
+        assert len(frames) == 1
+
+    def test_frame_has_timestamp(self):
+        payload = struct.pack(">hhh", 0, 0, 0)
+        frame_bytes = build_frame(CRSF_ATTITUDE, payload)
+        parser = CRSFParser()
+        frames = self._feed_all(parser, frame_bytes)
+        assert frames[0].timestamp_ns > 0
