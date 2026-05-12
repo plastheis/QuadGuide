@@ -6,13 +6,16 @@ companion → FC uplink is working. Once a steady uplink is established, the FC
 exits failsafe and begins sending attitude telemetry back (visible in test_link_rx.py).
 
 Usage:
-    python scripts/test_link_tx.py --port /dev/ttyS0 [--baud 420000] [--rate 50]
+    python scripts/test_link_tx.py [--port /dev/ttyS0] [--baud 420000] [--rate 50]
         [--arm] [--roll 992] [--pitch 992] [--throttle 172] [--yaw 992]
+
+Defaults for --port and --baud are read from configs/config.yaml.
 
 CH5 is the arm channel. Use --arm to set it high (1811 = armed).
 Channel values are in CRSF ticks: 172 (1000µs) – 992 (1500µs) – 1811 (2000µs).
 """
 import argparse
+import os
 import sys
 import time
 
@@ -20,13 +23,21 @@ import serial
 
 sys.path.insert(0, "src")
 
+from quadguide.core.config import load_config
 from quadguide.link.crsf import build_frame, pack_channels, CRSF_RC_CHANNELS
+
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "configs", "config.yaml")
 
 
 def main():
+    cfg = load_config(_CONFIG_PATH, {})
+    serial_cfg = cfg["platform"]["serial"]
+
     parser = argparse.ArgumentParser(description="CRSF RC uplink test transmitter")
-    parser.add_argument("--port",     default="/dev/ttyS0")
-    parser.add_argument("--baud",     type=int,   default=420000)
+    parser.add_argument("--port",     default=serial_cfg["port"],
+                        help=f"Serial port (default from config: {serial_cfg['port']})")
+    parser.add_argument("--baud",     type=int,   default=serial_cfg["baud"],
+                        help=f"Baud rate (default from config: {serial_cfg['baud']})")
     parser.add_argument("--rate",     type=float, default=50.0,
                         help="Transmit rate in Hz (default: 50)")
     parser.add_argument("--arm",      action="store_true",

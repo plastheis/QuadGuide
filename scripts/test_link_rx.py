@@ -6,12 +6,15 @@ body rates. Use this to verify CRSF telemetry is reaching the companion computer
 before starting the full stack.
 
 Usage:
-    python scripts/test_link_rx.py --port /dev/ttyS0 [--baud 420000] [--duration 10] [--verbose]
+    python scripts/test_link_rx.py [--port /dev/ttyS0] [--baud 420000] [--duration 10] [--verbose]
+
+Defaults for --port and --baud are read from configs/config.yaml.
 
 With --verbose: also prints raw hex bytes and flags CRC errors.
 """
 import argparse
 import math
+import os
 import sys
 import time
 
@@ -20,14 +23,22 @@ import serial
 # Allow running from repo root without installing
 sys.path.insert(0, "src")
 
+from quadguide.core.config import load_config
 from quadguide.link.crsf import CRSFParser, CRSF_ATTITUDE
 from quadguide.link.differentiator import AttitudeDifferentiator
 
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "configs", "config.yaml")
+
 
 def main():
+    cfg = load_config(_CONFIG_PATH, {})
+    serial_cfg = cfg["platform"]["serial"]
+
     parser = argparse.ArgumentParser(description="CRSF attitude monitor")
-    parser.add_argument("--port",     default="/dev/ttyS0")
-    parser.add_argument("--baud",     type=int, default=420000)
+    parser.add_argument("--port",     default=serial_cfg["port"],
+                        help=f"Serial port (default from config: {serial_cfg['port']})")
+    parser.add_argument("--baud",     type=int, default=serial_cfg["baud"],
+                        help=f"Baud rate (default from config: {serial_cfg['baud']})")
     parser.add_argument("--duration", type=float, default=None,
                         help="Stop after N seconds (default: run forever)")
     parser.add_argument("--verbose",  action="store_true",
