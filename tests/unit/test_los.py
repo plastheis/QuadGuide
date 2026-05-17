@@ -98,7 +98,7 @@ class TestLOSBodyRateCorrection:
         result = est.update((0.0, 0.0), att, None, t0 + 20_000_000)
         fov_v = FOV_H / ASPECT
         expected_y = 2.0 / fov_v   # roll moves centroid in y
-        assert abs(result[1]) == pytest.approx(abs(expected_y), abs=0.02)
+        assert result[1] == pytest.approx(expected_y, abs=0.02)
 
     def test_yaw_rate_has_no_image_effect_at_level(self):
         """Yaw rotation around boresight does not move a centred target."""
