@@ -30,7 +30,7 @@ class _FakeBus:
 
 
 def test_rx_loop_publishes_attitude_and_imu():
-    payload = struct.pack(">hhh", 500, 1000, -200)  # roll, pitch, yaw (raw int16)
+    payload = struct.pack(">hhh", 1000, 500, -200)  # pitch, roll, yaw (raw int16, decoder order)
     frame_bytes = build_frame(CRSF_ATTITUDE, payload)
 
     serial = _FakeSerial(frame_bytes)
@@ -57,7 +57,7 @@ def test_rx_loop_publishes_attitude_and_imu():
 
 
 def test_rx_loop_ignores_non_attitude_frames():
-    from quadguide.link.crsf import pack_channels, CRSF_RC_CHANNELS
+    from quadguide.link.crsf import CRSF_RC_CHANNELS
     frame_bytes = build_frame(CRSF_RC_CHANNELS, bytes(22))
 
     serial = _FakeSerial(frame_bytes)

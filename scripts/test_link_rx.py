@@ -1,119 +1,90 @@
 #!/usr/bin/env python3
-"""Live CRSF attitude telemetry monitor.
+"""Live CRSF attitude telemetry monitor (bus-based).
 
-Parses CRSF frames from the FC's UART and prints decoded attitude + derived
-body rates. Use this to verify CRSF telemetry is reaching the companion computer
-before starting the full stack.
+Starts the link worker and reads fc/attitude from the bus. Use this to verify
+CRSF telemetry is reaching the companion computer before starting the full stack.
+The FC must be receiving an uplink (e.g. from test_link_tx.py) to send attitude
+telemetry back.
 
 Usage:
-    python scripts/test_link_rx.py [--port /dev/ttyS0] [--baud 420000] [--duration 10] [--verbose]
+    python scripts/test_link_rx.py [--duration 10]
 
-Defaults for --port and --baud are read from configs/config.yaml.
-
-With --verbose: also prints raw hex bytes and flags CRC errors.
+Defaults for serial port and baud are read from configs/config.yaml.
 """
 import argparse
 import math
+import multiprocessing
 import os
 import sys
 import time
 
-import serial
-
-# Allow running from repo root without installing
 sys.path.insert(0, "src")
 
+from quadguide.core.bus import Bus
 from quadguide.core.config import load_config
-from quadguide.link.crsf import CRSFParser, CRSF_ATTITUDE
-from quadguide.link.differentiator import AttitudeDifferentiator
+from quadguide.link import worker as link_worker
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "configs", "config.yaml")
 
 
 def main():
-    cfg = load_config(_CONFIG_PATH, {})
+    cfg        = load_config(_CONFIG_PATH, {})
     serial_cfg = cfg["platform"]["serial"]
 
-    parser = argparse.ArgumentParser(description="CRSF attitude monitor")
-    parser.add_argument("--port",     default=serial_cfg["port"],
-                        help=f"Serial port (default from config: {serial_cfg['port']})")
-    parser.add_argument("--baud",     type=int, default=serial_cfg["baud"],
-                        help=f"Baud rate (default from config: {serial_cfg['baud']})")
+    parser = argparse.ArgumentParser(description="CRSF attitude monitor (via bus)")
     parser.add_argument("--duration", type=float, default=None,
                         help="Stop after N seconds (default: run forever)")
-    parser.add_argument("--verbose",  action="store_true",
-                        help="Print raw hex bytes and flag CRC errors")
     args = parser.parse_args()
 
-    try:
-        ser = serial.Serial(args.port, args.baud, timeout=0.1)
-    except serial.SerialException as e:
-        print(f"ERROR: Cannot open {args.port}: {e}", file=sys.stderr)
-        sys.exit(1)
+    ring_depth = cfg.get("bus", {}).get("ring_depth", 8)
+    bus        = Bus(ring_depth=ring_depth)
 
-    print(f"Listening on {args.port} @ {args.baud} baud"
-          + (" (verbose)" if args.verbose else ""))
-    print("Waiting for CRSF attitude frames (FC must be receiving uplink)...\n")
+    link_proc = multiprocessing.Process(
+        target=link_worker.run, args=(cfg, bus), daemon=True
+    )
+    link_proc.start()
 
-    crsf_parser = CRSFParser()
-    diff        = AttitudeDifferentiator(alpha=1.0)
-    frame_count = 0
-    start       = time.monotonic()
-    raw_buf     = bytearray()
+    print(f"Listening via link worker on {serial_cfg['port']} @ {serial_cfg['baud']} baud")
+    print("Waiting for fc/attitude on bus (FC must be receiving uplink)...\n")
+
+    frame_count  = 0
+    start        = time.monotonic()
+    last_seen_ns = None
 
     try:
         while True:
             if args.duration and (time.monotonic() - start) >= args.duration:
                 break
 
-            chunk = ser.read(64)
-            if not chunk:
+            att = bus.latest("fc/attitude")
+            if att is None or att.timestamp_ns == last_seen_ns:
+                time.sleep(0.005)
                 continue
 
-            for byte in chunk:
-                if args.verbose:
-                    raw_buf.append(byte)
-
-                frame = crsf_parser.feed(byte)
-
-                if frame is None:
-                    continue
-
-                if args.verbose:
-                    hex_str = " ".join(f"{b:02x}" for b in raw_buf)
-                    print(f"  raw hex: {hex_str}  CRC OK")
-                    raw_buf.clear()
-
-                if frame.type != CRSF_ATTITUDE:
-                    if args.verbose:
-                        print(f"  [type=0x{frame.type:02x} skipped]")
-                    continue
-
-                import struct
-                pitch_raw, roll_raw, yaw_raw = struct.unpack(">hhh", frame.payload[:6])
-                roll_rad  = roll_raw  * 1e-4
-                pitch_rad = pitch_raw * 1e-4
-                yaw_rad   = yaw_raw   * 1e-4
-                rr, pr, yr = diff.update(roll_rad, pitch_rad, yaw_rad, frame.timestamp_ns)
-
-                t = time.monotonic() - start
-                print(
-                    f"[t={t:7.3f}s] "
-                    f"roll={math.degrees(roll_rad):7.2f}°  "
-                    f"pitch={math.degrees(pitch_rad):7.2f}°  "
-                    f"yaw={math.degrees(yaw_rad):7.2f}°  "
-                    f"rates: p={rr:+.3f} q={pr:+.3f} r={yr:+.3f} rad/s"
-                )
-                frame_count += 1
+            last_seen_ns = att.timestamp_ns
+            t = time.monotonic() - start
+            print(
+                f"[t={t:7.3f}s] "
+                f"roll={math.degrees(att.roll_rad):7.2f}°  "
+                f"pitch={math.degrees(att.pitch_rad):7.2f}°  "
+                f"yaw={math.degrees(att.yaw_rad):7.2f}°  "
+                f"rates: p={att.roll_rate_rps:+.3f} q={att.pitch_rate_rps:+.3f} "
+                f"r={att.yaw_rate_rps:+.3f} rad/s"
+            )
+            frame_count += 1
 
     except KeyboardInterrupt:
         pass
     finally:
-        ser.close()
+        link_proc.terminate()
+        link_proc.join(timeout=2)
+        bus.close()
 
     elapsed = time.monotonic() - start
-    print(f"\n{frame_count} attitude frames in {elapsed:.1f}s "
-          f"({frame_count/elapsed:.1f} Hz)" if elapsed > 0 else "")
+    print(
+        f"\n{frame_count} attitude frames in {elapsed:.1f}s "
+        f"({frame_count/elapsed:.1f} Hz)" if elapsed > 0 else ""
+    )
 
 
 if __name__ == "__main__":

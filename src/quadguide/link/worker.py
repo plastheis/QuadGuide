@@ -8,7 +8,7 @@ from quadguide.core.logging import setup_logging
 from quadguide.core.messages import HealthReport, ProcessState
 from quadguide.link.crsf import CRSF_ATTITUDE, CRSFParser
 from quadguide.link.differentiator import AttitudeDifferentiator
-from quadguide.link.espfc import decode_attitude, encode_rc
+from quadguide.link.fc import ChannelConfig, channel_config_from_cfg, decode_attitude, encode_rc
 from quadguide.link.serial_port import SerialPort
 
 
@@ -24,13 +24,14 @@ async def _rx_loop(serial, parser: CRSFParser,
             bus.publish("fc/imu", imu)
 
 
-async def _tx_loop(serial, bus, tx_rate_hz: float, log: logging.Logger) -> None:
+async def _tx_loop(serial, bus, tx_rate_hz: float,
+                   ch_cfg: ChannelConfig, log: logging.Logger) -> None:
     interval = 1.0 / tx_rate_hz
     while True:
         cmd     = bus.latest("control/cmd")
         arm_cmd = bus.latest("arm/cmd")
         armed   = arm_cmd.armed if arm_cmd else False
-        await serial.write(encode_rc(cmd, armed))
+        await serial.write(encode_rc(cmd, armed, ch_cfg))
         await asyncio.sleep(interval)
 
 
@@ -45,6 +46,7 @@ async def _run_async(config: dict, bus) -> None:
     log        = setup_logging("link", config)
     diff       = AttitudeDifferentiator(config["link"]["diff_lowpass_alpha"])
     tx_rate_hz = config["link"]["tx_rate_hz"]
+    ch_cfg     = channel_config_from_cfg(config)
     port       = config["platform"]["serial"]["port"]
     baud       = config["platform"]["serial"]["baud"]
 
@@ -65,7 +67,7 @@ async def _run_async(config: dict, bus) -> None:
 
             tasks = [
                 asyncio.create_task(_rx_loop(serial, CRSFParser(), diff, bus, log)),
-                asyncio.create_task(_tx_loop(serial, bus, tx_rate_hz, log)),
+                asyncio.create_task(_tx_loop(serial, bus, tx_rate_hz, ch_cfg, log)),
                 asyncio.create_task(_health_loop(bus, log)),
             ]
             await asyncio.gather(*tasks)

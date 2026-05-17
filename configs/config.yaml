@@ -61,6 +61,19 @@ watchdog:
 link:
   tx_rate_hz: 50          # RC channels uplink rate to FC (Hz) — must stay constant to keep FC out of failsafe
   diff_lowpass_alpha: 0.3 # LP filter alpha for attitude-derived body rates (0=heavy smooth, 1=raw)
+  channels:
+    # madflight channel calibration (µs). Used by encode_rc to map ControlCmd to CRSF ticks.
+    roll:        {min_us: 1100, mid_us: 1500, max_us: 1900}
+    pitch:       {min_us: 1100, mid_us: 1500, max_us: 1900}
+    throttle:    {min_us: 1100, max_us: 1900}
+    yaw:         {min_us: 1100, mid_us: 1500, max_us: 1900}
+    arm:         {disarmed_us: 988, armed_us: 2012}
+    flight_mode: {mode_index: 4, positions_us: [1165, 1295, 1425, 1555, 1685, 1815]}
+    # Full-stick scale — must match madflight constants exactly.
+    # Rate mode (mode_index 0-3): roll_pitch_scale = maxRollRate = 60 dps, yaw_rate_scale = maxYawRate = 160 dps
+    # Angle mode (mode_index 4-5): roll_pitch_scale = maxRoll = 30 deg, yaw_rate_scale = maxYawRate = 160 dps
+    roll_pitch_scale: 30.0
+    yaw_rate_scale: 160.0
 
 mission:
   mode: bench_hil             # "flight" | "bench_hil" | "swil"

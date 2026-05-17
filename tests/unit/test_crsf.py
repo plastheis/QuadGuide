@@ -74,18 +74,20 @@ def test_build_frame_crc_appended():
 # --- pack_channels ---
 
 def test_pack_channels_produces_22_bytes():
-    assert len(pack_channels([992] * 16)) == 22
+    assert len(pack_channels([1500.0] * 16)) == 22
 
 
 def test_pack_channels_center_values():
-    packed = pack_channels([992] * 16)
+    # 1500µs = center = 992 ticks
+    packed = pack_channels([1500.0] * 16)
     bits = int.from_bytes(packed, "little")
     for i in range(16):
         assert (bits >> (i * 11)) & 0x7FF == 992
 
 
 def test_pack_channels_min_max():
-    channels = [172, 1811] + [992] * 14
+    # 988µs = 172 ticks (CRSF min), 2012µs = 1811 ticks (CRSF max)
+    channels = [988.0, 2012.0] + [1500.0] * 14
     packed = pack_channels(channels)
     bits = int.from_bytes(packed, "little")
     assert (bits >> 0) & 0x7FF == 172    # ch1 min
@@ -93,16 +95,17 @@ def test_pack_channels_min_max():
 
 
 def test_pack_channels_all_independent():
-    # Each channel occupies its own 11-bit slot; changing ch3 should not affect ch1
-    base = [992] * 16
+    # Each channel occupies its own 11-bit slot; changing ch3 should not affect ch1.
+    # 1100µs = 352 ticks.
+    base     = [1500.0] * 16
     modified = list(base)
-    modified[2] = 500
+    modified[2] = 1100.0
     packed_base = pack_channels(base)
     packed_mod  = pack_channels(modified)
     bits_base = int.from_bytes(packed_base, "little")
     bits_mod  = int.from_bytes(packed_mod, "little")
     assert (bits_base >> 0) & 0x7FF == (bits_mod >> 0) & 0x7FF  # ch1 unchanged
-    assert (bits_mod >> 22) & 0x7FF == 500                       # ch3 changed
+    assert (bits_mod >> 22) & 0x7FF == 352                       # ch3 = 1100µs
 
 
 # --- CRSFParser ---
@@ -126,7 +129,7 @@ class TestCRSFParser:
         assert frames[0].payload == payload
 
     def test_parses_rc_channels_frame(self):
-        payload = pack_channels([992] * 16)
+        payload = pack_channels([1500.0] * 16)
         frame_bytes = build_frame(CRSF_RC_CHANNELS, payload)
         parser = CRSFParser()
         frames = self._feed_all(parser, frame_bytes)

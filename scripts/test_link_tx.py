@@ -1,77 +1,68 @@
 #!/usr/bin/env python3
-"""CRSF RC uplink transmitter test.
+"""CRSF RC uplink transmitter test (bus-based).
 
-Sends CRSF RC_CHANNELS_PACKED frames at a fixed rate. Use this to verify the
-companion → FC uplink is working. Once a steady uplink is established, the FC
-exits failsafe and begins sending attitude telemetry back (visible in test_link_rx.py).
+Starts the link worker and publishes ControlCmd/ArmCmd through the bus at a
+fixed rate. The link worker handles the µs→ticks conversion and serial writes.
 
 Usage:
-    python scripts/test_link_tx.py [--port /dev/ttyS0] [--baud 420000] [--rate 50]
+    python scripts/test_link_tx.py [--rate 50]
         [--arm] [--pre-arm-secs 2] [--arm-secs 2]
-        [--roll 992] [--pitch 992] [--throttle 172] [--yaw 992]
+        [--roll-deg 0] [--pitch-deg 0] [--throttle-norm 0.0] [--yaw-rate-dps 0]
 
-Defaults for --port and --baud are read from configs/config.yaml.
+Defaults for serial port and baud are read from configs/config.yaml.
 
 When --arm is set, the script runs a safe arming sequence:
-  Phase 1 (--pre-arm-secs): throttle=min, CH5=low  — establish uplink, FC exits failsafe
-  Phase 2 (--arm-secs):     throttle=min, CH5=high  — FC arms with throttle held down
-  Phase 3 (ongoing):        throttle=commanded, CH5=high
-
-CH5 is the arm channel. Use --arm to set it high (1811 = armed).
-Channel values are in CRSF ticks: 172 (1000µs) – 992 (1500µs) – 1811 (2000µs).
+  Phase 1 (--pre-arm-secs): throttle=0, disarmed  — establish uplink
+  Phase 2 (--arm-secs):     throttle=0, armed      — FC arms with throttle held low
+  Phase 3 (ongoing):        commanded throttle, armed
 """
 import argparse
+import multiprocessing
 import os
 import sys
 import time
 
-import serial
-
 sys.path.insert(0, "src")
 
+from quadguide.core.bus import Bus
+from quadguide.core.clock import monotonic_ns
 from quadguide.core.config import load_config
-from quadguide.link.crsf import build_frame, pack_channels, CRSF_RC_CHANNELS
+from quadguide.core.messages import ArmCmd, ControlCmd
+from quadguide.link import worker as link_worker
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "configs", "config.yaml")
 
-_MIN_THROTTLE = 352
-_ARM_HIGH     = 1811
-_ARM_LOW      = 172
-
-
-def _make_frame(roll, pitch, throttle, yaw, ch5):
-    channels = [roll, pitch, throttle, yaw, ch5, 1555, *([992] * 10)]
-    return build_frame(CRSF_RC_CHANNELS, pack_channels(channels))
-
 
 def main():
-    cfg = load_config(_CONFIG_PATH, {})
+    cfg        = load_config(_CONFIG_PATH, {})
     serial_cfg = cfg["platform"]["serial"]
 
-    parser = argparse.ArgumentParser(description="CRSF RC uplink test transmitter")
-    parser.add_argument("--port",         default=serial_cfg["port"],
-                        help=f"Serial port (default from config: {serial_cfg['port']})")
-    parser.add_argument("--baud",         type=int,   default=serial_cfg["baud"],
-                        help=f"Baud rate (default from config: {serial_cfg['baud']})")
-    parser.add_argument("--rate",         type=float, default=50.0,
-                        help="Transmit rate in Hz (default: 50)")
-    parser.add_argument("--arm",          action="store_true",
-                        help="Run arming sequence then hold armed.")
-    parser.add_argument("--pre-arm-secs", type=float, default=2.0,
+    parser = argparse.ArgumentParser(description="CRSF RC uplink test (via bus)")
+    parser.add_argument("--rate",          type=float, default=50.0,
+                        help="Publish rate in Hz (default: 50)")
+    parser.add_argument("--arm",           action="store_true",
+                        help="Run arming sequence then hold armed")
+    parser.add_argument("--pre-arm-secs",  type=float, default=2.0,
                         help="Seconds to send disarmed uplink before arming (default: 2)")
-    parser.add_argument("--arm-secs",     type=float, default=2.0,
-                        help="Seconds to hold arm switch up with throttle-min before applying throttle (default: 2)")
-    parser.add_argument("--roll",         type=int, default=992, help="CH1 ticks (default: 992)")
-    parser.add_argument("--pitch",        type=int, default=992, help="CH2 ticks (default: 992)")
-    parser.add_argument("--throttle",     type=int, default=352, help="CH3 ticks (default: 172 = min)")
-    parser.add_argument("--yaw",          type=int, default=992, help="CH4 ticks (default: 992)")
+    parser.add_argument("--arm-secs",      type=float, default=2.0,
+                        help="Seconds to hold armed with throttle-min before applying throttle (default: 2)")
+    parser.add_argument("--roll-deg",      type=float, default=0.0,
+                        help="Roll command in degrees (default: 0)")
+    parser.add_argument("--pitch-deg",     type=float, default=0.0,
+                        help="Pitch command in degrees (default: 0)")
+    parser.add_argument("--throttle-norm", type=float, default=0.0,
+                        help="Throttle 0.0–1.0 (default: 0.0)")
+    parser.add_argument("--yaw-rate-dps",  type=float, default=0.0,
+                        help="Yaw rate command in deg/s (default: 0)")
     args = parser.parse_args()
 
-    try:
-        ser = serial.Serial(args.port, args.baud, timeout=0.1)
-    except serial.SerialException as e:
-        print(f"ERROR: Cannot open {args.port}: {e}", file=sys.stderr)
-        sys.exit(1)
+    ring_depth = cfg.get("bus", {}).get("ring_depth", 8)
+    bus        = Bus(ring_depth=ring_depth)
+
+    link_proc = multiprocessing.Process(
+        target=link_worker.run, args=(cfg, bus), daemon=True
+    )
+    link_proc.start()
 
     interval = 1.0 / args.rate
     start    = time.monotonic()
@@ -81,16 +72,15 @@ def main():
     if args.arm:
         arm_end      = start + args.pre_arm_secs
         throttle_end = arm_end + args.arm_secs
-        print(f"Transmitting on {args.port} @ {args.baud} baud, {args.rate:.0f} Hz")
-        print(f"Arming sequence: {args.pre_arm_secs:.0f}s disarmed → "
-              f"{args.arm_secs:.0f}s armed/throttle-min → throttle={args.throttle}")
+        print(f"Serial: {serial_cfg['port']} @ {serial_cfg['baud']} baud  rate={args.rate:.0f} Hz")
+        print(f"Arming: {args.pre_arm_secs:.0f}s disarmed → "
+              f"{args.arm_secs:.0f}s armed/throttle-min → throttle={args.throttle_norm:.2f}")
         print("Press Ctrl+C to stop.\n")
     else:
-        arm_end = throttle_end = start  # skip sequence, go straight to commanded state
-        ch5 = _ARM_LOW
-        print(f"Transmitting on {args.port} @ {args.baud} baud, {args.rate:.0f} Hz")
-        print(f"CH1={args.roll} CH2={args.pitch} CH3={args.throttle} "
-              f"CH4={args.yaw} CH5={ch5} [DISARMED]")
+        arm_end = throttle_end = start
+        print(f"Serial: {serial_cfg['port']} @ {serial_cfg['baud']} baud  rate={args.rate:.0f} Hz")
+        print(f"roll={args.roll_deg:+.1f}° pitch={args.pitch_deg:+.1f}° "
+              f"thr={args.throttle_norm:.2f} yaw={args.yaw_rate_dps:+.1f}dps  [DISARMED]")
         print("Press Ctrl+C to stop.\n")
 
     try:
@@ -99,31 +89,36 @@ def main():
             if now < next_t:
                 continue
 
-            t = now - start
+            t  = now - start
+            ts = monotonic_ns()
 
             if args.arm and now < arm_end:
-                # Phase 1: uplink established, arm switch low, throttle min
-                ch5      = _ARM_LOW
-                throttle = _MIN_THROTTLE
-                phase    = "PHASE 1: uplink  "
+                armed        = False
+                throttle_now = 0.0
+                phase        = "PHASE 1: uplink  "
             elif args.arm and now < throttle_end:
-                # Phase 2: arm switch high, throttle still min
-                ch5      = _ARM_HIGH
-                throttle = _MIN_THROTTLE
-                phase    = "PHASE 2: arming  "
+                armed        = True
+                throttle_now = 0.0
+                phase        = "PHASE 2: arming  "
             else:
-                # Phase 3 (or no-arm mode): commanded values
-                ch5      = _ARM_HIGH if args.arm else _ARM_LOW
-                throttle = args.throttle
-                phase    = "PHASE 3: running " if args.arm else "         running "
+                armed        = args.arm
+                throttle_now = args.throttle_norm
+                phase        = "PHASE 3: running " if args.arm else "         running "
 
-            ser.write(_make_frame(args.roll, args.pitch, throttle, args.yaw, ch5))
+            bus.publish("arm/cmd", ArmCmd(ts, armed))
+            bus.publish("control/cmd", ControlCmd(
+                timestamp_ns=ts,
+                roll_deg=args.roll_deg,
+                pitch_deg=args.pitch_deg,
+                yaw_rate_dps=args.yaw_rate_dps,
+                throttle_norm=throttle_now,
+            ))
             count += 1
             print(
                 f"\r[t={t:6.2f}s] {phase} "
-                f"ch1={args.roll:4d} ch2={args.pitch:4d} "
-                f"ch3={throttle:4d} ch4={args.yaw:4d} "
-                f"ch5={ch5:4d}  frames={count}",
+                f"roll={args.roll_deg:+6.1f}°  pitch={args.pitch_deg:+6.1f}°  "
+                f"thr={throttle_now:.2f}  yaw={args.yaw_rate_dps:+6.1f}dps  "
+                f"armed={armed}  frames={count}",
                 end="", flush=True,
             )
             next_t += interval
@@ -131,7 +126,9 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        ser.close()
+        link_proc.terminate()
+        link_proc.join(timeout=2)
+        bus.close()
 
     elapsed = time.monotonic() - start
     print(f"\n\n{count} frames in {elapsed:.1f}s ({count/elapsed:.1f} Hz)" if elapsed > 0 else "")

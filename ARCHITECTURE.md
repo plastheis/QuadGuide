@@ -13,7 +13,7 @@
 tracking quadcopter. It runs on a companion computer (initially Raspberry Pi 4,
 target RK3576 or RK3588 board) mounted on the airframe. It receives camera frames, runs two
 parallel object trackers, fuses their outputs, computes proportional navigation
-guidance commands, and sends roll/pitch setpoints to an ESP-FC flight controller
+guidance commands, and sends roll/pitch setpoints to a madflight flight controller
 over UART using the CRSF protocol (420000 baud, bidirectional).
 
 ### Companion repo
@@ -931,11 +931,22 @@ CRSF protocol implementation. No bus or serial dependencies.
 **`link/differentiator.py`**
 `AttitudeDifferentiator(alpha: float)` — finite-difference body rate estimator with per-axis first-order LP filter. Yaw uses shortest-path angular difference to handle ±180° wrap. `alpha=1.0` = no filtering, `alpha→0` = heavy smoothing.
 
-**`link/espfc.py`**
-ESP-FC specific encoding/decoding.
-- `decode_attitude(frame, diff) → (AttitudeState, IMUFrame)` — unpacks int16 pitch/roll/yaw (units: 100 µrad), calls differentiator for body rates, returns `AttitudeState` with angles+rates and `IMUFrame` with gx/gy/gz from diff, ax=ay=az=0
-- `encode_rc(cmd, armed) → bytes` — maps ControlCmd to CRSF RC_CHANNELS_PACKED; CH1=roll, CH2=pitch, CH3=throttle, CH4=yaw, CH5=arm (1811 armed / 172 disarmed), CH6–16=992
-- `us_to_ticks(us) → int`, `ticks_to_us(ticks) → float` — standard CRSF conversion
+**`link/crsf.py`**
+Also exports `us_to_ticks(us) → int` and `ticks_to_us(ticks) → float` — CRSF µs↔tick
+conversion (988–2012 µs ↔ 172–1811 ticks). `pack_channels` accepts µs values and
+converts to ticks internally; callers never deal with raw ticks.
+
+**`link/fc.py`**
+FC encoding/decoding. Protocol-level; not firmware-specific.
+- `ChannelConfig` frozen dataclass — per-channel µs calibration (min/mid/max for
+  sticks, disarmed/armed for arm switch, position list for flight mode). Built from
+  `config.yaml` via `channel_config_from_cfg(cfg)` at link worker startup.
+- `decode_attitude(frame, diff) → (AttitudeState, IMUFrame)` — unpacks int16 pitch/roll/yaw
+  (units: 100 µrad), calls differentiator for body rates, returns `AttitudeState`
+  with angles+rates and `IMUFrame` with gx/gy/gz from diff, ax=ay=az=0
+- `encode_rc(cmd, armed, ch_cfg) → bytes` — maps ControlCmd (engineering units) to
+  CRSF RC_CHANNELS_PACKED using `ch_cfg` for all channel calibration; all µs
+  internally, no ticks visible to callers
 
 **`link/serial_port.py`**
 
