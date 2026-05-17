@@ -19,7 +19,7 @@ _HEALTH_EVERY = 20   # iterations; 100 Hz / 20 = 5 Hz health rate
 _DT = 1.0 / 100      # nominal loop period (s); fixed, not measured per-loop
 
 
-def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
+def run(config: dict, bus: Bus, _frame_buffer: FrameBuffer) -> None:
     log = setup_logging("control", config)
     gcfg = cfg_guidance(config)
     acfg = cfg_airframe(config)
@@ -36,7 +36,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     state = FailsafeState.NOMINAL
     stop = False
 
-    def _on_sigterm(sig, frame):
+    def _on_sigterm(_sig, _frame):
         nonlocal stop
         stop = True
 
@@ -64,7 +64,9 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
             continue
 
         accel = bus.latest("guidance/accel")
-        att   = bus.latest("fc/attitude")
+
+        if accel is None:
+            continue
 
         roll, pitch = attitude_cmd_compute(accel)
         roll, pitch = saturate(roll, pitch, acfg.control_limits)
