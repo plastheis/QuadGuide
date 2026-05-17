@@ -50,13 +50,13 @@ class TestClosingVelNormal:
         result = est.update(_bbox(0.3, 0.3), t0 + 100_000_000, _CFG)
         assert result == pytest.approx(2.5, abs=0.01)
 
-    def test_shrinking_bbox_returns_negative(self):
+    def test_shrinking_bbox_clamped_to_fallback(self):
         est = ClosingVelEstimator()
         t0 = time.monotonic_ns()
         est.update(_bbox(0.3, 0.3), t0, _CFG)
-        # area shrinks → negative v_c
+        # area shrinks → negative raw V_c clamped to fallback to avoid inverting PN law
         result = est.update(_bbox(0.2, 0.2), t0 + 100_000_000, _CFG)
-        assert result < 0.0
+        assert result == pytest.approx(_CFG.closing_vel_fallback)
 
     def test_scales_with_area_scale(self):
         cfg = types.SimpleNamespace(

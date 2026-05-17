@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 
+from quadguide.core.config import GuidanceConfig
 from quadguide.core.messages import BoundingBox
 
 log = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ class ClosingVelEstimator:
         self._prev_ts_ns: int = 0
         self._ema_area_rate: float = 0.0
 
-    def update(self, bbox: BoundingBox, now_ns: int, cfg) -> float:
+    def update(self, bbox: BoundingBox, now_ns: int, cfg: GuidanceConfig) -> float:
         area = bbox.w * bbox.h
 
         if self._prev_area is None:
@@ -43,4 +44,7 @@ class ClosingVelEstimator:
             log.debug("closing_vel: using fallback")
             return cfg.closing_vel_fallback
 
-        return self._ema_area_rate * cfg.closing_vel_area_scale
+        vc = self._ema_area_rate * cfg.closing_vel_area_scale
+        # Negative V_c (receding target) would invert the PN guidance law;
+        # fall back to a positive holding value instead.
+        return vc if vc > 0.0 else cfg.closing_vel_fallback

@@ -72,6 +72,11 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
         accel = bus.latest("guidance/accel")
 
         if accel is None:
+            if i % _HEALTH_EVERY == 0:
+                bus.publish(
+                    "system/health",
+                    HealthReport(monotonic_ns(), "control", ProcessState.OK, ""),
+                )
             continue
 
         roll, pitch = attitude_cmd_compute(accel)
