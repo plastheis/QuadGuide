@@ -43,6 +43,10 @@ class GuidanceConfig:
     N: float
     closing_vel_fallback: float
     fov_horizontal_rad: float
+    throttle_hold: float = 0.55
+    closing_vel_ema_alpha: float = 0.3
+    closing_vel_min_area_rate: float = 0.001
+    closing_vel_area_scale: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -254,6 +258,10 @@ def cfg_guidance(d: dict) -> GuidanceConfig:
         N=g["N"],
         closing_vel_fallback=g["closing_vel_fallback"],
         fov_horizontal_rad=g["fov_horizontal_rad"],
+        throttle_hold=g.get("throttle_hold", 0.55),
+        closing_vel_ema_alpha=g.get("closing_vel_ema_alpha", 0.3),
+        closing_vel_min_area_rate=g.get("closing_vel_min_area_rate", 0.001),
+        closing_vel_area_scale=g.get("closing_vel_area_scale", 5.0),
     )
 
 

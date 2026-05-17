@@ -132,3 +132,10 @@ class TestAccessors:
         config = load_config(CONFIG_PATH, {})
         tracker = cfg_tracker(config)
         assert isinstance(tracker.mosse, MOSSEConfig)
+
+    def test_cfg_guidance_new_fields(self):
+        g = cfg_guidance(self.config)
+        assert g.throttle_hold == pytest.approx(0.55)
+        assert g.closing_vel_ema_alpha == pytest.approx(0.3)
+        assert g.closing_vel_min_area_rate == pytest.approx(0.001)
+        assert g.closing_vel_area_scale == pytest.approx(5.0)

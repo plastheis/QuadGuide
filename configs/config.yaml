@@ -52,6 +52,10 @@ guidance:
   N: 4.0
   closing_vel_fallback: 2.0
   fov_horizontal_rad: 1.047   # camera horizontal FoV (~60°)
+  throttle_hold: 0.55         # constant throttle during tracking (0–1)
+  closing_vel_ema_alpha: 0.3  # EMA smoothing for bbox area rate (0=heavy, 1=raw)
+  closing_vel_min_area_rate: 0.001  # fallback if smoothed area rate is below this
+  closing_vel_area_scale: 5.0       # area-rate (normalised/s) → m/s conversion
 
 watchdog:
   target_estimate_ms: 150
