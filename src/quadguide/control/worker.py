@@ -19,7 +19,7 @@ _HEALTH_EVERY = 20   # iterations; 100 Hz / 20 = 5 Hz health rate
 _DT = 1.0 / 100      # nominal loop period (s); fixed, not measured per-loop
 
 
-def run(config: dict, bus: Bus, _frame_buffer: FrameBuffer) -> None:
+def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     log = setup_logging("control", config)
     gcfg = cfg_guidance(config)
     acfg = cfg_airframe(config)
@@ -36,7 +36,7 @@ def run(config: dict, bus: Bus, _frame_buffer: FrameBuffer) -> None:
     state = FailsafeState.NOMINAL
     stop = False
 
-    def _on_sigterm(_sig, _frame):
+    def _on_sigterm(sig, frame):
         nonlocal stop
         stop = True
 
@@ -51,6 +51,7 @@ def run(config: dict, bus: Bus, _frame_buffer: FrameBuffer) -> None:
 
     while not stop:
         rate.sleep()
+        i += 1
 
         try:
             watchdog.check_all()
@@ -61,6 +62,11 @@ def run(config: dict, bus: Bus, _frame_buffer: FrameBuffer) -> None:
             bus.publish("control/cmd", cmd)
             log.warning("control: failsafe — %s", e)
             prev_cmd = cmd
+            if i % _HEALTH_EVERY == 0:
+                bus.publish(
+                    "system/health",
+                    HealthReport(monotonic_ns(), "control", ProcessState.FAILSAFE, str(e)),
+                )
             continue
 
         accel = bus.latest("guidance/accel")
@@ -76,7 +82,6 @@ def run(config: dict, bus: Bus, _frame_buffer: FrameBuffer) -> None:
         bus.publish("control/cmd", cmd)
         prev_cmd = cmd
 
-        i += 1
         if i % _HEALTH_EVERY == 0:
             bus.publish(
                 "system/health",
