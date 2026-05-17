@@ -34,13 +34,13 @@ from quadguide.link.crsf import build_frame, pack_channels, CRSF_RC_CHANNELS
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "configs", "config.yaml")
 
-_MIN_THROTTLE = 172
+_MIN_THROTTLE = 352
 _ARM_HIGH     = 1811
 _ARM_LOW      = 172
 
 
 def _make_frame(roll, pitch, throttle, yaw, ch5):
-    channels = [roll, pitch, throttle, yaw, ch5, *([992] * 11)]
+    channels = [roll, pitch, throttle, yaw, ch5, 1555, *([992] * 10)]
     return build_frame(CRSF_RC_CHANNELS, pack_channels(channels))
 
 
@@ -63,7 +63,7 @@ def main():
                         help="Seconds to hold arm switch up with throttle-min before applying throttle (default: 2)")
     parser.add_argument("--roll",         type=int, default=992, help="CH1 ticks (default: 992)")
     parser.add_argument("--pitch",        type=int, default=992, help="CH2 ticks (default: 992)")
-    parser.add_argument("--throttle",     type=int, default=172, help="CH3 ticks (default: 172 = min)")
+    parser.add_argument("--throttle",     type=int, default=352, help="CH3 ticks (default: 172 = min)")
     parser.add_argument("--yaw",          type=int, default=992, help="CH4 ticks (default: 992)")
     args = parser.parse_args()
 
