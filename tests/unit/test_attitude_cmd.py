@@ -47,6 +47,6 @@ def test_roll_and_pitch_independent():
 
 
 def test_small_accel_proportional():
-    roll1, _ = compute(_accel(0.0, 1.0))
-    roll2, _ = compute(_accel(0.0, 2.0))
+    roll1, _ = compute(_accel(0.0, 0.1))
+    roll2, _ = compute(_accel(0.0, 0.2))
     assert roll2 == pytest.approx(roll1 * 2, rel=0.01)
