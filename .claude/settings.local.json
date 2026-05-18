@@ -62,7 +62,15 @@
       "WebFetch(domain:medium.com)",
       "Bash(PYTHONPATH=/home/plas/quadguide/src python3 *)",
       "Bash(pip3 show *)",
-      "Bash(find / -name pytest -type f)"
+      "Bash(find / -name pytest -type f)",
+      "Bash(grep -v '\\\\.pyc$')",
+      "Bash(apt-get update *)",
+      "Bash(apt-get install *)",
+      "Bash(PYTHONPATH=src python3 *)",
+      "Bash(PYTHONPATH=/home/plas/quadguide/src python *)",
+      "Bash(PYTHONPATH=src python -c \"from quadguide.guidance.worker import run; print\\('ok'\\)\")",
+      "Bash(xargs ls -la)",
+      "Bash(awk 'NR>=159 && NR<=200' /home/plas/quadguide/src/quadguide/control/worker.py)"
     ]
   }
 }

@@ -1,7 +1,7 @@
 platform:
   name: orange_pi5           # key into platform/factory.py PLATFORMS dict
   camera:
-    backend: gstreamer       # "v4l2" | "gstreamer" | "virtual"
+    backend: v4l2       # "v4l2" | "gstreamer" | "virtual"
     pipeline: "v4l2src device=/dev/video0 ! video/x-raw,width=640,height=480,framerate=60/1 ! appsink"
     width: 640
     height: 480
@@ -59,7 +59,7 @@ guidance:
 
 watchdog:
   target_estimate_ms: 150
-  fc_attitude_ms: 50
+  fc_attitude_ms: 250
   guidance_accel_ms: 100
 
 link:

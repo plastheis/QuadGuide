@@ -63,6 +63,10 @@ class KCFTracker:
     def name(self) -> str:
         return "kcf"
 
+    def reset(self) -> None:
+        self._initialized = False
+        self._tracker = None
+
     def close(self) -> None:
         pass
 

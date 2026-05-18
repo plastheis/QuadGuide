@@ -270,5 +270,8 @@ class NanoTracker:
             tracker_health=health,
         )
 
+    def reset(self) -> None:
+        self._initialized = False
+
     def close(self) -> None:
         self._runtime.close()

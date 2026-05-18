@@ -70,9 +70,12 @@ class CCVTrackerWorker:
             return
         if cmd.seq != self._last_seq:
             self._last_seq = cmd.seq
-            frame, _ = self._fb.read_latest()
-            if frame is not None:
-                self._tracker.init(frame, cmd.bbox)
+            if cmd.bbox.w == 0.0 and cmd.bbox.h == 0.0:
+                self._tracker.reset()
+            else:
+                frame, _ = self._fb.read_latest()
+                if frame is not None:
+                    self._tracker.init(frame, cmd.bbox)
 
     def _handle_sigterm(self, sig, frame) -> None:
         self._stop = True

@@ -36,6 +36,9 @@ def create_app(bus, frame_buffer) -> FastAPI:
         app.state.lockon_seq     = 0
         app.state.process_health: dict[str, str] = {}
         app.state.latency_window: deque = deque(maxlen=20)
+        app.state.mjpeg_frames   = 0
+        app.state.mjpeg_fps      = 0.0
+        app.state.mjpeg_fps_ts   = monotonic_ns()
         task = asyncio.create_task(_health_task(app))
         try:
             yield
@@ -74,10 +77,27 @@ def create_app(bus, frame_buffer) -> FastAPI:
         request.app.state.bus.publish("lockon/cmd", cmd)
         return {"ok": True}
 
+    @app.post("/reset_lockon")
+    async def reset_lockon(request: Request):
+        request.app.state.lockon_seq += 1
+        cmd = LockOnCmd(
+            timestamp_ns=monotonic_ns(),
+            seq=request.app.state.lockon_seq,
+            bbox=BoundingBox(0.0, 0.0, 0.0, 0.0),
+        )
+        request.app.state.bus.publish("lockon/cmd", cmd)
+        return {"ok": True}
+
     @app.post("/arm")
     async def arm(body: _ArmBody, request: Request):
         cmd = ArmCmd(timestamp_ns=monotonic_ns(), armed=body.armed)
         request.app.state.bus.publish("arm/cmd", cmd)
+        return {"ok": True}
+
+    @app.post("/throttle")
+    async def throttle(body: _ArmBody, request: Request):
+        cmd = ArmCmd(timestamp_ns=monotonic_ns(), armed=body.armed)
+        request.app.state.bus.publish("throttle/cmd", cmd)
         return {"ok": True}
 
     return app
@@ -103,6 +123,13 @@ async def _mjpeg(app: FastAPI):
         else:
             estimate = app.state.bus.latest("target/estimate")
             jpeg = overlay.draw_overlay(frame, estimate)
+        app.state.mjpeg_frames += 1
+        now = monotonic_ns()
+        dt = (now - app.state.mjpeg_fps_ts) / 1e9
+        if dt >= 1.0:
+            app.state.mjpeg_fps = app.state.mjpeg_frames / dt
+            app.state.mjpeg_frames = 0
+            app.state.mjpeg_fps_ts = now
         yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
 
 
@@ -180,6 +207,8 @@ async def _sse(app: FastAPI):
             # latency
             "latency_ms":     lat_ms,
             "latency_avg_ms": avg_ms,
+            # video stream fps
+            "video_fps": app.state.mjpeg_fps if app.state.mjpeg_fps > 0 else None,
         }
         yield f"data: {json.dumps(data)}\n\n"
 

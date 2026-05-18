@@ -5,25 +5,48 @@
 <title>quadguide ground</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #111; color: #ccc; font-family: monospace; font-size: 12px; display: flex; flex-direction: column; align-items: center; padding: 12px; gap: 10px; }
-  h1 { font-size: 13px; letter-spacing: 3px; color: #555; }
+  body {
+    background: #111; color: #ccc; font-family: monospace; font-size: 12px;
+    display: flex; flex-direction: column; align-items: flex-start;
+    padding: 12px; gap: 8px; min-height: 100vh;
+  }
+  h1 { font-size: 13px; letter-spacing: 3px; color: #555; align-self: center; }
+
+  /* Two-column main layout */
+  #main {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    width: 100%;
+  }
+
+  /* Left column: video + keybindings + health/latency */
+  #left-col {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex-shrink: 0;
+    width: 640px;
+  }
+
   #view { position: relative; width: 640px; height: 480px; }
   #stream  { position: absolute; top: 0; left: 0; width: 640px; height: 480px; }
   #overlay { position: absolute; top: 0; left: 0; width: 640px; height: 480px; cursor: crosshair; }
 
-  #hud {
-    width: 640px;
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 6px;
+  /* Right column: all telemetry */
+  #right-col {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    min-width: 300px;
   }
+
   .section {
     background: #181818;
     border: 1px solid #2a2a2a;
     padding: 6px 8px;
   }
-  .section.wide2 { grid-column: span 2; }
-  .section.wide4 { grid-column: span 4; }
   .sec-title { color: #444; font-size: 10px; letter-spacing: 1px; margin-bottom: 4px; }
   .row { display: flex; justify-content: space-between; gap: 4px; line-height: 1.6; }
   .lbl { color: #444; white-space: nowrap; }
@@ -32,9 +55,32 @@
   .val.warn    { color: #fa0; }
   .val.danger  { color: #f44; }
 
-  /* health row */
-  #health-grid { display: flex; flex-wrap: wrap; gap: 6px 12px; }
-  .hentry { }
+  /* Keybindings */
+  #keybindings {
+    background: #181818;
+    border: 1px solid #2a2a2a;
+    padding: 6px 8px;
+    color: #333;
+    font-size: 11px;
+    line-height: 1.8;
+  }
+  #keybindings .sec-title { color: #444; font-size: 10px; letter-spacing: 1px; margin-bottom: 2px; }
+  .kb-row { display: flex; flex-wrap: wrap; gap: 0 16px; }
+  .kb { white-space: nowrap; }
+  .kb span { color: #555; }
+
+  /* Health/status section (left col) */
+  #status-box {
+    background: #181818;
+    border: 1px solid #2a2a2a;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  /* health grid */
+  #health-grid { display: flex; flex-wrap: wrap; gap: 4px 12px; }
   .hentry .hname { color: #444; }
   .hentry .hstate.ok       { color: #0f0; }
   .hentry .hstate.degraded { color: #fa0; }
@@ -42,116 +88,164 @@
   .hentry .hstate.dead     { color: #f44; }
   .hentry .hstate.unknown  { color: #333; }
 
+  /* Attitude section — wider rows */
+  #att-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px 8px;
+  }
+
+  /* Two-column row within right panels */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
   .btn { background: #222; border: 1px solid #444; color: #ccc; font-family: monospace;
          font-size: 11px; padding: 3px 10px; cursor: pointer; }
   .btn:hover { background: #333; }
   .btn.armed  { border-color: #f44; color: #f44; }
-
-  #controls { color: #333; font-size: 11px; }
+  .btn.danger { border-color: #f44; color: #f44; }
 </style>
 </head>
 <body>
 <h1>QUADGUIDE GROUND</h1>
 
-<div id="view">
-  <img id="stream" src="/stream" alt="stream">
-  <canvas id="overlay" width="640" height="480"></canvas>
-</div>
+<div id="main">
 
-<div id="hud">
+  <!-- LEFT COLUMN -->
+  <div id="left-col">
 
-  <!-- TARGET ESTIMATE -->
-  <div class="section wide2">
-    <div class="sec-title">TARGET / ESTIMATE</div>
-    <div class="row"><span class="lbl">tracker</span><span class="val dim" id="h-tracker">—</span></div>
-    <div class="row"><span class="lbl">active</span><span class="val dim" id="h-active">—</span></div>
-    <div class="row"><span class="lbl">confidence</span><span class="val dim" id="h-conf">—</span></div>
-    <div class="row"><span class="lbl">centroid x/y</span><span class="val dim" id="h-centroid">—</span></div>
-    <div class="row"><span class="lbl">bbox x/y</span><span class="val dim" id="h-bbox-xy">—</span></div>
-    <div class="row"><span class="lbl">bbox w/h</span><span class="val dim" id="h-bbox-wh">—</span></div>
-  </div>
-
-  <!-- CCV / NCV -->
-  <div class="section wide2">
-    <div class="sec-title">TRACKERS</div>
-    <div class="row"><span class="lbl">ccv algo</span><span class="val dim" id="h-ccv-algo">—</span></div>
-    <div class="row"><span class="lbl">ccv health</span><span class="val dim" id="h-ccv-health">—</span></div>
-    <div class="row"><span class="lbl">ccv conf</span><span class="val dim" id="h-ccv-conf">—</span></div>
-    <div class="row"><span class="lbl">ncv algo</span><span class="val dim" id="h-ncv-algo">—</span></div>
-    <div class="row"><span class="lbl">ncv health</span><span class="val dim" id="h-ncv-health">—</span></div>
-    <div class="row"><span class="lbl">ncv conf</span><span class="val dim" id="h-ncv-conf">—</span></div>
-  </div>
-
-  <!-- ATTITUDE -->
-  <div class="section wide2">
-    <div class="sec-title">FC / ATTITUDE</div>
-    <div class="row"><span class="lbl">roll</span><span class="val dim" id="h-roll">—</span></div>
-    <div class="row"><span class="lbl">pitch</span><span class="val dim" id="h-pitch">—</span></div>
-    <div class="row"><span class="lbl">yaw</span><span class="val dim" id="h-yaw">—</span></div>
-    <div class="row"><span class="lbl">roll rate</span><span class="val dim" id="h-roll-rate">—</span></div>
-    <div class="row"><span class="lbl">pitch rate</span><span class="val dim" id="h-pitch-rate">—</span></div>
-    <div class="row"><span class="lbl">yaw rate</span><span class="val dim" id="h-yaw-rate">—</span></div>
-  </div>
-
-  <!-- IMU -->
-  <div class="section wide2">
-    <div class="sec-title">FC / IMU</div>
-    <div class="row"><span class="lbl">ax</span><span class="val dim" id="h-ax">—</span></div>
-    <div class="row"><span class="lbl">ay</span><span class="val dim" id="h-ay">—</span></div>
-    <div class="row"><span class="lbl">az</span><span class="val dim" id="h-az">—</span></div>
-    <div class="row"><span class="lbl">gx</span><span class="val dim" id="h-gx">—</span></div>
-    <div class="row"><span class="lbl">gy</span><span class="val dim" id="h-gy">—</span></div>
-    <div class="row"><span class="lbl">gz</span><span class="val dim" id="h-gz">—</span></div>
-  </div>
-
-  <!-- GUIDANCE ACCEL -->
-  <div class="section">
-    <div class="sec-title">GUIDANCE / ACCEL</div>
-    <div class="row"><span class="lbl">ax</span><span class="val dim" id="h-g-ax">—</span></div>
-    <div class="row"><span class="lbl">ay</span><span class="val dim" id="h-g-ay">—</span></div>
-  </div>
-
-  <!-- CONTROL CMD -->
-  <div class="section wide2">
-    <div class="sec-title">CONTROL / CMD</div>
-    <div class="row"><span class="lbl">roll</span><span class="val dim" id="h-c-roll">—</span></div>
-    <div class="row"><span class="lbl">pitch</span><span class="val dim" id="h-c-pitch">—</span></div>
-    <div class="row"><span class="lbl">yaw rate</span><span class="val dim" id="h-c-yaw-rate">—</span></div>
-    <div class="row"><span class="lbl">throttle</span><span class="val dim" id="h-c-throttle">—</span></div>
-  </div>
-
-  <!-- CROSSHAIR SIZE -->
-  <div class="section">
-    <div class="sec-title">CROSSHAIR</div>
-    <div class="row"><span class="lbl">size</span><span class="val" id="hud-size">160 px</span></div>
-  </div>
-
-  <!-- ARM CONTROL -->
-  <div class="section">
-    <div class="sec-title">ARM CONTROL</div>
-    <div class="row"><span class="lbl">status</span><span class="val dim" id="h-arm-state">DISARMED</span></div>
-    <div class="row" style="margin-top:5px;gap:6px;">
-      <button class="btn" id="btn-arm">ARM</button>
-      <button class="btn" id="btn-disarm">DISARM</button>
+    <!-- Video feed -->
+    <div id="view">
+      <img id="stream" src="/stream" alt="stream">
+      <canvas id="overlay" width="640" height="480"></canvas>
     </div>
-  </div>
 
-  <!-- LATENCY -->
-  <div class="section wide2">
-    <div class="sec-title">LATENCY</div>
-    <div class="row"><span class="lbl">latest</span><span class="val dim" id="h-lat-latest">—</span></div>
-    <div class="row"><span class="lbl">avg (20)</span><span class="val dim" id="h-lat-avg">—</span></div>
-  </div>
+    <!-- Keybindings -->
+    <div id="keybindings">
+      <div class="sec-title">KEYBINDINGS</div>
+      <div class="kb-row">
+        <div class="kb"><span>[ + ]</span> grow</div>
+        <div class="kb"><span>[ - ]</span> shrink</div>
+        <div class="kb"><span>[ Enter ]</span> lock on</div>
+        <div class="kb"><span>[ r ]</span> reset lock-on</div>
+        <div class="kb"><span>[ a ]</span> arm</div>
+        <div class="kb"><span>[ d ]</span> disarm</div>
+        <div class="kb"><span>[ t ]</span> throttle on</div>
+        <div class="kb"><span>[ g ]</span> throttle off</div>
+      </div>
+    </div>
 
-  <!-- SYSTEM HEALTH -->
-  <div class="section wide4">
-    <div class="sec-title">SYSTEM / HEALTH</div>
-    <div id="health-grid"></div>
-  </div>
+    <!-- Health + latency + framerate -->
+    <div id="status-box">
+      <div class="sec-title">STATUS</div>
+      <div class="two-col">
+        <div>
+          <div class="row"><span class="lbl">latency</span><span class="val dim" id="h-lat-latest">—</span></div>
+          <div class="row"><span class="lbl">avg (20)</span><span class="val dim" id="h-lat-avg">—</span></div>
+          <div class="row"><span class="lbl">video fps</span><span class="val dim" id="h-video-fps">—</span></div>
+        </div>
+        <div>
+          <div class="row"><span class="lbl">crosshair</span><span class="val" id="hud-size">160 px</span></div>
+        </div>
+      </div>
+      <div style="border-top:1px solid #222; margin-top:4px; padding-top:4px;">
+        <div class="sec-title">SYSTEM / HEALTH</div>
+        <div id="health-grid"></div>
+      </div>
+    </div>
 
-</div>
+  </div><!-- end left-col -->
 
-<div id="controls">[ + ] grow &nbsp; [ - ] shrink &nbsp; [ Enter ] lock on &nbsp; [ Esc ] cancel &nbsp; [ a ] arm &nbsp; [ d ] disarm</div>
+  <!-- RIGHT COLUMN -->
+  <div id="right-col">
+
+    <!-- TARGET / ESTIMATE -->
+    <div class="section">
+      <div class="sec-title">TARGET / ESTIMATE</div>
+      <div class="two-col">
+        <div>
+          <div class="row"><span class="lbl">tracker health</span><span class="val dim" id="h-tracker">—</span></div>
+          <div class="row"><span class="lbl">active</span><span class="val dim" id="h-active">—</span></div>
+          <div class="row"><span class="lbl">confidence</span><span class="val dim" id="h-conf">—</span></div>
+        </div>
+        <div>
+          <div class="row"><span class="lbl">centroid x/y</span><span class="val dim" id="h-centroid">—</span></div>
+          <div class="row"><span class="lbl">bbox x/y</span><span class="val dim" id="h-bbox-xy">—</span></div>
+          <div class="row"><span class="lbl">bbox w/h</span><span class="val dim" id="h-bbox-wh">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TRACKERS -->
+    <div class="section">
+      <div class="sec-title">TRACKERS</div>
+      <div class="two-col">
+        <div>
+          <div class="row"><span class="lbl">ccv algo</span><span class="val dim" id="h-ccv-algo">—</span></div>
+          <div class="row"><span class="lbl">ccv health</span><span class="val dim" id="h-ccv-health">—</span></div>
+          <div class="row"><span class="lbl">ccv conf</span><span class="val dim" id="h-ccv-conf">—</span></div>
+        </div>
+        <div>
+          <div class="row"><span class="lbl">ncv algo</span><span class="val dim" id="h-ncv-algo">—</span></div>
+          <div class="row"><span class="lbl">ncv health</span><span class="val dim" id="h-ncv-health">—</span></div>
+          <div class="row"><span class="lbl">ncv conf</span><span class="val dim" id="h-ncv-conf">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FC / ATTITUDE (CRSF telemetry) -->
+    <div class="section">
+      <div class="sec-title">FC / ATTITUDE  <span style="color:#2a2a2a; font-size:9px">— CRSF LINK</span></div>
+      <div id="att-grid">
+        <div class="row"><span class="lbl">roll</span><span class="val dim" id="h-roll">—</span></div>
+        <div class="row"><span class="lbl">pitch</span><span class="val dim" id="h-pitch">—</span></div>
+        <div class="row"><span class="lbl">yaw</span><span class="val dim" id="h-yaw">—</span></div>
+        <div class="row"><span class="lbl">roll rate</span><span class="val dim" id="h-roll-rate">—</span></div>
+        <div class="row"><span class="lbl">pitch rate</span><span class="val dim" id="h-pitch-rate">—</span></div>
+        <div class="row"><span class="lbl">yaw rate</span><span class="val dim" id="h-yaw-rate">—</span></div>
+      </div>
+    </div>
+
+    <!-- GUIDANCE + CONTROL (side by side) -->
+    <div class="two-col">
+      <div class="section">
+        <div class="sec-title">GUIDANCE / ACCEL</div>
+        <div class="row"><span class="lbl">ax</span><span class="val dim" id="h-g-ax">—</span></div>
+        <div class="row"><span class="lbl">ay</span><span class="val dim" id="h-g-ay">—</span></div>
+      </div>
+      <div class="section">
+        <div class="sec-title">CONTROL / CMD</div>
+        <div class="row"><span class="lbl">roll</span><span class="val dim" id="h-c-roll">—</span></div>
+        <div class="row"><span class="lbl">pitch</span><span class="val dim" id="h-c-pitch">—</span></div>
+        <div class="row"><span class="lbl">yaw rate</span><span class="val dim" id="h-c-yaw-rate">—</span></div>
+        <div class="row"><span class="lbl">throttle</span><span class="val dim" id="h-c-throttle">—</span></div>
+      </div>
+    </div>
+
+    <!-- ARM CONTROL -->
+    <div class="section">
+      <div class="sec-title">ARM CONTROL</div>
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <div class="row"><span class="lbl">arm&nbsp;</span><span class="val dim" id="h-arm-state">DISARMED</span></div>
+          <div class="row"><span class="lbl">throttle&nbsp;</span><span class="val dim" id="h-thr-state">IDLE</span></div>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button class="btn" id="btn-arm">ARM</button>
+          <button class="btn" id="btn-disarm">DISARM</button>
+          <button class="btn" id="btn-throttle-on" title="Start throttle setpoint (only while armed)">THROTTLE ON</button>
+          <button class="btn" id="btn-throttle-off">THROTTLE OFF</button>
+          <button class="btn" id="btn-reset" title="Reset lock-on and clear bounding box">RESET LOCK</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- end right-col -->
+
+</div><!-- end main -->
 
 <script>
 'use strict';
@@ -172,21 +266,19 @@ function drawCrosshair() {
   const cx   = W / 2;
   const cy   = H / 2;
   const half = crosshairSize / 2;
-  const arm  = crosshairSize * 0.25;
 
   ctx.strokeStyle = '#00ff00';
   ctx.lineWidth   = 2;
   ctx.beginPath();
 
-  // Lines run from screen edge to the edge of the center square (not through it)
-  ctx.moveTo(0,          cy); ctx.lineTo(cx - half,  cy); // left
-  ctx.moveTo(cx + half,  cy); ctx.lineTo(W,           cy); // right
-  ctx.moveTo(cx,          0); ctx.lineTo(cx,    cy - half); // top
-  ctx.moveTo(cx, cy + half);  ctx.lineTo(cx,           H); // bottom
+  ctx.moveTo(0,          cy); ctx.lineTo(cx - half,  cy);
+  ctx.moveTo(cx + half,  cy); ctx.lineTo(W,           cy);
+  ctx.moveTo(cx,          0); ctx.lineTo(cx,    cy - half);
+  ctx.moveTo(cx, cy + half);  ctx.lineTo(cx,           H);
 
   ctx.stroke();
 
-  // Corner L-shapes on the square
+  const arm = crosshairSize * 0.25;
   const corners = [
     [cx - half, cy - half,  arm,   0,   0,  arm],
     [cx + half, cy - half, -arm,   0,   0,  arm],
@@ -215,10 +307,16 @@ document.addEventListener('keydown', (e) => {
     drawCrosshair();
   } else if (e.key === 'Enter') {
     sendLockon();
+  } else if (e.key === 'r' || e.key === 'R') {
+    sendReset();
   } else if (e.key === 'a') {
     sendArm(true);
   } else if (e.key === 'd') {
     sendArm(false);
+  } else if (e.key === 't') {
+    sendThrottle(true);
+  } else if (e.key === 'g') {
+    sendThrottle(false);
   }
 });
 
@@ -234,6 +332,13 @@ function sendLockon() {
       w: crosshairSize / W,
       h: crosshairSize / H,
     }),
+  }).catch(() => {});
+}
+
+function sendReset() {
+  fetch('/reset_lockon', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
   }).catch(() => {});
 }
 
@@ -280,21 +385,13 @@ sse.onmessage = (ev) => {
   set('h-ncv-health', d.ncv_health);
   set('h-ncv-conf',   f(d.ncv_conf, 2));
 
-  // attitude
+  // attitude (CRSF link telemetry)
   set('h-roll',       f(d.roll_deg,       1, '°'));
   set('h-pitch',      f(d.pitch_deg,      1, '°'));
   set('h-yaw',        f(d.yaw_deg,        1, '°'));
   set('h-roll-rate',  f(d.roll_rate_dps,  1, '°/s'));
   set('h-pitch-rate', f(d.pitch_rate_dps, 1, '°/s'));
   set('h-yaw-rate',   f(d.yaw_rate_dps,   1, '°/s'));
-
-  // imu
-  set('h-ax', f(d.imu_ax, 3, ' m/s²'));
-  set('h-ay', f(d.imu_ay, 3, ' m/s²'));
-  set('h-az', f(d.imu_az, 3, ' m/s²'));
-  set('h-gx', f(d.imu_gx, 3, ' r/s'));
-  set('h-gy', f(d.imu_gy, 3, ' r/s'));
-  set('h-gz', f(d.imu_gz, 3, ' r/s'));
 
   // guidance/accel
   set('h-g-ax', f(d.accel_ax, 3, ' m/s²'));
@@ -306,11 +403,14 @@ sse.onmessage = (ev) => {
   set('h-c-yaw-rate', f(d.ctrl_yaw_rate_dps, 1, '°/s'));
   set('h-c-throttle', f(d.ctrl_throttle,     3));
 
-  // latency
+  // latency + framerate
   const avgMs = d.latency_avg_ms;
   const latClass = avgMs == null ? '' : avgMs > 100 ? 'danger' : avgMs > 50 ? 'warn' : '';
   set('h-lat-latest', f(d.latency_ms,     1, ' ms'));
   set('h-lat-avg',    f(d.latency_avg_ms, 1, ' ms'), latClass);
+  const fps = d.video_fps;
+  const fpsClass = fps == null ? '' : fps < 10 ? 'warn' : '';
+  set('h-video-fps', f(d.video_fps, 1, ' fps'), fpsClass);
 
   // system/health
   if (d.health) {
@@ -335,9 +435,7 @@ sse.onerror = () => {
     '<span class="hstate danger">connection lost</span>';
 };
 
-// ── Arm control ────────────────────────────────────────────────────────────
-
-let _armed = false;
+// ── Arm / throttle control ─────────────────────────────────────────────────
 
 function sendArm(armed) {
   fetch('/arm', {
@@ -345,16 +443,39 @@ function sendArm(armed) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({armed}),
   }).then(r => r.json()).then(() => {
-    _armed = armed;
     const el = document.getElementById('h-arm-state');
     el.textContent = armed ? 'ARMED' : 'DISARMED';
     el.className = 'val ' + (armed ? 'danger' : 'dim');
     document.getElementById('btn-arm').classList.toggle('armed', armed);
+    // Disarming resets throttle state locally to match link worker behaviour.
+    if (!armed) {
+      _setThrottleDisplay(false);
+    }
   }).catch(() => {});
+}
+
+function sendThrottle(active) {
+  fetch('/throttle', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({armed: active}),
+  }).then(r => r.json()).then(() => {
+    _setThrottleDisplay(active);
+  }).catch(() => {});
+}
+
+function _setThrottleDisplay(active) {
+  const el = document.getElementById('h-thr-state');
+  el.textContent = active ? 'ACTIVE' : 'IDLE';
+  el.className = 'val ' + (active ? 'warn' : 'dim');
+  document.getElementById('btn-throttle-on').classList.toggle('armed', active);
 }
 
 document.getElementById('btn-arm').addEventListener('click', () => sendArm(true));
 document.getElementById('btn-disarm').addEventListener('click', () => sendArm(false));
+document.getElementById('btn-throttle-on').addEventListener('click', () => sendThrottle(true));
+document.getElementById('btn-throttle-off').addEventListener('click', () => sendThrottle(false));
+document.getElementById('btn-reset').addEventListener('click', () => sendReset());
 </script>
 </body>
 </html>

@@ -27,11 +27,28 @@ async def _rx_loop(serial, parser: CRSFParser,
 async def _tx_loop(serial, bus, tx_rate_hz: float,
                    ch_cfg: ChannelConfig, log: logging.Logger) -> None:
     interval = 1.0 / tx_rate_hz
+    prev_armed           = None
+    prev_throttle_active = None
     while True:
-        cmd     = bus.latest("control/cmd")
-        arm_cmd = bus.latest("arm/cmd")
-        armed   = arm_cmd.armed if arm_cmd else False
-        await serial.write(encode_rc(cmd, armed, ch_cfg))
+        cmd          = bus.latest("control/cmd")
+        arm_cmd      = bus.latest("arm/cmd")
+        throttle_cmd = bus.latest("throttle/cmd")
+
+        armed            = arm_cmd.armed      if arm_cmd      else False
+        throttle_active  = throttle_cmd.armed if throttle_cmd else False
+
+        # Disarming resets throttle so the next arm starts with motors at zero.
+        if not armed:
+            throttle_active = False
+
+        if armed != prev_armed:
+            log.info("arm state → %s", "ARMED" if armed else "DISARMED")
+            prev_armed = armed
+        if throttle_active != prev_throttle_active:
+            log.info("throttle → %s", "ACTIVE" if throttle_active else "IDLE")
+            prev_throttle_active = throttle_active
+
+        await serial.write(encode_rc(cmd, armed, throttle_active, ch_cfg))
         await asyncio.sleep(interval)
 
 
