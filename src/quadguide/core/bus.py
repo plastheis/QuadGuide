@@ -31,8 +31,7 @@ TOPICS: dict[str, tuple[type, str]] = {
     "control/cmd":          (ControlCmd,      FMT_CONTROL_CMD),
     "lockon/cmd":           (LockOnCmd,       FMT_LOCKON_CMD),
     "system/health":        (HealthReport,    FMT_HEALTH_REPORT),
-    "arm/cmd":              (ArmCmd,          FMT_ARM_CMD),
-    "throttle/cmd":         (ArmCmd,          FMT_ARM_CMD),  # armed=True → throttle active
+    "arm/cmd":              (ArmCmd,      FMT_ARM_CMD),
 }
 
 

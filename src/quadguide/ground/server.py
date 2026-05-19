@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from quadguide.core.clock import monotonic_ns
-from quadguide.core.messages import ArmCmd, BoundingBox, HealthReport, LockOnCmd, ProcessState
+from quadguide.core.messages import ArmCmd, BoundingBox, ControlCmd, HealthReport, LockOnCmd, ProcessState
 from quadguide.ground import overlay
 
 _STATIC      = Path(__file__).parent / "static"
@@ -94,11 +94,17 @@ def create_app(bus, frame_buffer) -> FastAPI:
         request.app.state.bus.publish("arm/cmd", cmd)
         return {"ok": True}
 
-    @app.post("/throttle")
-    async def throttle(body: _ArmBody, request: Request):
-        cmd = ArmCmd(timestamp_ns=monotonic_ns(), armed=body.armed)
-        request.app.state.bus.publish("throttle/cmd", cmd)
-        return {"ok": True}
+    @app.post("/control_cmd")
+    async def control_cmd(body: _ControlCmdBody, request: Request):
+        cmd = ControlCmd(
+            timestamp_ns=monotonic_ns(),
+            roll_deg=body.roll_deg,
+            pitch_deg=body.pitch_deg,
+            yaw_rate_dps=body.yaw_rate_dps,
+            throttle_norm=max(0.0, min(1.0, body.throttle_norm)),
+        )
+        request.app.state.bus.publish("control/cmd", cmd)
+        return {"ok": True, "throttle_norm": cmd.throttle_norm}
 
     return app
 
@@ -112,6 +118,13 @@ class _LockOnBody(BaseModel):
 
 class _ArmBody(BaseModel):
     armed: bool
+
+
+class _ControlCmdBody(BaseModel):
+    roll_deg:      float = 0.0
+    pitch_deg:     float = 0.0
+    yaw_rate_dps:  float = 0.0
+    throttle_norm: float = 0.0
 
 
 async def _mjpeg(app: FastAPI):

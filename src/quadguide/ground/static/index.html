@@ -135,6 +135,8 @@
         <div class="kb"><span>[ d ]</span> disarm</div>
         <div class="kb"><span>[ t ]</span> throttle on</div>
         <div class="kb"><span>[ g ]</span> throttle off</div>
+        <div class="kb"><span>[ ↑ ]</span> thr setpoint +</div>
+        <div class="kb"><span>[ ↓ ]</span> thr setpoint −</div>
       </div>
     </div>
 
@@ -232,11 +234,12 @@
         <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
           <div class="row"><span class="lbl">arm&nbsp;</span><span class="val dim" id="h-arm-state">DISARMED</span></div>
           <div class="row"><span class="lbl">throttle&nbsp;</span><span class="val dim" id="h-thr-state">IDLE</span></div>
+          <div class="row"><span class="lbl">setpoint&nbsp;</span><span class="val dim" id="h-thr-setpoint">0.000</span></div>
         </div>
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
           <button class="btn" id="btn-arm">ARM</button>
           <button class="btn" id="btn-disarm">DISARM</button>
-          <button class="btn" id="btn-throttle-on" title="Start throttle setpoint (only while armed)">THROTTLE ON</button>
+          <button class="btn" id="btn-throttle-on" title="Send throttle setpoint to FC (only while armed)">THROTTLE ON</button>
           <button class="btn" id="btn-throttle-off">THROTTLE OFF</button>
           <button class="btn" id="btn-reset" title="Reset lock-on and clear bounding box">RESET LOCK</button>
         </div>
@@ -314,9 +317,19 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'd') {
     sendArm(false);
   } else if (e.key === 't') {
-    sendThrottle(true);
+    setThrottle(true);
   } else if (e.key === 'g') {
-    sendThrottle(false);
+    setThrottle(false);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    _throttleSetpoint = clamp(_throttleSetpoint + 0.02, 0, 1);
+    if (_throttleActive) sendControlCmd();
+    _updateThrottleDisplay();
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    _throttleSetpoint = clamp(_throttleSetpoint - 0.02, 0, 1);
+    if (_throttleActive) sendControlCmd();
+    _updateThrottleDisplay();
   }
 });
 
@@ -437,6 +450,32 @@ sse.onerror = () => {
 
 // ── Arm / throttle control ─────────────────────────────────────────────────
 
+let _throttleSetpoint = 0.0;
+let _throttleActive   = false;
+
+function sendControlCmd() {
+  const thr = _throttleActive ? _throttleSetpoint : 0.0;
+  fetch('/control_cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({roll_deg: 0, pitch_deg: 0, yaw_rate_dps: 0, throttle_norm: thr}),
+  }).catch(() => {});
+}
+
+function setThrottle(active) {
+  _throttleActive = active;
+  sendControlCmd();
+  _updateThrottleDisplay();
+}
+
+function _updateThrottleDisplay() {
+  const el = document.getElementById('h-thr-state');
+  el.textContent = _throttleActive ? 'ACTIVE' : 'IDLE';
+  el.className = 'val ' + (_throttleActive ? 'warn' : 'dim');
+  document.getElementById('btn-throttle-on').classList.toggle('armed', _throttleActive);
+  document.getElementById('h-thr-setpoint').textContent = _throttleSetpoint.toFixed(3);
+}
+
 function sendArm(armed) {
   fetch('/arm', {
     method: 'POST',
@@ -447,34 +486,17 @@ function sendArm(armed) {
     el.textContent = armed ? 'ARMED' : 'DISARMED';
     el.className = 'val ' + (armed ? 'danger' : 'dim');
     document.getElementById('btn-arm').classList.toggle('armed', armed);
-    // Disarming resets throttle state locally to match link worker behaviour.
     if (!armed) {
-      _setThrottleDisplay(false);
+      _throttleActive = false;
+      _updateThrottleDisplay();
     }
   }).catch(() => {});
 }
 
-function sendThrottle(active) {
-  fetch('/throttle', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({armed: active}),
-  }).then(r => r.json()).then(() => {
-    _setThrottleDisplay(active);
-  }).catch(() => {});
-}
-
-function _setThrottleDisplay(active) {
-  const el = document.getElementById('h-thr-state');
-  el.textContent = active ? 'ACTIVE' : 'IDLE';
-  el.className = 'val ' + (active ? 'warn' : 'dim');
-  document.getElementById('btn-throttle-on').classList.toggle('armed', active);
-}
-
 document.getElementById('btn-arm').addEventListener('click', () => sendArm(true));
 document.getElementById('btn-disarm').addEventListener('click', () => sendArm(false));
-document.getElementById('btn-throttle-on').addEventListener('click', () => sendThrottle(true));
-document.getElementById('btn-throttle-off').addEventListener('click', () => sendThrottle(false));
+document.getElementById('btn-throttle-on').addEventListener('click', () => setThrottle(true));
+document.getElementById('btn-throttle-off').addEventListener('click', () => setThrottle(false));
 document.getElementById('btn-reset').addEventListener('click', () => sendReset());
 </script>
 </body>

@@ -183,6 +183,7 @@ def main() -> int:
 
     _shutdown(procs)
     bus.close()
+    frame_buffer.unlink()
 
     return 1 if failed is not None else 0
 

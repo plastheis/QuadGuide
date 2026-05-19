@@ -16,12 +16,6 @@ parallel object trackers, fuses their outputs, computes proportional navigation
 guidance commands, and sends roll/pitch setpoints to a madflight flight controller
 over UART using the CRSF protocol (420000 baud, bidirectional).
 
-### Companion repo
-
-**quadtrack** (git submodule, pinned) is a separate research workspace used to
-develop and validate tracker algorithms. quadguide does NOT import quadtrack as a
-library. Tracker algorithm code is ported manually from quadtrack into
-`src/quadguide/perception/` when it is stable.
 
 ### Hardware stack
 
@@ -34,16 +28,16 @@ library. Tracker algorithm code is ported manually from quadtrack into
 │  Camera ──→ perception workers  │
 │  perception ──→ guidance        │
 │  guidance ──→ control           │
-│  control ──→ UART ──→ ESP-FC    │
-│  ESP-FC ──→ UART ──→            │
-│  link ──→ bus (attitude/IMU)    │
+│  control ──→ UART ──→ FC        │
+│  FC ──→ UART ──→                │
+│  link ──→ bus (IMU raw frames)  │
 └─────────────────────────────────┘
 ```
 
 The camera is oriented along the drone's +Z axis and is not gimbalized.
 The image centre is the projection of the +Z axis onto the image plane.
 The centroid error vector (image centre → target centroid) as well as
-transmitted attitude predictions from FC are the primary guidance inputs.
+transmitted raw imu rates from FC are the primary guidance inputs.
 
 ---
 

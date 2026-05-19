@@ -309,3 +309,5 @@ class ArmCmd:
     def unpack(cls, data: bytes) -> ArmCmd:
         ts, armed_b = _ST_ARM_CMD.unpack(data)
         return cls(timestamp_ns=ts, armed=bool(armed_b))
+
+

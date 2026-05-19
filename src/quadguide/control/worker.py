@@ -9,7 +9,7 @@ from quadguide.core.health import FailsafeState, HealthFault
 from quadguide.core.logging import setup_logging
 from quadguide.core.messages import ControlCmd, HealthReport, ProcessState
 from quadguide.control.attitude_cmd import compute as attitude_cmd_compute
-from quadguide.control.limiter import failsafe_cmd, saturate, slew_rate
+from quadguide.control.limiter import saturate, slew_rate
 from quadguide.control.watchdog import build_watchdog
 from quadguide.platform.adapter import PlatformAdapter
 
@@ -43,6 +43,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     signal.signal(signal.SIGTERM, _on_sigterm)
 
     i = 0
+    in_failsafe = False
     log.info(
         "control: started (100 Hz, core=%d, sched_fifo=%s)",
         pcfg.realtime.control_cpu_core,
@@ -56,12 +57,18 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
         try:
             watchdog.check_all()
             state = FailsafeState.NOMINAL
+            in_failsafe = False
         except HealthFault as e:
             state = FailsafeState.LEVEL
-            cmd = failsafe_cmd(gcfg.throttle_hold)
-            bus.publish("control/cmd", cmd)
-            log.warning("control: failsafe — %s", e)
-            prev_cmd = cmd
+            if not in_failsafe:
+                # Publish a safe command once on the FAILSAFE transition so stale
+                # guidance roll/pitch don't linger in the ring.  After this single
+                # publish we stop writing control/cmd so the ground station can
+                # take manual control via POST /control_cmd.
+                bus.publish("control/cmd", ControlCmd(monotonic_ns(), 0.0, 0.0, 0.0, gcfg.throttle_hold))
+                prev_cmd = None
+                log.warning("control: entering failsafe — %s", e)
+                in_failsafe = True
             if i % _HEALTH_EVERY == 0:
                 bus.publish(
                     "system/health",

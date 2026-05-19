@@ -73,14 +73,11 @@ def decode_attitude(frame: CRSFFrame, diff: AttitudeDifferentiator
     return att, imu
 
 
-def encode_rc(cmd: ControlCmd | None, armed: bool, throttle_active: bool,
-              ch_cfg: ChannelConfig) -> bytes:
+def encode_rc(cmd: ControlCmd | None, armed: bool, ch_cfg: ChannelConfig) -> bytes:
     """Build a CRSF RC_CHANNELS_PACKED frame.
 
-    Three-state throttle model:
-      not armed            → arm_ch=disarmed, throttle=min (FC can arm)
-      armed, thr inactive  → arm_ch=armed,    throttle=min (motors at zero)
-      armed, thr active    → arm_ch=armed,    throttle from control cmd
+    When disarmed: throttle=min, arm_ch=disarmed regardless of cmd.
+    When armed:    throttle and attitude come from cmd (ground or guidance).
     """
     fm_us = ch_cfg.flight_mode_positions_us[ch_cfg.flight_mode_index]
 
@@ -93,23 +90,19 @@ def encode_rc(cmd: ControlCmd | None, armed: bool, throttle_active: bool,
         ]
         return build_frame(CRSF_RC_CHANNELS, pack_channels(channels_us))
 
-    # Armed — compute attitude channels from control cmd.
     if cmd is None:
-        roll_us  = ch_cfg.roll_mid_us
-        pitch_us = ch_cfg.pitch_mid_us
-        yaw_us   = ch_cfg.yaw_mid_us
+        roll_us     = ch_cfg.roll_mid_us
+        pitch_us    = ch_cfg.pitch_mid_us
+        throttle_us = ch_cfg.throttle_min_us
+        yaw_us      = ch_cfg.yaw_mid_us
     else:
         half_roll  = (ch_cfg.roll_max_us  - ch_cfg.roll_min_us)  / 2
         half_pitch = (ch_cfg.pitch_max_us - ch_cfg.pitch_min_us) / 2
         half_yaw   = (ch_cfg.yaw_max_us   - ch_cfg.yaw_min_us)   / 2
-        roll_us  = ch_cfg.roll_mid_us  + _clamp(cmd.roll_deg     / ch_cfg.roll_pitch_scale, -1, 1) * half_roll
-        pitch_us = ch_cfg.pitch_mid_us + _clamp(cmd.pitch_deg    / ch_cfg.roll_pitch_scale, -1, 1) * half_pitch
-        yaw_us   = ch_cfg.yaw_mid_us   + _clamp(cmd.yaw_rate_dps / ch_cfg.yaw_rate_scale,  -1, 1) * half_yaw
-
-    if throttle_active and cmd is not None:
+        roll_us     = ch_cfg.roll_mid_us  + _clamp(cmd.roll_deg     / ch_cfg.roll_pitch_scale, -1, 1) * half_roll
+        pitch_us    = ch_cfg.pitch_mid_us + _clamp(cmd.pitch_deg    / ch_cfg.roll_pitch_scale, -1, 1) * half_pitch
         throttle_us = ch_cfg.throttle_min_us + _clamp(cmd.throttle_norm, 0, 1) * (ch_cfg.throttle_max_us - ch_cfg.throttle_min_us)
-    else:
-        throttle_us = ch_cfg.throttle_min_us
+        yaw_us      = ch_cfg.yaw_mid_us   + _clamp(cmd.yaw_rate_dps / ch_cfg.yaw_rate_scale,  -1, 1) * half_yaw
 
     channels_us = [
         roll_us, pitch_us, throttle_us, yaw_us,
