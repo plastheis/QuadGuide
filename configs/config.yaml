@@ -59,12 +59,12 @@ guidance:
     closing_vel_min_area_rate: 0.001 # fallback if smoothed area rate is below this
     closing_vel_area_scale: 5.0      # area-rate (normalised/s) → m/s conversion
   pure_pursuit:
-    K: 6.0                    # m/s² per radian of LOS angle
+    K: 20                    # m/s² per radian of LOS angle
 
 watchdog:
-  target_estimate_ms: 150
+  target_estimate_ms: 200
   fc_attitude_ms: 250
-  fc_imu_ms: 50
+  fc_imu_ms: 250
   guidance_accel_ms: 100
 
 link:

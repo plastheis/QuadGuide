@@ -17,6 +17,7 @@ __all__ = ["run"]
 
 _HEALTH_EVERY = 20   # iterations; 100 Hz / 20 = 5 Hz health rate
 _DT = 1.0 / 100      # nominal loop period (s); fixed, not measured per-loop
+_ARM_DWELL_NS = 2 * 1_000_000_000   # hold throttle=0 for this long after arming so the FC can latch
 
 
 def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
@@ -42,62 +43,82 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
 
     signal.signal(signal.SIGTERM, _on_sigterm)
 
-    i = 0
+    armed = False
+    armed_since_ns: int | None = None
+    dwell_done = False
     in_failsafe = False
+    i = 0
     log.info(
-        "control: started (100 Hz, core=%d, sched_fifo=%s)",
+        "control: started (100 Hz, core=%d, sched_fifo=%s, throttle_hold=%.2f, arm_dwell=%.1fs)",
         pcfg.realtime.control_cpu_core,
         pcfg.realtime.control_sched_fifo,
+        gcfg.throttle_hold,
+        _ARM_DWELL_NS / 1e9,
     )
 
     while not stop:
         rate.sleep()
         i += 1
+        now_ns = monotonic_ns()
 
+        # Track arm state from ground station
+        arm_cmd = bus.latest("arm/cmd")
+        now_armed = bool(arm_cmd and arm_cmd.armed)
+        if now_armed != armed:
+            armed = now_armed
+            if armed:
+                armed_since_ns = now_ns
+                dwell_done = False
+                log.info("control: ARMED — holding throttle=0 for %.1fs before commands", _ARM_DWELL_NS / 1e9)
+            else:
+                armed_since_ns = None
+                dwell_done = False
+                log.info("control: DISARMED — throttle=0, commands suppressed")
+
+        if armed and not dwell_done and armed_since_ns is not None \
+                and (now_ns - armed_since_ns) >= _ARM_DWELL_NS:
+            dwell_done = True
+            log.info("control: arm dwell complete — throttle=%.2f, guidance commands live", gcfg.throttle_hold)
+
+        # Watchdog
         try:
             watchdog.check_all()
+            if in_failsafe:
+                log.info("control: failsafe cleared")
+                in_failsafe = False
             state = FailsafeState.NOMINAL
-            in_failsafe = False
+            fault = None
         except HealthFault as e:
+            fault = e
             state = FailsafeState.LEVEL
             if not in_failsafe:
-                # Publish a safe command once on the FAILSAFE transition so stale
-                # guidance roll/pitch don't linger in the ring.  After this single
-                # publish we stop writing control/cmd so the ground station can
-                # take manual control via POST /control_cmd.
-                bus.publish("control/cmd", ControlCmd(monotonic_ns(), 0.0, 0.0, 0.0, gcfg.throttle_hold))
-                prev_cmd = None
                 log.warning("control: entering failsafe — %s", e)
                 in_failsafe = True
-            if i % _HEALTH_EVERY == 0:
-                bus.publish(
-                    "system/health",
-                    HealthReport(monotonic_ns(), "control", ProcessState.FAILSAFE, str(e)),
-                )
-            continue
 
         accel = bus.latest("guidance/accel")
 
-        if accel is None:
-            if i % _HEALTH_EVERY == 0:
-                bus.publish(
-                    "system/health",
-                    HealthReport(monotonic_ns(), "control", ProcessState.OK, ""),
-                )
-            continue
+        # Choose throttle: 0 while disarmed or within arm dwell; else throttle_hold
+        thr = gcfg.throttle_hold if (armed and dwell_done) else 0.0
 
-        roll, pitch = attitude_cmd_compute(accel)
-        roll, pitch = saturate(roll, pitch, acfg.control_limits)
-        roll, pitch = slew_rate(roll, pitch, prev_cmd, acfg.control_limits, _DT)
+        # Choose attitude: only apply guidance when armed, dwell done, no failsafe, and accel present
+        if armed and dwell_done and fault is None and accel is not None:
+            roll, pitch = attitude_cmd_compute(accel)
+            roll, pitch = saturate(roll, pitch, acfg.control_limits)
+            roll, pitch = slew_rate(roll, pitch, prev_cmd, acfg.control_limits, _DT)
+        else:
+            roll, pitch = 0.0, 0.0
+            prev_cmd = None  # reset slew baseline so re-entry starts from level
 
-        cmd = ControlCmd(monotonic_ns(), roll, pitch, 0.0, gcfg.throttle_hold)
+        cmd = ControlCmd(now_ns, roll, pitch, 0.0, thr)
         bus.publish("control/cmd", cmd)
         prev_cmd = cmd
 
         if i % _HEALTH_EVERY == 0:
+            proc_state = ProcessState.FAILSAFE if in_failsafe else ProcessState.OK
+            detail = str(fault) if fault is not None else ""
             bus.publish(
                 "system/health",
-                HealthReport(monotonic_ns(), "control", ProcessState.OK, ""),
+                HealthReport(monotonic_ns(), "control", proc_state, detail),
             )
 
     bus.detach()
