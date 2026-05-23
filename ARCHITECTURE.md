@@ -30,14 +30,26 @@ over UART using the CRSF protocol (420000 baud, bidirectional).
 │  guidance ──→ control           │
 │  control ──→ UART ──→ FC        │
 │  FC ──→ UART ──→                │
-│  link ──→ bus (IMU raw frames)  │
+│  link ──→ bus (attitude + IMU)  │
 └─────────────────────────────────┘
 ```
 
-The camera is oriented along the drone's +Z axis and is not gimbalized.
-The image centre is the projection of the +Z axis onto the image plane.
-The centroid error vector (image centre → target centroid) as well as
-transmitted raw imu rates from FC are the primary guidance inputs.
+The camera is oriented along the drone's **+Z body axis and is not gimbalized.
+When the quad is level, +Z points up — the camera looks at the sky, not the
+ground.** The image centre is the projection of the +Z axis onto the image
+plane, so a target at image centre lies directly along the +Z (overhead) axis
+when level. The centroid error vector (image centre → target centroid),
+together with **raw body-rate and acceleration data received from the FC over
+the CRSF `0x80` IMU frame**, are the primary guidance inputs.
+
+> **Orientation note (important).** Because the bore-sight points up, the
+> engagement geometry is the inverse of a conventional downward/forward-looking
+> seeker. To pursue a target the quad tilts its thrust vector toward the target;
+> tilting also swings the +Z axis (and therefore the bore-sight) in the same
+> direction, which is what drives the centroid back toward image centre. The
+> consequence for the guidance→attitude mapping is a per-axis sign relative to a
+> nadir-facing camera. See Section 6.7 (`control/attitude_cmd.py`) for the
+> derivation and the calibration check.
 
 ---
 
@@ -151,7 +163,7 @@ quadguide/
 │   │   ├── ccv_tracker_worker.py   # generic IPC loop for classical CV tracker slot
 │   │   ├── ncv_tracker_worker.py   # generic IPC loop for neural CV tracker slot
 │   │   └── tracker_factories.py    # CCV_TRACKERS / NCV_TRACKERS registry + constructors
-│   ├── link/                   # UART ↔ ESP-FC bridge
+│   ├── link/                   # UART ↔ FC bridge
 │   ├── guidance/               # proportional navigation
 │   ├── control/                # attitude command + real-time loop
 │   ├── hil/                    # hardware-in-the-loop harness
@@ -176,10 +188,10 @@ quadguide/
                     ┌─────────────────────────────────────────────────────┐
                     │  SHARED MEMORY                                      │
                     │                                                     │
-                    │  frame_buffer (shm ring, 4 slots, ~1MB each)        │
-                    │  bus topics (shm rings, small structs):                   │
-                    │    ccv_tracker/estimate   ncv_tracker/estimate          │
-                    │    target/estimate                                       │
+                    │  frame_buffer (shm ring, 6 slots, ~1MB each)        │
+                    │  bus topics (shm rings, small structs):             │
+                    │    ccv_tracker/estimate   ncv_tracker/estimate      │
+                    │    target/estimate                                  │
                     │    fc/attitude    fc/imu          guidance/accel    │
                     │    control/cmd    system/health   lockon/cmd        │
                     └─────────────────────────────────────────────────────┘
@@ -219,8 +231,8 @@ quadguide/
 [link worker]                               [ground worker]
   rx loop:                                    subscribe all topics
     parse CRSF frames from UART (420kbaud)    serve web UI on :8080
-    decode ATTITUDE (0x1E)                    handle POST /lockon
-    differentiate angles → body rates           → bus.publish("lockon/cmd", cmd)
+    decode ATTITUDE (0x1E) → angles          handle POST /lockon
+    decode IMU RAW (0x80)  → gyro + accel       → bus.publish("lockon/cmd", cmd)
     bus.publish("fc/attitude", att)           handle POST /arm
     bus.publish("fc/imu", imu)                  → bus.publish("arm/cmd", cmd)
   tx loop (50 Hz, starts immediately):       stream annotated MJPEG
@@ -230,14 +242,15 @@ quadguide/
     (FC enters failsafe if uplink stops)
 
                     ↓ target/estimate
-                    ↓ fc/attitude
+                    ↓ fc/attitude  +  fc/imu
 
 [guidance worker]
   loop (50Hz):
     est = bus.latest("target/estimate")
-    att = bus.latest("fc/attitude")
+    att = bus.latest("fc/attitude")     # angles for frame resolution
+    imu = bus.latest("fc/imu")          # raw body rates for LOS derotation
     los_r = los.los_rate(
-      est.centroid_norm, att.body_rates, fov)
+      est.centroid_norm, imu.body_rates, fov)
     v_c = closing_vel.estimate(est)
     accel = pronav.pronav(los_r, v_c, N)
     bus.publish("guidance/accel", accel)
@@ -250,7 +263,7 @@ quadguide/
     watchdog.check_all()           # failsafe if any input stale
     accel = bus.latest("guidance/accel")
     att   = bus.latest("fc/attitude")
-    cmd   = attitude_cmd.compute(accel)
+    cmd   = attitude_cmd.compute(accel, att)
     cmd   = limiter.apply(cmd, prev_cmd)
     bus.publish("control/cmd", cmd)
     # link worker reads control/cmd and writes to UART
@@ -258,12 +271,12 @@ quadguide/
 
 ### 4.2 Lock-on flow
 
-The lock-on command originates from the operator clicking a target in the ground
-station web UI. The flow:
+The lock-on command originates from the operator moving the target into the center square crosshair and 
+pressing lock button in the ground station web UI. The flow:
 
 ```
-operator clicks bbox in browser
-  → POST /lockon {"x":0.4,"y":0.3,"w":0.1,"h":0.1}
+operator locks on with centered bbox in browser
+  → POST /lockon {"x":0,"y":0,"w":0.1,"h":0.1}
   → ground/server.py
   → bus.publish("lockon/cmd", LockOnCmd(bbox, timestamp_ns, seq=next_seq()))
   → CCVTrackerWorker reads lockon/cmd
@@ -308,7 +321,7 @@ platform:
     fps: 60
   serial:
     port: /dev/ttyS0
-    baud: 115200
+    baud: 420000             # CRSF link rate — MUST match FC UART config
   inference:
     device: rknn             # "cpu" | "cuda" | "rknn" | "tensorrt"
     backbone: models/nanotrack_backbone.rknn
@@ -352,6 +365,7 @@ guidance:
 watchdog:
   target_estimate_ms: 150
   fc_attitude_ms: 50
+  fc_imu_ms: 50
   guidance_accel_ms: 100
 
 mission:
@@ -450,9 +464,9 @@ class AttitudeState:
     roll_rad: float
     pitch_rad: float
     yaw_rad: float
-    roll_rate_rps: float
-    pitch_rate_rps: float
-    yaw_rate_rps: float
+    roll_rate_rps: float        # from 0x80 IMU gx; falls back to differentiated 0x1E
+    pitch_rate_rps: float       # from 0x80 IMU gy
+    yaw_rate_rps: float         # from 0x80 IMU gz
 
 # Wire: timestamp(Q) + 6×float = 32 bytes
 FMT_IMU_FRAME = "!Qffffff"
@@ -460,8 +474,8 @@ FMT_IMU_FRAME = "!Qffffff"
 @dataclass(frozen=True)
 class IMUFrame:
     timestamp_ns: int
-    ax: float; ay: float; az: float     # m/s²
-    gx: float; gy: float; gz: float     # rad/s
+    ax: float; ay: float; az: float     # m/s²   (NED body: ax=North, ay=East, az=Down)
+    gx: float; gy: float; gz: float     # rad/s  (NED body: gx=roll, gy=pitch, gz=yaw)
 
 # Wire: timestamp(Q) + 2×float = 16 bytes
 FMT_ACCEL_CMD = "!Qff"
@@ -897,15 +911,30 @@ Logic:
 **`link/worker.py`** — process entry point
 Two concurrent loops (asyncio internally, since this is pure I/O):
 
-- RX loop: read bytes from serial, feed to MSP parser, on complete frame call
-  `espfc.parse_attitude()` or `espfc.parse_imu()`, publish to bus
-- TX loop: every 10ms read `bus.latest("control/cmd")`, encode as
-  `MSP_SET_RAW_RC`, write to serial
+- RX loop: read bytes from serial, feed to the **CRSF** parser, and on each
+  complete frame dispatch by type:
+    - `0x1E` ATTITUDE → `fc.decode_attitude()` → publish `fc/attitude`
+    - `0x80` IMU RAW  → `fc.decode_imu()`      → publish `fc/imu`, and merge the
+      gyro rates into the `AttitudeState` body-rate fields (see below)
+    - `0x21` FLIGHT MODE → parse string, publish/track current FC mode
+    - `0x02` GPS, `0x08` BATTERY → publish to telemetry (ground only)
+- TX loop: every 20 ms read `bus.latest("control/cmd")`, encode as a CRSF
+  `RC_CHANNELS_PACKED` (`0x16`) frame, write to serial.
+
+> **Attitude vs IMU rate sourcing (changed).** The FC now emits a custom
+> `0x80` IMU RAW frame carrying **true gyro rates and accelerometer data** at
+> 50 Hz. This is the authoritative source of body rates. The link worker fills
+> `AttitudeState.{roll,pitch,yaw}_rate_rps` directly from the `0x80` gyro
+> fields (gx/gy/gz), NOT from finite-differencing the `0x1E` Euler angles.
+> `AttitudeDifferentiator` is retained ONLY as a fallback for the case where
+> `0x80` frames are absent (older FC firmware) — guarded by a `have_imu_frame`
+> flag set on first `0x80` receipt. Real gyro is markedly better for ProNav LOS
+> derotation: differentiated Euler angles are noisy and add a half-sample of lag.
 
 The link worker publishes `HealthReport("link", ...)` at 5 Hz regardless of
 UART state. This is the direct health signal for the link process. Note that
 `fc/attitude` staleness in the control watchdog is an *indirect* signal of link
-health — it only fires once the FC stops sending MSP frames, which may lag
+health — it only fires once the FC stops sending CRSF frames, which may lag
 behind the underlying serial fault. The direct `system/health` from the link
 worker catches the fault earlier and lets the ground station display the correct
 cause.
@@ -915,36 +944,56 @@ On serial disconnect: log error, attempt reconnect every 500ms, publish
 
 **`link/crsf.py`**
 CRSF protocol implementation. No bus or serial dependencies.
-- `CRSF_SYNC = 0xC8`, `CRSF_ATTITUDE = 0x1E`, `CRSF_RC_CHANNELS = 0x16`
-- `crc8(data: bytes) → int` — CRC8 with poly 0xD5, precomputed lookup table
+- `CRSF_SYNC = 0xC8`, `CRSF_ATTITUDE = 0x1E`, `CRSF_RC_CHANNELS = 0x16`,
+  `CRSF_GPS = 0x02`, `CRSF_BATTERY = 0x08`, `CRSF_FLIGHT_MODE = 0x21`,
+  `CRSF_IMU_RAW = 0x80`
+- `crc8(data: bytes) → int` — CRC-8 DVB-S2, poly `0xD5`, init `0x00`,
+  precomputed lookup table. Covers type byte through last payload byte
+  (NOT sync or length).
 - `CRSFFrame` dataclass: `type`, `payload`, `timestamp_ns`
-- `CRSFParser` — stateful byte-by-byte parser; states: WAIT_SYNC → READ_LEN → READ_TYPE → READ_PAYLOAD → READ_CRC; resets on bad length or CRC mismatch
+- `CRSFParser` — stateful byte-by-byte parser; states: WAIT_SYNC → READ_LEN → READ_TYPE → READ_PAYLOAD → READ_CRC; resets on bad length or CRC mismatch. Re-aligns on `0xC8` after a framing error.
 - `build_frame(type, payload) → bytes` — `[0xC8][len][type][payload][crc]`
 - `pack_channels(channels: list[int]) → bytes` — packs 16 × 11-bit values into 22 bytes, LSB-first
+- Also exports `us_to_ticks(us) → int` and `ticks_to_us(ticks) → float` — CRSF
+  µs↔tick conversion (988–2012 µs ↔ 172–1811 ticks). `pack_channels` accepts
+  µs values and converts to ticks internally; callers never deal with raw ticks.
 
 **`link/differentiator.py`**
-`AttitudeDifferentiator(alpha: float)` — finite-difference body rate estimator with per-axis first-order LP filter. Yaw uses shortest-path angular difference to handle ±180° wrap. `alpha=1.0` = no filtering, `alpha→0` = heavy smoothing.
-
-**`link/crsf.py`**
-Also exports `us_to_ticks(us) → int` and `ticks_to_us(ticks) → float` — CRSF µs↔tick
-conversion (988–2012 µs ↔ 172–1811 ticks). `pack_channels` accepts µs values and
-converts to ticks internally; callers never deal with raw ticks.
+`AttitudeDifferentiator(alpha: float)` — finite-difference body rate estimator
+with per-axis first-order LP filter. Yaw uses shortest-path angular difference
+to handle ±180° wrap. `alpha=1.0` = no filtering, `alpha→0` = heavy smoothing.
+**Fallback only** — used when no `0x80` IMU RAW frame has been seen. When `0x80`
+is present, body rates come straight from the gyro and this module is bypassed.
 
 **`link/fc.py`**
 FC encoding/decoding. Protocol-level; not firmware-specific.
 - `ChannelConfig` frozen dataclass — per-channel µs calibration (min/mid/max for
   sticks, disarmed/armed for arm switch, position list for flight mode). Built from
   `config.yaml` via `channel_config_from_cfg(cfg)` at link worker startup.
-- `decode_attitude(frame, diff) → (AttitudeState, IMUFrame)` — unpacks int16 pitch/roll/yaw
-  (units: 100 µrad), calls differentiator for body rates, returns `AttitudeState`
-  with angles+rates and `IMUFrame` with gx/gy/gz from diff, ax=ay=az=0
+- `decode_attitude(frame, diff, have_imu_frame) → AttitudeState` — unpacks the
+  three `0x1E` int16 fields. **Field order on the wire is pitch, roll, yaw**
+  (radians × 10000); recover radians as `raw / 10000.0`. If `have_imu_frame` is
+  False, body rates are filled from `diff` (the differentiator fallback); if
+  True, the rate fields are left for the `0x80` handler to populate.
+- `decode_imu(frame) → IMUFrame` — unpacks the six `0x80` int16 fields in NED
+  body axes: ax/ay/az in milli-G (`raw / 1000.0` → G, ×9.80665 → m/s²),
+  gx/gy/gz in deci-deg/s (`raw / 10.0` → deg/s, → rad/s). Returns a fully
+  populated `IMUFrame`. The gyro rates are also merged into the live
+  `AttitudeState` body-rate fields by the link worker.
 - `encode_rc(cmd, armed, ch_cfg) → bytes` — maps ControlCmd (engineering units) to
   CRSF RC_CHANNELS_PACKED using `ch_cfg` for all channel calibration; all µs
-  internally, no ticks visible to callers
+  internally, no ticks visible to callers.
+
+> **Coordinate frame.** The `0x80` IMU frame is NED body-fixed: gx is the
+> roll-axis rate (about body North/X), gy the pitch-axis rate (East/Y), gz the
+> yaw-axis rate (Down/Z). The guidance LOS derotation (Section 6.6) and the
+> control mapping (Section 6.7) must use this convention consistently. If the
+> camera image axes do not align with NED body axes, the alignment rotation is
+> applied once in `guidance/los.py`, not scattered across modules.
 
 **`link/serial_port.py`**
 
-- `SerialPort(port, baud)` — opens with `pyserial`
+- `SerialPort(port, baud)` — opens with `pyserial` at 420000 baud
 - Non-blocking read with configurable timeout
 - Write queue: `enqueue(data)` is non-blocking; background coroutine drains it
 - `is_connected → bool`
@@ -961,27 +1010,43 @@ rate = RateLimiter(hz=50)
 loop:
     rate.sleep()
     est = bus.latest("target/estimate")
-    att = bus.latest("fc/attitude")
-    if est is None or att is None: continue
+    att = bus.latest("fc/attitude")     # Euler angles, for frame resolution
+    imu = bus.latest("fc/imu")          # raw gyro rates, for LOS derotation
+    if est is None or att is None or imu is None: continue
     if est.tracker_health in ("lost", "no_lock"): continue
-    los_r = los.los_rate(est.centroid_norm, att, config.guidance.fov_horizontal_rad)
+    los_r = los.los_rate(est.centroid_norm, imu, config.guidance.fov_horizontal_rad)
     v_c   = closing_vel.estimate(est)
     accel = pronav.pronav(los_r, v_c, config.guidance.N)
     bus.publish("guidance/accel", AccelCmd(monotonic_ns(), accel[0], accel[1]))
 ```
 
 **`guidance/los.py`**
-`los_rate(centroid_norm, attitude: AttitudeState, fov_rad) → tuple[float, float]`
+`los_rate(centroid_norm, imu: IMUFrame, fov_rad) → tuple[float, float]`
 
-Computes the line-of-sight rate vector in body frame. The image-plane centroid
-error is a direct measurement of LOS angle (for small angles). LOS rate is
-estimated by differencing centroid position between the current and previous
-estimate, divided by elapsed time, then correcting for body rotation using
-attitude body rates from the FC.
+Computes the inertial line-of-sight rate vector in body frame. The image-plane
+centroid error is a direct measurement of LOS angle (small-angle). The apparent
+LOS rate is estimated by differencing centroid position between the current and
+previous estimate over elapsed time; the body rotation measured by the gyro is
+then subtracted to recover the *inertial* LOS rate — the quantity ProNav
+requires.
 
 ```
-los_rate = (centroid_now - centroid_prev) / dt - body_rates_projected
+los_apparent = (centroid_now - centroid_prev) / dt
+los_rate     = los_apparent - body_rates_projected(imu.gx, imu.gy, imu.gz)
 ```
+
+> **Changed:** body rates now come from the `0x80` gyro (`imu.gx/gy/gz`),
+> not from differentiated Euler angles. This is the single most important
+> consumer of the new raw-IMU data. Raw gyro at 50 Hz with 0.1°/s resolution
+> gives a clean derotation term; the previous differentiated-Euler path injected
+> quantisation and lag directly into the guidance command.
+>
+> **Camera-up axis mapping:** because the bore-sight is +Z (up when level), the
+> mapping from image axes to the body roll/pitch axes used in derotation is the
+> up-facing convention. The image→body axis alignment (including the sign flip)
+> is applied here, once, so that `pronav.pronav` and `control/attitude_cmd`
+> downstream see a consistent body-frame LOS rate. This is fixed by the camera
+> mount, not configurable.
 
 **`guidance/pronav.py`**
 `pronav(los_rate: tuple, closing_vel: float, N: float) → tuple[float, float]`
@@ -1049,12 +1114,32 @@ loop:
 **`control/attitude_cmd.py`**
 `compute(accel: AccelCmd, att: AttitudeState) → ControlCmd`
 
-Small-angle mapping from body-frame acceleration to attitude setpoints:
+Small-angle mapping from body-frame acceleration to attitude setpoints. The
+quad accelerates laterally by tilting its thrust vector, so a horizontal
+acceleration command becomes a tilt-angle command via `a ≈ g·tan(θ) ≈ g·θ`.
+The signs below are fixed for this airframe's **+Z (up when level)** bore-sight:
 
 ```
-roll_deg  =  degrees(accel.ay / g)
-pitch_deg = -degrees(accel.ax / g)
+roll_deg  = -degrees(accel.ay / g)
+pitch_deg =  degrees(accel.ax / g)
 ```
+
+> **Sign convention (fixed by hardware).** A conventional nadir/forward camera
+> would use `roll = +ay/g`, `pitch = -ax/g`. Because this airframe's bore-sight
+> is **+Z (up when level)**, the image plane is effectively mirrored about the
+> horizon relative to a downward camera, which inverts both axes of the
+> centroid→tilt relationship — hence the signs above. The camera mount is fixed,
+> so this is a hard-coded property of the build, not a configurable option. The
+> level-flight derivation: a target whose centroid sits at +Y in the (up-facing)
+> image lies physically toward −Y of the airframe once projected through an
+> upward bore-sight, so the corrective roll is opposite in sign to the nadir case.
+>
+> **Verify empirically before flight.** On the bench HIL rig, command a known
+> centroid offset and confirm the commanded tilt drives the simulated centroid
+> toward zero (negative feedback). If it diverges, the signs above are wrong for
+> the actual mount and must be corrected in source. This single check is the
+> cheapest guard against an inverted guidance loop, which with an up-facing
+> camera is an easy mistake to make.
 
 Yaw rate command is zero (yaw hold). Throttle is held constant at a config
 value during tracking (altitude hold is delegated to the FC's baro loop if
@@ -1084,13 +1169,17 @@ mode these files are never imported.
 **`hil/orchestrator.py`** — HIL entry point
 Spawns all normal workers but replaces the camera source with `VirtualCamera`.
 Runs the target dynamics simulation and feeds it into `virtual_source.py`.
-In `swil` mode, also replaces the link worker with a simulated FC dynamics model.
+In `swil` mode, also replaces the link worker with a simulated FC dynamics model
+that emits synthetic `0x1E` attitude and `0x80` IMU frames so the rest of the
+stack sees an identical bus contract to flight.
 
 **`hil/virtual_source.py`**
 `VirtualCamera(CameraSource)` — registered in `camera/sources.py` under the key
 `"virtual"`. On each `read()` call, queries the current sim state from
 `hil/projector.py` and renders a synthetic frame with the target drawn as a
-coloured rectangle.
+coloured rectangle. **The projection uses the up-facing (+Z) bore-sight model**
+so the simulated centroid behaves with the same sign convention as the real
+camera — essential for validating the `attitude_cmd` sign convention on the bench.
 
 **`hil/target_models.py`**
 
@@ -1101,13 +1190,16 @@ coloured rectangle.
 **`hil/projector.py`**
 `project_target(pose_3d: Pose3D, attitude: AttitudeState, K: np.ndarray) → BoundingBox`
 Projects a 3D target position into image-plane pixel coordinates using the camera
-intrinsic matrix K (from calibration) and the current drone attitude. Returns a
-normalised bounding box.
+intrinsic matrix K (from calibration) and the current drone attitude. The
+extrinsic rotation places the optical axis along body **+Z (up)**, matching the
+physical mount. Returns a normalised bounding box.
 
 **`hil/dynamics.py`**
 6-DoF rigid body integrator for the quad (used in `swil` mode only). Takes
 `ControlCmd` from the bus, integrates equations of motion, publishes synthetic
-`AttitudeState` and `IMUFrame` to the bus. Bypasses the real FC entirely.
+`AttitudeState` and `IMUFrame` to the bus. Bypasses the real FC entirely. The
+synthetic `IMUFrame` carries true simulated gyro/accel in NED body axes, so the
+guidance derotation path is exercised identically to flight.
 
 **`hil/scenario.py`**
 `load_scenario(path) → Scenario` — loads a YAML scenario file defining initial
@@ -1128,10 +1220,10 @@ FastAPI endpoints:
 
 - `GET /stream` — MJPEG stream of annotated camera frames at ~15Hz
 - `GET /telemetry` — Server-Sent Events; pushes latest `TargetEstimate`,
-  `AttitudeState`, and all `HealthReport` messages as JSON every 100ms.
-  Also includes `ccv_algo` and `ncv_algo` strings derived from health-report
-  process names (e.g. `"ccv_kcf"` → `ccv_algo: "kcf"`). These update whenever
-  a new health report arrives and require no additional bus topic.
+  `AttitudeState`, `IMUFrame`, and all `HealthReport` messages as JSON every
+  100ms. Also includes `ccv_algo` and `ncv_algo` strings derived from
+  health-report process names (e.g. `"ccv_kcf"` → `ccv_algo: "kcf"`). These
+  update whenever a new health report arrives and require no additional bus topic.
 - `POST /lockon` — body `{"x","y","w","h"}` normalised; publishes `LockOnCmd`
 - `GET /health` — returns JSON summary of all process health states
 
@@ -1161,13 +1253,18 @@ Single-file web UI (vanilla JS, no framework):
 | `ccv_tracker/estimate`   | TrackerEstimate       | ccv worker       | fusion worker                        | ~200 Hz          |
 | `ncv_tracker/estimate`   | TrackerEstimate       | ncv worker       | fusion worker                        | ~30 Hz           |
 | `target/estimate`        | TargetEstimate        | fusion worker    | guidance, control (watchdog), ground | ~200 Hz          |
-| `fc/attitude`     | AttitudeState         | link worker      | guidance, control (watchdog), ground | 50–100 Hz        |
-| `fc/imu`          | IMUFrame              | link worker      | ground                               | 50–100 Hz (gx/gy/gz derived; ax=ay=az=0) |
+| `fc/attitude`     | AttitudeState         | link worker      | guidance, control (watchdog), ground | 50 Hz (0x1E; rates from 0x80) |
+| `fc/imu`          | IMUFrame              | link worker      | guidance (LOS derotation), ground    | 50 Hz (0x80 raw gyro + accel) |
 | `arm/cmd`         | ArmCmd                | ground worker    | link worker                          | event-driven     |
 | `guidance/accel`  | AccelCmd              | guidance worker  | control worker                       | 50 Hz            |
 | `control/cmd`     | ControlCmd            | control worker   | link worker                          | 100 Hz           |
 | `lockon/cmd`      | LockOnCmd             | ground worker    | ccv worker, ncv worker               | event-driven     |
 | `system/health`   | HealthReport          | all workers      | ground worker                        | 5 Hz per process |
+
+> **Changed:** `fc/imu` now carries real gyro and accelerometer data decoded
+> from the CRSF `0x80` IMU RAW frame (50 Hz, NED body axes), and is consumed by
+> the guidance worker for LOS derotation. Previously it carried only
+> finite-differenced gyro with `ax=ay=az=0`.
 
 ---
 
@@ -1279,18 +1376,89 @@ No other source files change.
 
 ## 11. Known Constraints and Limitations
 
+- **Camera bore-sight is +Z (up when level).** The guidance→attitude sign
+  convention is inverted on both axes relative to a nadir camera, and is
+  hard-coded in `control/attitude_cmd.py` (a fixed property of the build, not
+  configurable). The signs MUST be verified on the bench HIL rig before any
+  flight (command a known centroid offset, confirm negative feedback). This is
+  the highest-risk single point of error in the stack.
+- **Body rates now come from the FC `0x80` IMU RAW frame** (true gyro, 50 Hz,
+  NED body axes), not from differentiated Euler angles. The
+  `AttitudeDifferentiator` remains only as a fallback for FC firmware that does
+  not emit `0x80`. Raw accelerometer data (ax/ay/az) is also available on
+  `fc/imu` and is currently consumed only by the ground station; it is a
+  candidate input for augmented proportional navigation (APN) and for an
+  altitude/throttle estimator (see Section 12).
+- **CRSF link is 420000 baud, bidirectional.** Uplink is `0x16`
+  RC_CHANNELS_PACKED at the configured TX rate (default 50 Hz). Downlink frames
+  decoded: `0x1E` attitude, `0x80` IMU raw, `0x21` flight mode, `0x02` GPS,
+  `0x08` battery. The uplink must be continuous — if it stops, the FC enters its
+  own failsafe.
+- **`0x80` is a custom frame.** Standard EdgeTX/OpenTX telemetry will not parse
+  it; only quadguide's CRSF parser consumes it. Ensure the madflight FC firmware
+  is built to emit it at 50 Hz.
 - **Altitude hold** is not implemented in quadguide. Throttle is held open-loop.
-  The FC's barometer loop (if enabled in ESP-FC) handles altitude stability
-  independently.
+  The FC's barometer loop (if enabled in madflight) handles altitude stability
+  independently. With an up-facing camera, an uncontrolled altitude excursion
+  does not blind the seeker the way a nadir camera flying into the ground would,
+  but it still corrupts the closing-velocity estimate.
 - **Yaw** is not controlled by the guidance system. Yaw hold is delegated to the
   FC heading hold mode.
 - **Only one target at a time.** The lock-on command replaces any existing target.
 - **No re-acquisition.** If the target is lost (`tracker_health="lost"`), the
   system enters failsafe level flight. Re-acquisition requires a new lock-on
   command from the operator.
-- **CRSF uplink rate** defaults to 50 Hz (configurable via `link.tx_rate_hz`). The uplink
-  must be continuous — if it stops, the FC enters failsafe. Body rates in `fc/attitude`
-  and `fc/imu` are finite-difference approximations of Euler angles, not raw gyro data.
-  Raw gyro accuracy requires a direct IMU connection to the companion computer.
 - **NPU handle leak on SIGKILL.** Clean shutdown (SIGTERM) is required for the
   ncv worker (nanotrack). See Section 8.
+
+---
+
+## 12. Recommended Changes Given the New IMU Telemetry
+
+These follow directly from the FC now streaming real `0x80` IMU data and from
+the up-facing camera. Listed roughly in priority order.
+
+1. **Use ANGLE flight mode on the FC, not RATE.** The uplink `0x16` channels map
+   to roll/pitch sticks. ProNav emits a lateral acceleration → tilt-angle
+   command (`θ = a/g`), which is a static, invertible mapping onto ANGLE-mode
+   stick deflection. RATE mode would require quadguide to close an extra
+   integrator around its own attitude estimate to hold a commanded tilt, adding
+   loop complexity and noise sensitivity for no benefit. `control/attitude_cmd.py`
+   already produces angle setpoints, so ANGLE mode is the natural fit. Confirm
+   the FC flight-mode channel (decoded via `0x21`) reports `ANGLE`.
+
+2. **Feed raw gyro into LOS derotation (done in this revision).** This is the
+   primary payoff of the `0x80` frame and is already wired into
+   `guidance/los.py`. Drop the differentiated-Euler path entirely once `0x80`
+   is confirmed present in flight.
+
+3. **Add accelerometer-based augmented ProNav (APN) as an option.** The `0x80`
+   frame carries body accelerations. APN adds a term proportional to estimated
+   target acceleration: `a_cmd = N·V_c·λ̇ + (N/2)·a_target`. Even a coarse
+   target-accel estimate sharpens pursuit of a maneuvering target. Gate it behind
+   a config flag; start with classical ProNav and enable APN only after the basic
+   loop is validated on the bench.
+
+4. **Use accelerometers for a closing-velocity / altitude aid.** Closing velocity
+   is currently inferred from bbox area rate, which is noisy (hence the fallback
+   constant). Integrating body-frame acceleration over short windows gives an
+   independent velocity estimate to cross-check or complementary-filter against
+   the vision estimate, reducing fallback activations.
+
+5. **Gravity-vector cross-check on the attitude.** With both `0x1E` Euler angles
+   and `0x80` accelerometers available, a slow complementary filter can validate
+   that the reported attitude and the measured gravity direction agree. A
+   persistent disagreement is an early warning of FC attitude-estimator drift
+   before it corrupts the guidance frame transforms.
+
+6. **Tighten the `fc/imu` watchdog.** Now that guidance depends on `fc/imu` for
+   derotation (not just telemetry), add `fc/imu` to the control worker's
+   watchdog set (added to config in Section 5 as `watchdog.fc_imu_ms: 50`). If
+   the IMU stream drops, derotation silently degrades to stale rates — fail safe
+   instead.
+
+7. **Reconcile the remaining MSP references and the baud field.** The original
+   document mixed MSP (`MSP_SET_RAW_RC`, "feed to MSP parser") into an otherwise
+   CRSF link, and set `serial.baud: 115200` while the link is 420000. Both are
+   corrected here; audit the actual `link/` source to ensure no MSP code path
+   survives.

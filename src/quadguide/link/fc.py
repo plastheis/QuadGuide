@@ -2,9 +2,14 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 
+import math
+
 from quadguide.core.messages import AttitudeState, ControlCmd, IMUFrame
 from quadguide.link.crsf import CRSF_RC_CHANNELS, CRSFFrame, build_frame, pack_channels
 from quadguide.link.differentiator import AttitudeDifferentiator
+
+_G_MPS2     = 9.80665
+_DEG_TO_RAD = math.pi / 180.0
 
 _MID_US = 1500.0  # neutral µs for unused channels
 
@@ -53,24 +58,63 @@ def channel_config_from_cfg(cfg: dict) -> ChannelConfig:
     )
 
 
-def decode_attitude(frame: CRSFFrame, diff: AttitudeDifferentiator
-                    ) -> tuple[AttitudeState, IMUFrame]:
+def decode_attitude(
+    frame: CRSFFrame,
+    diff: AttitudeDifferentiator,
+    have_imu_frame: bool,
+    last_gyro: tuple[float, float, float] | None = None,
+) -> AttitudeState:
+    """Decode a CRSF 0x1E attitude frame.
+
+    Field order on the wire is pitch, roll, yaw (radians × 10000).
+    Body-rate fields come from `last_gyro` (populated from 0x80 IMU) when
+    `have_imu_frame` is True; otherwise from finite-differencing via `diff`.
+    """
     pitch_raw, roll_raw, yaw_raw = struct.unpack(">hhh", frame.payload[:6])
     roll_rad  = roll_raw  * 1e-4
     pitch_rad = pitch_raw * 1e-4
     yaw_rad   = yaw_raw   * 1e-4
-    rr, pr, yr = diff.update(roll_rad, pitch_rad, yaw_rad, frame.timestamp_ns)
-    att = AttitudeState(
+    if have_imu_frame and last_gyro is not None:
+        rr, pr, yr = last_gyro
+    else:
+        rr, pr, yr = diff.update(roll_rad, pitch_rad, yaw_rad, frame.timestamp_ns)
+    return AttitudeState(
         timestamp_ns=frame.timestamp_ns,
         roll_rad=roll_rad, pitch_rad=pitch_rad, yaw_rad=yaw_rad,
         roll_rate_rps=rr, pitch_rate_rps=pr, yaw_rate_rps=yr,
     )
-    imu = IMUFrame(
+
+
+def decode_imu(frame: CRSFFrame) -> IMUFrame:
+    """Decode a CRSF 0x80 IMU RAW frame (12 bytes, big-endian int16, NED body).
+
+    Wire order: ax, ay, az, gx, gy, gz.
+    Units on the wire: milli-G for accel, deci-deg/s for gyro.
+    Returned units: m/s² and rad/s.
+    """
+    ax_r, ay_r, az_r, gx_r, gy_r, gz_r = struct.unpack(">hhhhhh", frame.payload[:12])
+    return IMUFrame(
         timestamp_ns=frame.timestamp_ns,
-        ax=0.0, ay=0.0, az=0.0,
-        gx=rr, gy=pr, gz=yr,
+        ax=(ax_r / 1000.0) * _G_MPS2,
+        ay=(ay_r / 1000.0) * _G_MPS2,
+        az=(az_r / 1000.0) * _G_MPS2,
+        gx=(gx_r / 10.0) * _DEG_TO_RAD,
+        gy=(gy_r / 10.0) * _DEG_TO_RAD,
+        gz=(gz_r / 10.0) * _DEG_TO_RAD,
     )
-    return att, imu
+
+
+def decode_flight_mode(frame: CRSFFrame) -> str:
+    """Decode a CRSF 0x21 flight mode frame to a printable ASCII string.
+
+    Wire format: null-terminated ASCII (≤16 bytes). Leading '*' when armed,
+    optional satellite-count prefix when > 0.
+    """
+    raw = bytes(frame.payload)
+    nul = raw.find(b"\x00")
+    if nul >= 0:
+        raw = raw[:nul]
+    return raw.decode("ascii", errors="replace")
 
 
 def encode_rc(cmd: ControlCmd | None, armed: bool, ch_cfg: ChannelConfig) -> bytes:

@@ -89,7 +89,9 @@ class TestAccessors:
     def test_cfg_watchdog(self):
         w = cfg_watchdog(self.config)
         assert w.target_estimate_ms == 150
-        assert w.fc_attitude_ms == 50
+        assert w.fc_attitude_ms == 250
+        assert w.fc_imu_ms == 50
+        assert w.guidance_accel_ms == 100
 
     def test_cfg_mission_with_hil(self):
         m = cfg_mission(self.config)

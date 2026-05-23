@@ -10,6 +10,7 @@ def build_watchdog(cfg: WatchdogConfig, bus: Bus) -> Watchdog:
         [
             ("target/estimate", cfg.target_estimate_ms),
             ("fc/attitude",     cfg.fc_attitude_ms),
+            ("fc/imu",          cfg.fc_imu_ms),
             ("guidance/accel",  cfg.guidance_accel_ms),
         ],
         bus,

@@ -35,6 +35,7 @@ class MissionConfig:
 class WatchdogConfig:
     target_estimate_ms: int
     fc_attitude_ms: int
+    fc_imu_ms: int
     guidance_accel_ms: int
 
 
@@ -270,6 +271,7 @@ def cfg_watchdog(d: dict) -> WatchdogConfig:
     return WatchdogConfig(
         target_estimate_ms=w["target_estimate_ms"],
         fc_attitude_ms=w["fc_attitude_ms"],
+        fc_imu_ms=w["fc_imu_ms"],
         guidance_accel_ms=w["guidance_accel_ms"],
     )
 

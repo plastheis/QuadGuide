@@ -60,6 +60,7 @@ guidance:
 watchdog:
   target_estimate_ms: 150
   fc_attitude_ms: 250
+  fc_imu_ms: 50
   guidance_accel_ms: 100
 
 link:

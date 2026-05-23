@@ -3,9 +3,13 @@ import time
 from dataclasses import dataclass
 from enum import IntEnum
 
-CRSF_SYNC        = 0xC8
-CRSF_ATTITUDE    = 0x1E
-CRSF_RC_CHANNELS = 0x16
+CRSF_SYNC         = 0xC8
+CRSF_GPS          = 0x02
+CRSF_BATTERY      = 0x08
+CRSF_RC_CHANNELS  = 0x16
+CRSF_ATTITUDE     = 0x1E
+CRSF_FLIGHT_MODE  = 0x21
+CRSF_IMU_RAW      = 0x80   # custom madflight frame: 6×int16 (ax,ay,az,gx,gy,gz)
 
 _MAX_LEN = 62  # max valid len field value (payload ≤ 60, +type+crc = 62)
 

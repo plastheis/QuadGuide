@@ -3,7 +3,7 @@ import signal
 
 from quadguide.core.bus import Bus
 from quadguide.core.clock import RateLimiter, monotonic_ns
-from quadguide.core.config import cfg_guidance, cfg_platform
+from quadguide.core.config import cfg_guidance, cfg_platform, cfg_watchdog
 from quadguide.core.frame_buffer import FrameBuffer
 from quadguide.core.logging import setup_logging
 from quadguide.core.messages import (
@@ -22,6 +22,8 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     log = setup_logging("guidance", config)
     gcfg = cfg_guidance(config)
     pcfg = cfg_platform(config)
+    wcfg = cfg_watchdog(config)
+    fc_imu_timeout_ns = wcfg.fc_imu_ms * 1_000_000
 
     aspect = pcfg.camera.width / pcfg.camera.height
     los = LOSRateEstimator(gcfg.fov_horizontal_rad, aspect)
@@ -44,15 +46,19 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
 
         est        = bus.latest("target/estimate")
         att        = bus.latest("fc/attitude")
+        imu        = bus.latest("fc/imu")
         lockon_cmd = bus.latest("lockon/cmd")
 
-        if est is None or att is None:
+        if est is None or att is None or imu is None:
             continue
         if est.tracker_health in (TrackerHealth.LOST, TrackerHealth.NO_LOCK):
             continue
 
         now_ns = monotonic_ns()
-        los_r  = los.update(est.centroid_norm, att, lockon_cmd, now_ns)
+        if now_ns - imu.timestamp_ns > fc_imu_timeout_ns:
+            continue
+
+        los_r  = los.update(est.centroid_norm, imu, lockon_cmd, now_ns)
         v_c    = cv.update(est.bbox, now_ns, gcfg)
         ax, ay = pronav(los_r, v_c, gcfg.N)
 
