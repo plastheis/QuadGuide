@@ -1003,25 +1003,97 @@ FC encoding/decoding. Protocol-level; not firmware-specific.
 
 ### 6.6 guidance/
 
+The guidance module is organised around a strategy pattern: an algorithm-agnostic
+worker loop selects a `GuidanceMethod` implementation at startup based on
+`config.guidance.method` and calls `method.compute(...)` each tick. Adding a new
+algorithm is one file plus one entry in `factory.py`.
+
 **`guidance/worker.py`** — process entry point
 
 ```
-rate = RateLimiter(hz=50)
+gcfg   = cfg_guidance(config)
+aspect = pcfg.camera.width / pcfg.camera.height
+method = get_guidance(gcfg, aspect)        # selected by gcfg.method
+rate   = RateLimiter(hz=50)
 loop:
     rate.sleep()
-    est = bus.latest("target/estimate")
-    att = bus.latest("fc/attitude")     # Euler angles, for frame resolution
-    imu = bus.latest("fc/imu")          # raw gyro rates, for LOS derotation
+    est        = bus.latest("target/estimate")
+    att        = bus.latest("fc/attitude")     # Euler angles
+    imu        = bus.latest("fc/imu")          # raw gyro + accel
+    lockon_cmd = bus.latest("lockon/cmd")
     if est is None or att is None or imu is None: continue
     if est.tracker_health in ("lost", "no_lock"): continue
-    los_r = los.los_rate(est.centroid_norm, imu, config.guidance.fov_horizontal_rad)
-    v_c   = closing_vel.estimate(est)
-    accel = pronav.pronav(los_r, v_c, config.guidance.N)
-    bus.publish("guidance/accel", AccelCmd(monotonic_ns(), accel[0], accel[1]))
+    if monotonic_ns() - imu.timestamp_ns > fc_imu_timeout_ns: continue
+    ax, ay = method.compute(est, imu, lockon_cmd, monotonic_ns())
+    bus.publish("guidance/accel", AccelCmd(monotonic_ns(), ax, ay))
 ```
 
+**`guidance/base.py`**
+`GuidanceMethod` Protocol:
+
+```python
+class GuidanceMethod(Protocol):
+    def compute(
+        self,
+        est: TargetEstimate,
+        imu: IMUFrame,
+        lockon_cmd: LockOnCmd | None,
+        now_ns: int,
+    ) -> tuple[float, float]: ...
+    def name(self) -> str: ...
+```
+
+Returns `(ax, ay)` in m/s² (body-frame lateral / longitudinal). Each method
+consumes the same inputs but uses only what it needs — pure pursuit, for example,
+ignores `imu` and `lockon_cmd` entirely.
+
+**`guidance/factory.py`**
+`METHODS` registry plus `get_guidance(gcfg, aspect) → GuidanceMethod`. Mirrors the
+tracker factory pattern: a dict of constructors keyed by method name, raises
+`KeyError` with the valid set if the configured name is unknown.
+
+```python
+METHODS = {
+    "pronav":       _make_pronav,         # → ProNavGuidance
+    "pure_pursuit": _make_pure_pursuit,   # → PurePursuitGuidance
+}
+```
+
+**`guidance/pronav.py`**
+Two exports:
+
+- `pronav(los_rate, closing_vel, N) → (ax, ay)` — the pure functional core,
+  `a_cmd = N × V_c × los_rate`. Kept available for direct testing.
+- `ProNavGuidance(cfg: PronavConfig, fov_horizontal_rad, aspect)` — the
+  `GuidanceMethod` implementation. Constructs an internal `LOSRateEstimator` and
+  `ClosingVelEstimator` and combines them in `compute()`.
+
+`N` is the navigation gain, typically 3–5. Higher N = more aggressive pursuit.
+Requires `LOSRateEstimator` (centroid derivative + body-rate derotation) and
+`ClosingVelEstimator` (bbox-area growth) — see below.
+
+**`guidance/pure_pursuit.py`**
+`PurePursuitGuidance(cfg: PurePursuitConfig, fov_horizontal_rad, aspect)` — the
+simpler homing law:
+
+```
+a_cmd_x = K * centroid_x * (fov_h / 2)
+a_cmd_y = K * centroid_y * (fov_h / aspect / 2)
+```
+
+`centroid_norm` spans `(-1, 1)` across each image axis, so multiplying by the
+half-FoV converts to a physical LOS angle in radians. `K` is in m/s² per radian.
+
+No LOS rate, no closing velocity, no body-rate derotation — by design simpler
+than ProNav. Use when target dynamics are slow relative to the loop, or as a
+debugging baseline to isolate sign / mounting issues from PN tuning. Downstream
+the control mapping `a ≈ g·θ` turns each command back into a tilt setpoint, so
+in steady state `tilt ≈ K/g * LOS_angle` — a straightforward proportional
+crosshair-centring controller.
+
 **`guidance/los.py`**
-`los_rate(centroid_norm, imu: IMUFrame, fov_rad) → tuple[float, float]`
+`LOSRateEstimator(fov_horizontal_rad, aspect)` with
+`update(centroid_norm, imu, lockon_cmd, now_ns) → (lr_x, lr_y)`.
 
 Computes the inertial line-of-sight rate vector in body frame. The image-plane
 centroid error is a direct measurement of LOS angle (small-angle). The apparent
@@ -1035,45 +1107,56 @@ los_apparent = (centroid_now - centroid_prev) / dt
 los_rate     = los_apparent - body_rates_projected(imu.gx, imu.gy, imu.gz)
 ```
 
-> **Changed:** body rates now come from the `0x80` gyro (`imu.gx/gy/gz`),
-> not from differentiated Euler angles. This is the single most important
-> consumer of the new raw-IMU data. Raw gyro at 50 Hz with 0.1°/s resolution
+The estimator resets on a new `lockon_cmd.seq` to avoid a spurious rate spike
+from the centroid jump that follows reinitialisation.
+
+> **Body rates source.** Body rates come from the `0x80` gyro (`imu.gx/gy/gz`),
+> not from differentiated Euler angles. Raw gyro at 50 Hz with 0.1°/s resolution
 > gives a clean derotation term; the previous differentiated-Euler path injected
 > quantisation and lag directly into the guidance command.
 >
 > **Camera-up axis mapping:** because the bore-sight is +Z (up when level), the
 > mapping from image axes to the body roll/pitch axes used in derotation is the
 > up-facing convention. The image→body axis alignment (including the sign flip)
-> is applied here, once, so that `pronav.pronav` and `control/attitude_cmd`
-> downstream see a consistent body-frame LOS rate. This is fixed by the camera
-> mount, not configurable.
-
-**`guidance/pronav.py`**
-`pronav(los_rate: tuple, closing_vel: float, N: float) → tuple[float, float]`
-
-Proportional navigation law:
-
-```
-a_cmd = N × V_c × los_rate
-```
-
-Returns `(ax, ay)` — lateral body-frame acceleration commands in m/s².
-`N` is the navigation gain, typically 3–5. Higher N = more aggressive pursuit.
+> is applied here, once, so that the consuming guidance method and
+> `control/attitude_cmd` downstream see a consistent body-frame LOS rate. This
+> is fixed by the camera mount, not configurable.
 
 **`guidance/closing_vel.py`**
-`estimate(est: TargetEstimate) → float`
+`ClosingVelEstimator()` with `update(bbox, now_ns, cfg: PronavConfig) → float`.
 
 Estimates closing velocity from the rate of change of bounding box area.
 Growing bbox → target is getting closer → positive closing velocity.
-Falls back to `config.guidance.closing_vel_fallback` if the estimate is
-noisy or bbox area change is below a minimum threshold.
+Falls back to `cfg.closing_vel_fallback` if the EMA-smoothed area rate is
+below `cfg.closing_vel_min_area_rate`, or if the raw V_c would be negative
+(receding) — which would otherwise invert the PN law.
 
-**Important:** whenever the fallback constant is used, the function must emit a
-`log.debug("closing_vel: using fallback")` at debug level. The fallback is a
-meaningful diagnostic signal — if it fires continuously during a tracking run,
-the PN gain is scaling against a wrong velocity and the guidance output is
-suspect. `scripts/bench_tracker.py` should count fallback activations in its
-CSV output.
+Consumed only by `ProNavGuidance`. Pure pursuit does not need it.
+
+**Important:** whenever the fallback constant is used, the function emits a
+`log.debug("closing_vel: using fallback")`. The fallback is a meaningful
+diagnostic signal — if it fires continuously during a tracking run, the PN gain
+is scaling against a wrong velocity and the guidance output is suspect.
+`scripts/bench_tracker.py` should count fallback activations in its CSV output.
+
+**Configuration block.** Each method has its own nested sub-block; only the one
+named by `method` is required, but both may be present so the operator can
+switch methods via `--set guidance.method=...` without editing other keys.
+
+```yaml
+guidance:
+  method: pronav              # "pronav" | "pure_pursuit"
+  fov_horizontal_rad: 1.047
+  throttle_hold: 0.55
+  pronav:
+    N: 4.0
+    closing_vel_fallback: 2.0
+    closing_vel_ema_alpha: 0.3
+    closing_vel_min_area_rate: 0.001
+    closing_vel_area_scale: 5.0
+  pure_pursuit:
+    K: 6.0
+```
 
 ---
 

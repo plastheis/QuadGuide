@@ -9,7 +9,6 @@ from quadguide.link.crsf import (
     build_frame, CRSFParser,
     CRSF_ATTITUDE, CRSF_FLIGHT_MODE, CRSF_IMU_RAW, CRSF_RC_CHANNELS,
 )
-from quadguide.link.differentiator import AttitudeDifferentiator
 from quadguide.link.worker import _LinkState, _rx_loop
 from quadguide.core.messages import AttitudeState, IMUFrame
 
@@ -39,9 +38,8 @@ def _run_rx(data: bytes) -> _FakeBus:
     serial = _FakeSerial(data)
     bus    = _FakeBus()
     state  = _LinkState()
-    diff   = AttitudeDifferentiator(alpha=1.0)
     log    = logging.getLogger("test")
-    asyncio.run(_rx_loop(serial, CRSFParser(), state, diff, bus, log))
+    asyncio.run(_rx_loop(serial, CRSFParser(), state, bus, log))
     return bus
 
 
@@ -84,9 +82,8 @@ def test_rx_loop_decodes_flight_mode_into_state():
     serial = _FakeSerial(build_frame(CRSF_FLIGHT_MODE, b"ANGLE\x00"))
     bus    = _FakeBus()
     state  = _LinkState()
-    diff   = AttitudeDifferentiator(alpha=1.0)
     log    = logging.getLogger("test")
-    asyncio.run(_rx_loop(serial, CRSFParser(), state, diff, bus, log))
+    asyncio.run(_rx_loop(serial, CRSFParser(), state, bus, log))
     assert state.flight_mode == "ANGLE"
 
 

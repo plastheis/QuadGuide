@@ -106,6 +106,7 @@ def main():
     prev_link_state  = None
     prev_phase       = None
     latest_att       = None
+    latest_imu       = None
 
     # rolling Hz counters (reset every second)
     hz_window_start = start
@@ -125,14 +126,17 @@ def main():
     print(
         f"  {'t(s)':>7}  {'phase':<14}  "
         f"{'── TX cmd ──':^32}  "
-        f"{'── RX attitude ──':^44}  "
+        f"{'─ attitude (deg) ─':^28}  "
+        f"{'─ accel (m/s²) ─':^28}  "
+        f"{'─ rates (rad/s) ─':^28}  "
         f"{'Hz':>8}"
     )
     print(
         f"  {'':>7}  {'':14}  "
         f"{'roll':>7} {'pitch':>7} {'thr':>5} {'yaw/s':>7}  "
         f"{'roll':>8} {'pitch':>8} {'yaw':>8}  "
-        f"{'ṙ':>7} {'ṗ':>7} {'ẏ':>7}  "
+        f"{'ax':>8} {'ay':>8} {'az':>8}  "
+        f"{'gx':>8} {'gy':>8} {'gz':>8}  "
         f"{'rx/tx':>8}"
     )
     _sep()
@@ -195,13 +199,16 @@ def main():
                     _event(t, f"LINK  {health.state.value.upper()}")
                 prev_link_state = health.state
 
-            # ── read latest RX attitude ────────────────────────────────────
+            # ── read latest RX attitude + IMU ─────────────────────────────
             att = bus.latest("fc/attitude")
             if att is not None and att.timestamp_ns != last_seen_ns:
                 latest_att   = att
                 last_seen_ns = att.timestamp_ns
                 rx_count     += 1
                 rx_in_window += 1
+            imu = bus.latest("fc/imu")
+            if imu is not None:
+                latest_imu = imu
 
             # ── periodic display line ──────────────────────────────────────
             if now >= next_display:
@@ -215,17 +222,27 @@ def main():
                 )
 
                 if latest_att is None:
-                    rx_str = f"  {'[waiting for telemetry]':<44}"
+                    rx_str = f"  {'[waiting for telemetry]':<88}"
                 else:
                     a = latest_att
-                    rx_str = (
+                    att_str = (
                         f"  {math.degrees(a.roll_rad):>+8.2f}°"
                         f" {math.degrees(a.pitch_rad):>+8.2f}°"
                         f" {math.degrees(a.yaw_rad):>+8.2f}°"
-                        f"  {a.roll_rate_rps:>+7.3f}"
-                        f" {a.pitch_rate_rps:>+7.3f}"
-                        f" {a.yaw_rate_rps:>+7.3f}"
                     )
+                    if latest_imu is not None:
+                        m = latest_imu
+                        imu_str = (
+                            f"  {m.ax:>+8.3f}"
+                            f" {m.ay:>+8.3f}"
+                            f" {m.az:>+8.3f}"
+                            f"  {m.gx:>+8.3f}"
+                            f" {m.gy:>+8.3f}"
+                            f" {m.gz:>+8.3f}"
+                        )
+                    else:
+                        imu_str = f"  {'[no fc/imu]':<58}"
+                    rx_str = att_str + imu_str
 
                 hz_str = f"{rx_hz:4.0f}/{tx_hz:<4.0f}"
                 print(

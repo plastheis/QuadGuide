@@ -9,7 +9,6 @@ from quadguide.core.messages import HealthReport, ProcessState
 from quadguide.link.crsf import (
     CRSF_ATTITUDE, CRSF_FLIGHT_MODE, CRSF_IMU_RAW, CRSFParser,
 )
-from quadguide.link.differentiator import AttitudeDifferentiator
 from quadguide.link.fc import (
     ChannelConfig, channel_config_from_cfg,
     decode_attitude, decode_flight_mode, decode_imu, encode_rc,
@@ -27,7 +26,7 @@ class _LinkState:
 
 
 async def _rx_loop(serial, parser: CRSFParser, state: _LinkState,
-                   diff: AttitudeDifferentiator, bus, log: logging.Logger) -> None:
+                   bus, log: logging.Logger) -> None:
     async for byte in serial.read_stream():
         frame = parser.feed(byte)
         if frame is None:
@@ -42,7 +41,7 @@ async def _rx_loop(serial, parser: CRSFParser, state: _LinkState,
             bus.publish("fc/imu", imu)
 
         elif frame.type == CRSF_ATTITUDE:
-            att = decode_attitude(frame, diff, state.have_imu_frame, state.last_gyro)
+            att = decode_attitude(frame, state.have_imu_frame, state.last_gyro)
             bus.publish("fc/attitude", att)
 
         elif frame.type == CRSF_FLIGHT_MODE:
@@ -78,7 +77,6 @@ async def _health_loop(bus, state: _LinkState, log: logging.Logger) -> None:
 
 async def _run_async(config: dict, bus) -> None:
     log        = setup_logging("link", config)
-    diff       = AttitudeDifferentiator(config["link"]["diff_lowpass_alpha"])
     tx_rate_hz = config["link"]["tx_rate_hz"]
     ch_cfg     = channel_config_from_cfg(config)
     port       = config["platform"]["serial"]["port"]
@@ -101,7 +99,7 @@ async def _run_async(config: dict, bus) -> None:
             log.info(f"Serial opened {port} @ {baud}")
 
             tasks = [
-                asyncio.create_task(_rx_loop(serial, CRSFParser(), state, diff, bus, log)),
+                asyncio.create_task(_rx_loop(serial, CRSFParser(), state, bus, log)),
                 asyncio.create_task(_tx_loop(serial, bus, tx_rate_hz, ch_cfg, log)),
                 asyncio.create_task(_health_loop(bus, state, log)),
             ]

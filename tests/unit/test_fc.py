@@ -5,7 +5,6 @@ from quadguide.link.crsf import (
     build_frame, CRSF_ATTITUDE, CRSF_FLIGHT_MODE, CRSF_IMU_RAW, CRSF_RC_CHANNELS,
     CRSFFrame, us_to_ticks, ticks_to_us,
 )
-from quadguide.link.differentiator import AttitudeDifferentiator
 from quadguide.link.fc import (
     ChannelConfig, channel_config_from_cfg,
     decode_attitude, decode_flight_mode, decode_imu, encode_rc,
@@ -67,18 +66,16 @@ def _make_attitude_frame(pitch_raw: int, roll_raw: int, yaw_raw: int) -> CRSFFra
 
 def test_decode_attitude_angles():
     frame = _make_attitude_frame(pitch_raw=1000, roll_raw=500, yaw_raw=-200)
-    diff = AttitudeDifferentiator(alpha=1.0)
-    att = decode_attitude(frame, diff, have_imu_frame=False)
+    att = decode_attitude(frame, have_imu_frame=False)
     assert isinstance(att, AttitudeState)
     assert att.pitch_rad == pytest.approx(0.1,   rel=1e-5)
     assert att.roll_rad  == pytest.approx(0.05,  rel=1e-5)
     assert att.yaw_rad   == pytest.approx(-0.02, rel=1e-5)
 
 
-def test_decode_attitude_fallback_first_call_rates_zero():
+def test_decode_attitude_no_imu_rates_zero():
     frame = _make_attitude_frame(1000, 500, 200)
-    diff = AttitudeDifferentiator(alpha=1.0)
-    att = decode_attitude(frame, diff, have_imu_frame=False)
+    att = decode_attitude(frame, have_imu_frame=False)
     assert att.roll_rate_rps  == pytest.approx(0.0, abs=1e-9)
     assert att.pitch_rate_rps == pytest.approx(0.0, abs=1e-9)
     assert att.yaw_rate_rps   == pytest.approx(0.0, abs=1e-9)
@@ -86,17 +83,15 @@ def test_decode_attitude_fallback_first_call_rates_zero():
 
 def test_decode_attitude_uses_last_gyro_when_have_imu():
     frame = _make_attitude_frame(0, 0, 0)
-    diff = AttitudeDifferentiator(alpha=1.0)
-    att = decode_attitude(frame, diff, have_imu_frame=True, last_gyro=(0.5, -0.25, 1.0))
+    att = decode_attitude(frame, have_imu_frame=True, last_gyro=(0.5, -0.25, 1.0))
     assert att.roll_rate_rps  == pytest.approx(0.5,   rel=1e-9)
     assert att.pitch_rate_rps == pytest.approx(-0.25, rel=1e-9)
     assert att.yaw_rate_rps   == pytest.approx(1.0,   rel=1e-9)
 
 
-def test_decode_attitude_falls_back_when_have_imu_but_no_gyro_yet():
+def test_decode_attitude_no_gyro_yet_rates_zero():
     frame = _make_attitude_frame(0, 0, 0)
-    diff = AttitudeDifferentiator(alpha=1.0)
-    att = decode_attitude(frame, diff, have_imu_frame=True, last_gyro=None)
+    att = decode_attitude(frame, have_imu_frame=True, last_gyro=None)
     assert att.roll_rate_rps == pytest.approx(0.0, abs=1e-9)
 
 

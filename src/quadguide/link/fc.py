@@ -6,7 +6,6 @@ import math
 
 from quadguide.core.messages import AttitudeState, ControlCmd, IMUFrame
 from quadguide.link.crsf import CRSF_RC_CHANNELS, CRSFFrame, build_frame, pack_channels
-from quadguide.link.differentiator import AttitudeDifferentiator
 
 _G_MPS2     = 9.80665
 _DEG_TO_RAD = math.pi / 180.0
@@ -60,7 +59,6 @@ def channel_config_from_cfg(cfg: dict) -> ChannelConfig:
 
 def decode_attitude(
     frame: CRSFFrame,
-    diff: AttitudeDifferentiator,
     have_imu_frame: bool,
     last_gyro: tuple[float, float, float] | None = None,
 ) -> AttitudeState:
@@ -68,7 +66,7 @@ def decode_attitude(
 
     Field order on the wire is pitch, roll, yaw (radians × 10000).
     Body-rate fields come from `last_gyro` (populated from 0x80 IMU) when
-    `have_imu_frame` is True; otherwise from finite-differencing via `diff`.
+    `have_imu_frame` is True; otherwise zeroed until the first 0x80 arrives.
     """
     pitch_raw, roll_raw, yaw_raw = struct.unpack(">hhh", frame.payload[:6])
     roll_rad  = roll_raw  * 1e-4
@@ -77,7 +75,7 @@ def decode_attitude(
     if have_imu_frame and last_gyro is not None:
         rr, pr, yr = last_gyro
     else:
-        rr, pr, yr = diff.update(roll_rad, pitch_rad, yaw_rad, frame.timestamp_ns)
+        rr, pr, yr = 0.0, 0.0, 0.0
     return AttitudeState(
         timestamp_ns=frame.timestamp_ns,
         roll_rad=roll_rad, pitch_rad=pitch_rad, yaw_rad=yaw_rad,

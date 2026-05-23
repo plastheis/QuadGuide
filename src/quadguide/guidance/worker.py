@@ -9,9 +9,7 @@ from quadguide.core.logging import setup_logging
 from quadguide.core.messages import (
     AccelCmd, HealthReport, ProcessState, TrackerHealth,
 )
-from quadguide.guidance.closing_vel import ClosingVelEstimator
-from quadguide.guidance.los import LOSRateEstimator
-from quadguide.guidance.pronav import pronav
+from quadguide.guidance.factory import get_guidance
 
 __all__ = ["run"]
 
@@ -26,8 +24,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     fc_imu_timeout_ns = wcfg.fc_imu_ms * 1_000_000
 
     aspect = pcfg.camera.width / pcfg.camera.height
-    los = LOSRateEstimator(gcfg.fov_horizontal_rad, aspect)
-    cv = ClosingVelEstimator()
+    method = get_guidance(gcfg, aspect)
     rate = RateLimiter(hz=50)
 
     stop = False
@@ -39,7 +36,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     signal.signal(signal.SIGTERM, _on_sigterm)
 
     i = 0
-    log.info("guidance: started (N=%.1f, throttle_hold=%.2f)", gcfg.N, gcfg.throttle_hold)
+    log.info("guidance: started (method=%s, throttle_hold=%.2f)", method.name(), gcfg.throttle_hold)
 
     while not stop:
         rate.sleep()
@@ -58,9 +55,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
         if now_ns - imu.timestamp_ns > fc_imu_timeout_ns:
             continue
 
-        los_r  = los.update(est.centroid_norm, imu, lockon_cmd, now_ns)
-        v_c    = cv.update(est.bbox, now_ns, gcfg)
-        ax, ay = pronav(los_r, v_c, gcfg.N)
+        ax, ay = method.compute(est, imu, lockon_cmd, now_ns)
 
         bus.publish("guidance/accel", AccelCmd(now_ns, ax, ay))
 

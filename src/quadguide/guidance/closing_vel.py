@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 
-from quadguide.core.config import GuidanceConfig
+from quadguide.core.config import PronavConfig
 from quadguide.core.messages import BoundingBox
 
 log = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ class ClosingVelEstimator:
         self._prev_ts_ns: int = 0
         self._ema_area_rate: float = 0.0
 
-    def update(self, bbox: BoundingBox, now_ns: int, cfg: GuidanceConfig) -> float:
+    def update(self, bbox: BoundingBox, now_ns: int, cfg: PronavConfig) -> float:
         area = bbox.w * bbox.h
 
         if self._prev_area is None:

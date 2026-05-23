@@ -32,14 +32,14 @@ airframe:
     max_pitch_rate_dps: 200
 
 tracker:
-  ccv: mosse
+  #ccv: mosse
   ncv: nanotrack
   nanotrack:
     exemplar_sz: 127
     instance_sz: 255
     score_threshold: 0.25
   fusion:
-    algorithm: iou_gated  # "confidence_weighted" | "iou_gated" | "passthrough"
+    algorithm: passthrough  # "confidence_weighted" | "iou_gated" | "passthrough"
     fast_tracker: ccv               # "ccv" | "ncv" — high-rate sync tracker (used by iou_gated)
     confidence_gate: 0.7
     iou_divergence_thresh: 0.3
@@ -49,13 +49,17 @@ tracker:
     iou_thresh_low: 0.3             # iou_gated: below this IoU → use slow directly
 
 guidance:
-  N: 4.0
-  closing_vel_fallback: 2.0
-  fov_horizontal_rad: 1.047   # camera horizontal FoV (~60°)
-  throttle_hold: 0.55         # constant throttle during tracking (0–1)
-  closing_vel_ema_alpha: 0.3  # EMA smoothing for bbox area rate (0=heavy, 1=raw)
-  closing_vel_min_area_rate: 0.001  # fallback if smoothed area rate is below this
-  closing_vel_area_scale: 5.0       # area-rate (normalised/s) → m/s conversion
+  method: pure_pursuit              # "pronav" | "pure_pursuit"
+  fov_horizontal_rad: 0.972   # Logitech C920 @ 640x480 (4:3, sides cropped from 16:9 sensor) ≈ 55.7°
+  throttle_hold: 0.4         # constant throttle during tracking (0–1)
+  pronav:
+    N: 4.0                    # PN navigation gain (typical 3–5)
+    closing_vel_fallback: 2.0
+    closing_vel_ema_alpha: 0.3       # EMA smoothing for bbox area rate (0=heavy, 1=raw)
+    closing_vel_min_area_rate: 0.001 # fallback if smoothed area rate is below this
+    closing_vel_area_scale: 5.0      # area-rate (normalised/s) → m/s conversion
+  pure_pursuit:
+    K: 6.0                    # m/s² per radian of LOS angle
 
 watchdog:
   target_estimate_ms: 150

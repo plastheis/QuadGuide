@@ -40,14 +40,26 @@ class WatchdogConfig:
 
 
 @dataclass(frozen=True)
-class GuidanceConfig:
+class PronavConfig:
     N: float
     closing_vel_fallback: float
-    fov_horizontal_rad: float
-    throttle_hold: float = 0.55
     closing_vel_ema_alpha: float = 0.3
     closing_vel_min_area_rate: float = 0.001
     closing_vel_area_scale: float = 5.0
+
+
+@dataclass(frozen=True)
+class PurePursuitConfig:
+    K: float                # m/s² per radian of LOS angle
+
+
+@dataclass(frozen=True)
+class GuidanceConfig:
+    method: str             # "pronav" | "pure_pursuit"
+    fov_horizontal_rad: float
+    throttle_hold: float = 0.55
+    pronav: PronavConfig | None = None
+    pure_pursuit: PurePursuitConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -255,14 +267,22 @@ def cfg_tracker(d: dict) -> TrackerConfig:
 
 def cfg_guidance(d: dict) -> GuidanceConfig:
     g = d["guidance"]
+    pn_raw = g.get("pronav")
+    pp_raw = g.get("pure_pursuit")
     return GuidanceConfig(
-        N=g["N"],
-        closing_vel_fallback=g["closing_vel_fallback"],
+        method=g["method"],
         fov_horizontal_rad=g["fov_horizontal_rad"],
         throttle_hold=g.get("throttle_hold", 0.55),
-        closing_vel_ema_alpha=g.get("closing_vel_ema_alpha", 0.3),
-        closing_vel_min_area_rate=g.get("closing_vel_min_area_rate", 0.001),
-        closing_vel_area_scale=g.get("closing_vel_area_scale", 5.0),
+        pronav=PronavConfig(
+            N=pn_raw["N"],
+            closing_vel_fallback=pn_raw["closing_vel_fallback"],
+            closing_vel_ema_alpha=pn_raw.get("closing_vel_ema_alpha", 0.3),
+            closing_vel_min_area_rate=pn_raw.get("closing_vel_min_area_rate", 0.001),
+            closing_vel_area_scale=pn_raw.get("closing_vel_area_scale", 5.0),
+        ) if pn_raw else None,
+        pure_pursuit=PurePursuitConfig(
+            K=pp_raw["K"],
+        ) if pp_raw else None,
     )
 
 

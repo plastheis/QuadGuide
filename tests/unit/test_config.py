@@ -83,8 +83,10 @@ class TestAccessors:
 
     def test_cfg_guidance(self):
         g = cfg_guidance(self.config)
-        assert g.N == pytest.approx(4.0)
-        assert g.closing_vel_fallback == pytest.approx(2.0)
+        assert g.method == "pronav"
+        assert g.pronav is not None
+        assert g.pronav.N == pytest.approx(4.0)
+        assert g.pronav.closing_vel_fallback == pytest.approx(2.0)
 
     def test_cfg_watchdog(self):
         w = cfg_watchdog(self.config)
@@ -138,6 +140,11 @@ class TestAccessors:
     def test_cfg_guidance_new_fields(self):
         g = cfg_guidance(self.config)
         assert g.throttle_hold == pytest.approx(0.55)
-        assert g.closing_vel_ema_alpha == pytest.approx(0.3)
-        assert g.closing_vel_min_area_rate == pytest.approx(0.001)
-        assert g.closing_vel_area_scale == pytest.approx(5.0)
+        assert g.pronav.closing_vel_ema_alpha == pytest.approx(0.3)
+        assert g.pronav.closing_vel_min_area_rate == pytest.approx(0.001)
+        assert g.pronav.closing_vel_area_scale == pytest.approx(5.0)
+
+    def test_cfg_guidance_pure_pursuit_block(self):
+        g = cfg_guidance(self.config)
+        assert g.pure_pursuit is not None
+        assert g.pure_pursuit.K == pytest.approx(6.0)
