@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from quadguide.core.config import PurePursuitConfig
-from quadguide.core.messages import IMUFrame, LockOnCmd, TargetEstimate
+from quadguide.core.messages import IMUFrame, LockOnCmd, TrackerEstimate
+from quadguide.guidance._centroid import bbox_centroid_norm
 
 
 class PurePursuitGuidance:
@@ -26,10 +27,10 @@ class PurePursuitGuidance:
 
     def compute(
         self,
-        est: TargetEstimate,
+        est: TrackerEstimate,
         imu: IMUFrame,
         lockon_cmd: LockOnCmd | None,
         now_ns: int,
     ) -> tuple[float, float]:
-        cx, cy = est.centroid_norm
+        cx, cy = bbox_centroid_norm(est.bbox)
         return self._K * cx * self._scale_x, self._K * cy * self._scale_y

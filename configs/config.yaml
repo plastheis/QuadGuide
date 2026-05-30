@@ -11,12 +11,8 @@ platform:
     baud: 420000          # CRSF standard — do not change without matching FC config
     rx_pin: "GPIO15"      # wiring reference only — not used by driver
     tx_pin: "GPIO14"      # wiring reference only — not used by driver
-  inference:
-    device: cpu             # "cpu" | "cuda" | "rknn" | "tensorrt"
-    backbone: models/nanotrack_backbone.onnx
-    head: models/nanotrack_head.onnx
   realtime:
-    kcf_cpu_core: 1
+    tracker_cpu_core: 1
     control_cpu_core: 3
     control_sched_fifo: true
     control_fifo_prio: 80
@@ -32,21 +28,8 @@ airframe:
     max_pitch_rate_dps: 200
 
 tracker:
-  #ccv: mosse
-  ncv: nanotrack
-  nanotrack:
-    exemplar_sz: 127
-    instance_sz: 255
-    score_threshold: 0.25
-  fusion:
-    algorithm: passthrough  # "confidence_weighted" | "iou_gated" | "passthrough"
-    fast_tracker: ccv               # "ccv" | "ncv" — high-rate sync tracker (used by iou_gated)
-    confidence_gate: 0.7
-    iou_divergence_thresh: 0.3
-    ncv_staleness_ms: 100
-    iou_velocity_ema_alpha: 0.3     # iou_gated: EMA smoothing for dead-reckoning velocity
-    iou_thresh_high: 0.7            # iou_gated: above this IoU → light blend toward slow
-    iou_thresh_low: 0.3             # iou_gated: below this IoU → use slow directly
+  import: cv2:TrackerKCF       # "module:Class" — cv2:* uses built-in OpenCV adapter
+  params: {}                   # passed to tracker constructor as **kwargs
 
 guidance:
   method: pure_pursuit              # "pronav" | "pure_pursuit"

@@ -138,8 +138,6 @@ async def _sse(app: FastAPI):
             sum(app.state.latency_window) / len(app.state.latency_window) / 1e6
             if app.state.latency_window else None
         )
-        ccv      = app.state.bus.latest("ccv_tracker/estimate")
-        ncv      = app.state.bus.latest("ncv_tracker/estimate")
         attitude = app.state.bus.latest("fc/attitude")
         imu      = app.state.bus.latest("fc/imu")
         accel    = app.state.bus.latest("guidance/accel")
@@ -147,33 +145,21 @@ async def _sse(app: FastAPI):
         report   = app.state.bus.latest("system/health")
         if report is not None:
             app.state.process_health[report.process] = report.state.value
-        # Derive active algo names from health process keys ("ccv_kcf" → "kcf")
-        ccv_algo = next(
-            (k[4:] for k in app.state.process_health if k.startswith("ccv_")), None
-        )
-        ncv_algo = next(
-            (k[4:] for k in app.state.process_health if k.startswith("ncv_")), None
+        # Derive tracker algo from health process key ("tracker_kcf" → "kcf")
+        tracker_algo = next(
+            (k[8:] for k in app.state.process_health if k.startswith("tracker_")), None
         )
 
         data = {
             # target/estimate
             "tracker_health": estimate.tracker_health.value  if estimate else None,
-            "active_tracker": estimate.active_tracker.value  if estimate else None,
             "confidence":     estimate.confidence             if estimate else None,
             "bbox_x":         estimate.bbox.x                 if estimate else None,
             "bbox_y":         estimate.bbox.y                 if estimate else None,
             "bbox_w":         estimate.bbox.w                 if estimate else None,
             "bbox_h":         estimate.bbox.h                 if estimate else None,
-            "centroid_x":     estimate.centroid_norm[0]       if estimate else None,
-            "centroid_y":     estimate.centroid_norm[1]       if estimate else None,
-            # ccv_tracker/estimate
-            "ccv_algo":   ccv_algo,
-            "ccv_health": ccv.tracker_health.value if ccv else None,
-            "ccv_conf":   ccv.confidence            if ccv else None,
-            # ncv_tracker/estimate
-            "ncv_algo":   ncv_algo,
-            "ncv_health": ncv.tracker_health.value if ncv else None,
-            "ncv_conf":   ncv.confidence            if ncv else None,
+            # tracker process name (derived from system/health)
+            "tracker_algo":   tracker_algo,
             # fc/attitude
             "roll_deg":       math.degrees(attitude.roll_rad)       if attitude else None,
             "pitch_deg":      math.degrees(attitude.pitch_rad)      if attitude else None,

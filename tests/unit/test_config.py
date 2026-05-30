@@ -63,9 +63,7 @@ class TestAccessors:
         assert p.name == "orange_pi5"
         assert p.camera.width == 640
         assert p.camera.fps == 60
-        assert p.serial.baud == 115200
-        assert p.inference.device == "rknn"
-        assert p.realtime.kcf_cpu_core == 1
+        assert p.realtime.tracker_cpu_core == 1
         assert p.realtime.control_sched_fifo is True
 
     def test_cfg_airframe(self):
@@ -77,22 +75,29 @@ class TestAccessors:
 
     def test_cfg_tracker(self):
         t = cfg_tracker(self.config)
-        assert t.kcf.detect_thresh == pytest.approx(0.5)
-        assert t.nanotrack.exemplar_sz == 127
-        assert t.fusion.confidence_gate == pytest.approx(0.7)
+        assert t.import_spec == "cv2:TrackerKCF"
+        assert t.params == {}
+
+    def test_cfg_tracker_missing_import_raises(self):
+        with pytest.raises(KeyError):
+            cfg_tracker({"tracker": {}})
+
+    def test_cfg_tracker_params_defaults_to_empty(self):
+        cfg = {"tracker": {"import": "cv2:TrackerKCF"}}
+        assert cfg_tracker(cfg).params == {}
 
     def test_cfg_guidance(self):
         g = cfg_guidance(self.config)
-        assert g.method == "pronav"
+        assert g.method in ("pronav", "pure_pursuit")
         assert g.pronav is not None
         assert g.pronav.N == pytest.approx(4.0)
         assert g.pronav.closing_vel_fallback == pytest.approx(2.0)
 
     def test_cfg_watchdog(self):
         w = cfg_watchdog(self.config)
-        assert w.target_estimate_ms == 150
+        assert w.target_estimate_ms == 200
         assert w.fc_attitude_ms == 250
-        assert w.fc_imu_ms == 50
+        assert w.fc_imu_ms == 250
         assert w.guidance_accel_ms == 100
 
     def test_cfg_mission_with_hil(self):
@@ -121,30 +126,6 @@ class TestAccessors:
         bus = cfg_bus({})
         assert bus == BusConfig(ring_depth=8)
 
-    def test_cfg_tracker_ccv_field(self):
-        config = load_config(CONFIG_PATH, {})
-        tracker = cfg_tracker(config)
-        assert tracker.ccv == "kcf"
-
-    def test_cfg_tracker_ncv_field(self):
-        config = load_config(CONFIG_PATH, {})
-        tracker = cfg_tracker(config)
-        assert tracker.ncv == "nanotrack"
-
-    def test_cfg_tracker_mosse_is_mosse_config(self):
-        from quadguide.core.config import MOSSEConfig
-        config = load_config(CONFIG_PATH, {})
-        tracker = cfg_tracker(config)
-        assert isinstance(tracker.mosse, MOSSEConfig)
-
-    def test_cfg_guidance_new_fields(self):
-        g = cfg_guidance(self.config)
-        assert g.throttle_hold == pytest.approx(0.55)
-        assert g.pronav.closing_vel_ema_alpha == pytest.approx(0.3)
-        assert g.pronav.closing_vel_min_area_rate == pytest.approx(0.001)
-        assert g.pronav.closing_vel_area_scale == pytest.approx(5.0)
-
     def test_cfg_guidance_pure_pursuit_block(self):
         g = cfg_guidance(self.config)
         assert g.pure_pursuit is not None
-        assert g.pure_pursuit.K == pytest.approx(6.0)

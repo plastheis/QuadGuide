@@ -3,14 +3,14 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from quadguide.core.messages import TargetEstimate, TrackerHealth
+from quadguide.core.messages import TrackerEstimate, TrackerHealth
 
 _JPEG_PARAMS     = [cv2.IMWRITE_JPEG_QUALITY, 80]
 _COLOR_NOMINAL   = (0, 165, 255)   # orange BGR
 _COLOR_UNCERTAIN = (0, 255, 255)   # yellow BGR
 
 
-def draw_overlay(frame: np.ndarray, estimate: TargetEstimate | None) -> bytes:
+def draw_overlay(frame: np.ndarray, estimate: TrackerEstimate | None) -> bytes:
     """Return frame encoded as JPEG, with tracking bbox drawn if tracker is active.
 
     Does not mutate the input frame. Returns a plain encode when estimate is

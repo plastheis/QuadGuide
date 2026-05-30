@@ -4,11 +4,11 @@ from enum import Enum
 import struct
 
 __all__ = [
-    "TrackerHealth", "ActiveTracker", "ProcessState",
+    "TrackerHealth", "ProcessState",
     "BoundingBox",
-    "TrackerEstimate", "TargetEstimate", "AttitudeState", "IMUFrame",
+    "TrackerEstimate", "AttitudeState", "IMUFrame",
     "AccelCmd", "ControlCmd", "LockOnCmd", "HealthReport", "ArmCmd",
-    "FMT_TRACKER_ESTIMATE", "FMT_TARGET_ESTIMATE", "FMT_ATTITUDE_STATE",
+    "FMT_TRACKER_ESTIMATE", "FMT_ATTITUDE_STATE",
     "FMT_IMU_FRAME", "FMT_ACCEL_CMD", "FMT_CONTROL_CMD",
     "FMT_LOCKON_CMD", "FMT_HEALTH_REPORT", "FMT_ARM_CMD",
 ]
@@ -31,13 +31,6 @@ class TrackerHealth(str, Enum):
 
 
 @_byte_enum
-class ActiveTracker(str, Enum):
-    CCV   = "ccv"   # classical CV slot (kcf, mosse, …)
-    NCV   = "ncv"   # neural CV slot (nanotrack, …)
-    FUSED = "fused"
-
-
-@_byte_enum
 class ProcessState(str, Enum):
     OK       = "ok"
     DEGRADED = "degraded"
@@ -51,10 +44,6 @@ class ProcessState(str, Enum):
 
 FMT_TRACKER_ESTIMATE = "!QfffffBI"
 # Q(8) + bbox.x,y,w,h(4×f=16) + confidence(f=4) + health(B=1) + latency_ns(I=4) = 33 bytes
-
-FMT_TARGET_ESTIMATE = "!QfffffffBBI"
-# Q(8) + bbox.x,y,w,h(4×f=16) + centroid_x,y(2×f=8) + confidence(f=4)
-#   + tracker_health(B=1) + active_tracker(B=1) + latency_ns(I=4) = 42 bytes
 
 FMT_ATTITUDE_STATE = "!Qffffff"
 # Q(8) + roll,pitch,yaw,roll_rate,pitch_rate,yaw_rate(6×f=24) = 32 bytes
@@ -90,7 +79,6 @@ class BoundingBox:
 
 
 _ST_TRACKER_ESTIMATE = struct.Struct(FMT_TRACKER_ESTIMATE)
-_ST_TARGET_ESTIMATE  = struct.Struct(FMT_TARGET_ESTIMATE)
 _ST_ATTITUDE_STATE   = struct.Struct(FMT_ATTITUDE_STATE)
 _ST_IMU_FRAME        = struct.Struct(FMT_IMU_FRAME)
 _ST_ACCEL_CMD        = struct.Struct(FMT_ACCEL_CMD)
@@ -125,42 +113,6 @@ class TrackerEstimate:
             bbox=BoundingBox(x, y, w, h),
             confidence=conf,
             tracker_health=TrackerHealth._from_ord[health_b],
-            latency_ns=latency,
-        )
-
-
-@dataclass(frozen=True)
-class TargetEstimate:
-    timestamp_ns: int
-    bbox: BoundingBox
-    centroid_norm: tuple[float, float]
-    confidence: float
-    tracker_health: TrackerHealth
-    active_tracker: ActiveTracker
-    latency_ns: int = 0  # set by fusion from the active tracker's latency_ns
-
-    def pack(self) -> bytes:
-        return _ST_TARGET_ESTIMATE.pack(
-            self.timestamp_ns,
-            self.bbox.x, self.bbox.y, self.bbox.w, self.bbox.h,
-            self.centroid_norm[0], self.centroid_norm[1],
-            self.confidence,
-            TrackerHealth._ord[self.tracker_health],
-            ActiveTracker._ord[self.active_tracker],
-            self.latency_ns,
-        )
-
-    @classmethod
-    def unpack(cls, data: bytes) -> TargetEstimate:
-        ts, bx, by, bw, bh, cx, cy, conf, health_b, tracker_b, latency = \
-            _ST_TARGET_ESTIMATE.unpack(data)
-        return cls(
-            timestamp_ns=ts,
-            bbox=BoundingBox(bx, by, bw, bh),
-            centroid_norm=(cx, cy),
-            confidence=conf,
-            tracker_health=TrackerHealth._from_ord[health_b],
-            active_tracker=ActiveTracker._from_ord[tracker_b],
             latency_ns=latency,
         )
 

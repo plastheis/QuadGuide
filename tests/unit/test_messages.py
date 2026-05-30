@@ -1,11 +1,11 @@
 import struct
 import pytest
 from quadguide.core.messages import (
-    TrackerHealth, ActiveTracker, ProcessState,
-    BoundingBox, TrackerEstimate, TargetEstimate,
+    TrackerHealth, ProcessState,
+    BoundingBox, TrackerEstimate,
     AttitudeState, IMUFrame, AccelCmd, ControlCmd,
     LockOnCmd, HealthReport, ArmCmd,
-    FMT_TRACKER_ESTIMATE, FMT_TARGET_ESTIMATE,
+    FMT_TRACKER_ESTIMATE,
     FMT_ATTITUDE_STATE, FMT_IMU_FRAME, FMT_ACCEL_CMD,
     FMT_CONTROL_CMD, FMT_LOCKON_CMD, FMT_HEALTH_REPORT, FMT_ARM_CMD,
 )
@@ -16,19 +16,12 @@ class TestEnumOrdinals:
         for health in TrackerHealth:
             assert TrackerHealth._from_ord[TrackerHealth._ord[health]] == health
 
-    def test_active_tracker_round_trip(self):
-        for tracker in ActiveTracker:
-            assert ActiveTracker._from_ord[ActiveTracker._ord[tracker]] == tracker
-
     def test_process_state_round_trip(self):
         for state in ProcessState:
             assert ProcessState._from_ord[ProcessState._ord[state]] == state
 
     def test_tracker_health_is_str(self):
         assert TrackerHealth.NOMINAL == "nominal"
-
-    def test_active_tracker_is_str(self):
-        assert ActiveTracker.CCV == "ccv"
 
     def test_process_state_is_str(self):
         assert ProcessState.OK == "ok"
@@ -37,9 +30,6 @@ class TestEnumOrdinals:
 class TestFormatSizes:
     def test_tracker_estimate(self):
         assert struct.calcsize(FMT_TRACKER_ESTIMATE) == 33
-
-    def test_target_estimate(self):
-        assert struct.calcsize(FMT_TARGET_ESTIMATE) == 42
 
     def test_attitude_state(self):
         assert struct.calcsize(FMT_ATTITUDE_STATE) == 32
@@ -77,29 +67,6 @@ class TestRoundTrips:
         assert r.bbox.h == pytest.approx(msg.bbox.h, rel=1e-6)
         assert r.confidence == pytest.approx(msg.confidence, rel=1e-6)
         assert r.tracker_health == msg.tracker_health
-        assert r.latency_ns == msg.latency_ns
-
-    def test_target_estimate(self):
-        msg = TargetEstimate(
-            timestamp_ns=2_000_000,
-            bbox=BoundingBox(0.1, 0.2, 0.3, 0.4),
-            centroid_norm=(-0.1, 0.2),
-            confidence=0.85,
-            tracker_health=TrackerHealth.UNCERTAIN,
-            active_tracker=ActiveTracker.FUSED,
-            latency_ns=8_000_000,
-        )
-        r = TargetEstimate.unpack(msg.pack())
-        assert r.timestamp_ns == msg.timestamp_ns
-        assert r.bbox.x == pytest.approx(msg.bbox.x, rel=1e-6)
-        assert r.bbox.y == pytest.approx(msg.bbox.y, rel=1e-6)
-        assert r.bbox.w == pytest.approx(msg.bbox.w, rel=1e-6)
-        assert r.bbox.h == pytest.approx(msg.bbox.h, rel=1e-6)
-        assert r.centroid_norm[0] == pytest.approx(msg.centroid_norm[0], rel=1e-6)
-        assert r.centroid_norm[1] == pytest.approx(msg.centroid_norm[1], rel=1e-6)
-        assert r.confidence == pytest.approx(msg.confidence, rel=1e-6)
-        assert r.tracker_health == msg.tracker_health
-        assert r.active_tracker == msg.active_tracker
         assert r.latency_ns == msg.latency_ns
 
     def test_attitude_state(self):

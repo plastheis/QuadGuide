@@ -9,7 +9,6 @@ from multiprocessing.shared_memory import SharedMemory
 
 from quadguide.core.messages import (
     TrackerEstimate,  FMT_TRACKER_ESTIMATE,
-    TargetEstimate,   FMT_TARGET_ESTIMATE,
     AttitudeState,    FMT_ATTITUDE_STATE,
     IMUFrame,         FMT_IMU_FRAME,
     AccelCmd,         FMT_ACCEL_CMD,
@@ -22,16 +21,14 @@ from quadguide.core.messages import (
 __all__ = ["Bus", "TOPICS"]
 
 TOPICS: dict[str, tuple[type, str]] = {
-    "ccv_tracker/estimate": (TrackerEstimate, FMT_TRACKER_ESTIMATE),
-    "ncv_tracker/estimate": (TrackerEstimate, FMT_TRACKER_ESTIMATE),
-    "target/estimate":      (TargetEstimate,  FMT_TARGET_ESTIMATE),
+    "target/estimate":      (TrackerEstimate, FMT_TRACKER_ESTIMATE),
     "fc/attitude":          (AttitudeState,   FMT_ATTITUDE_STATE),
     "fc/imu":               (IMUFrame,        FMT_IMU_FRAME),
     "guidance/accel":       (AccelCmd,        FMT_ACCEL_CMD),
     "control/cmd":          (ControlCmd,      FMT_CONTROL_CMD),
     "lockon/cmd":           (LockOnCmd,       FMT_LOCKON_CMD),
     "system/health":        (HealthReport,    FMT_HEALTH_REPORT),
-    "arm/cmd":              (ArmCmd,      FMT_ARM_CMD),
+    "arm/cmd":              (ArmCmd,          FMT_ARM_CMD),
 }
 
 

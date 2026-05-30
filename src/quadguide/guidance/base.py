@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Protocol
 
-from quadguide.core.messages import IMUFrame, LockOnCmd, TargetEstimate
+from quadguide.core.messages import IMUFrame, LockOnCmd, TrackerEstimate
 
 
 class GuidanceMethod(Protocol):
@@ -14,7 +14,7 @@ class GuidanceMethod(Protocol):
 
     def compute(
         self,
-        est: TargetEstimate,
+        est: TrackerEstimate,
         imu: IMUFrame,
         lockon_cmd: LockOnCmd | None,
         now_ns: int,

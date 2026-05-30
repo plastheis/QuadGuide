@@ -14,42 +14,19 @@ import sys
 import time
 
 
-# ── Worker entry points ──────────────────────────────────────────────────────
-
-def _ncv_run(config: dict, bus, frame_buffer) -> None:
-    """Build inference runtime + tracker inside the child process, then run."""
-    from quadguide.inference.factory import get_runtime
-    from quadguide.perception.tracker_factories import get_ncv_tracker
-    from quadguide.perception.ncv_tracker_worker import NCVTrackerWorker
-    runtime = get_runtime(config)
-    tracker = get_ncv_tracker(config, runtime)
-    NCVTrackerWorker(tracker, bus, frame_buffer, config=config).run()
-
-
 # ── Process management ───────────────────────────────────────────────────────
 
 def _start_workers(config: dict, bus, frame_buffer, *, ground: bool = True) -> list[multiprocessing.Process]:
-    from quadguide.core.config import cfg_tracker
     from quadguide.perception.camera.worker import run_from_config as camera_run
-    from quadguide.perception.ccv_tracker_worker import run_from_config as ccv_run
-    from quadguide.perception.fusion.worker import run as fusion_run
+    from quadguide.perception.tracker_worker import run_from_config as tracker_run
     from quadguide.link.worker import run as link_run
     from quadguide.guidance.worker import run as guidance_run
     from quadguide.control.worker import run as control_run
     from quadguide.ground.worker import run as ground_run
 
-    tcfg = cfg_tracker(config)
-
     entries: list[tuple[str, object, tuple]] = [
         ("camera",   camera_run,   (config, bus, frame_buffer)),
-    ]
-    if tcfg.ccv is not None:
-        entries.append(("ccv_tracker", ccv_run,  (config, bus, frame_buffer)))
-    if tcfg.ncv is not None:
-        entries.append(("ncv_tracker", _ncv_run, (config, bus, frame_buffer)))
-    if tcfg.ccv is not None or tcfg.ncv is not None:
-        entries.append(("fusion",      fusion_run, (config, bus, frame_buffer)))
-    entries += [
+        ("tracker",  tracker_run,  (config, bus, frame_buffer)),
         ("link",     link_run,     (config, bus)),
         ("guidance", guidance_run, (config, bus, frame_buffer)),
         ("control",  control_run,  (config, bus, frame_buffer)),

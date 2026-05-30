@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from quadguide.core.config import PronavConfig
-from quadguide.core.messages import IMUFrame, LockOnCmd, TargetEstimate
+from quadguide.core.messages import IMUFrame, LockOnCmd, TrackerEstimate
+from quadguide.guidance._centroid import bbox_centroid_norm
 from quadguide.guidance.closing_vel import ClosingVelEstimator
 from quadguide.guidance.los import LOSRateEstimator
 
@@ -32,11 +33,11 @@ class ProNavGuidance:
 
     def compute(
         self,
-        est: TargetEstimate,
+        est: TrackerEstimate,
         imu: IMUFrame,
         lockon_cmd: LockOnCmd | None,
         now_ns: int,
     ) -> tuple[float, float]:
-        los_r = self._los.update(est.centroid_norm, imu, lockon_cmd, now_ns)
+        los_r = self._los.update(bbox_centroid_norm(est.bbox), imu, lockon_cmd, now_ns)
         v_c = self._cv.update(est.bbox, now_ns, self._cfg)
         return pronav(los_r, v_c, self._cfg.N)

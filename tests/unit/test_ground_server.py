@@ -4,7 +4,7 @@ import asyncio
 from starlette.testclient import TestClient
 
 from quadguide.core.messages import (
-    ActiveTracker, BoundingBox, LockOnCmd, TargetEstimate, TrackerHealth,
+    BoundingBox, LockOnCmd, TrackerEstimate, TrackerHealth,
 )
 from quadguide.ground.server import create_app
 
@@ -101,13 +101,11 @@ def client_with_estimate():
     class _EstimateBus(_MockBus):
         def latest(self, topic: str):
             if topic == "target/estimate":
-                return TargetEstimate(
+                return TrackerEstimate(
                     timestamp_ns=1_000_000_000,
                     bbox=BoundingBox(0.2, 0.2, 0.3, 0.3),
-                    centroid_norm=(0.0, 0.0),
                     confidence=0.9,
                     tracker_health=TrackerHealth.NOMINAL,
-                    active_tracker=ActiveTracker.CCV,
                     latency_ns=5_000_000,  # 5 ms
                 )
             return None

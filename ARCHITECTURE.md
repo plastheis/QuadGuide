@@ -1,21 +1,27 @@
 # quadguide — Architecture Blueprint
 
-> This document is the single source of truth for the quadguide project structure,
-> process model, data flow, and communication contracts. It is intended as both a
-> developer reference and as context for AI-assisted development.
-> Every design decision made here has a reason — those reasons are documented inline.
+> Single source of truth for project structure, process model, data flow, and
+> communication contracts. Every design decision documented inline with its
+> reason.
 
 ---
 
 ## 1. Project Overview
 
-**quadguide** is an SBC-resident flight guidance stack for a manual lock-on target
-tracking quadcopter. It runs on a companion computer (initially Raspberry Pi 4,
-target RK3576 or RK3588 board) mounted on the airframe. It receives camera frames, runs two
-parallel object trackers, fuses their outputs, computes proportional navigation
-guidance commands, and sends roll/pitch setpoints to a madflight flight controller
-over UART using the CRSF protocol (420000 baud, bidirectional).
+**quadguide** is an SBC-resident flight guidance stack for a manual lock-on
+target tracking quadcopter. It runs on a companion computer (initially
+Raspberry Pi 4, target RK3576 / RK3588) mounted on the airframe. It receives
+camera frames, runs one configurable object tracker, computes proportional-
+navigation or pure-pursuit guidance commands, and sends roll/pitch setpoints
+to a madflight flight controller over UART using the CRSF protocol (420000
+baud, bidirectional).
 
+The perception layer is now a single generic process (`tracker_worker`) that
+loads its tracking algorithm at startup from `tracker.import` in config. Built
+in: OpenCV trackers (`cv2:TrackerKCF`, `cv2:TrackerMOSSE`, `cv2:TrackerNano`,
+…) via a small adapter. Pluggable: any external library that satisfies the
+structural protocol (see §6.4) — typically a hybrid CCV+NCV+fusion tracker
+that owns its own NPU and internal subprocesses.
 
 ### Hardware stack
 
@@ -25,8 +31,8 @@ over UART using the CRSF protocol (420000 baud, bidirectional).
 │  quadguide running as systemd   │
 │  services                       │
 │                                 │
-│  Camera ──→ perception workers  │
-│  perception ──→ guidance        │
+│  Camera ──→ tracker             │
+│  tracker ──→ guidance           │
 │  guidance ──→ control           │
 │  control ──→ UART ──→ FC        │
 │  FC ──→ UART ──→                │
@@ -37,19 +43,16 @@ over UART using the CRSF protocol (420000 baud, bidirectional).
 The camera is oriented along the drone's **+Z body axis and is not gimbalized.
 When the quad is level, +Z points up — the camera looks at the sky, not the
 ground.** The image centre is the projection of the +Z axis onto the image
-plane, so a target at image centre lies directly along the +Z (overhead) axis
-when level. The centroid error vector (image centre → target centroid),
-together with **raw body-rate and acceleration data received from the FC over
-the CRSF `0x80` IMU frame**, are the primary guidance inputs.
+plane. The centroid error vector (image centre → target centroid), together
+with raw body-rate and acceleration data from the FC over the CRSF `0x80` IMU
+frame, are the primary guidance inputs.
 
-> **Orientation note (important).** Because the bore-sight points up, the
-> engagement geometry is the inverse of a conventional downward/forward-looking
-> seeker. To pursue a target the quad tilts its thrust vector toward the target;
+> **Orientation note.** Because the bore-sight points up, the engagement
+> geometry is the inverse of a conventional downward/forward-looking seeker.
+> To pursue a target the quad tilts its thrust vector toward the target;
 > tilting also swings the +Z axis (and therefore the bore-sight) in the same
-> direction, which is what drives the centroid back toward image centre. The
-> consequence for the guidance→attitude mapping is a per-axis sign relative to a
-> nadir-facing camera. See Section 6.7 (`control/attitude_cmd.py`) for the
-> derivation and the calibration check.
+> direction, which drives the centroid back toward image centre. Per-axis
+> sign mapping is in `control/attitude_cmd.py`.
 
 ---
 
@@ -57,78 +60,62 @@ the CRSF `0x80` IMU frame**, are the primary guidance inputs.
 
 ### 2.1 One process per resource
 
-Each OS process owns exactly one external resource or one logical responsibility.
-No two processes share a file descriptor. This eliminates locking at the hardware
-level and means any process can crash and be restarted by systemd without
-corrupting another process's hardware state.
+Each OS process owns exactly one external resource or one logical
+responsibility. No two processes share a file descriptor. Any process can
+crash and be restarted by systemd without corrupting another process's
+hardware state.
 
+| Process          | Owned resource                                          |
+| ---------------- | ------------------------------------------------------- |
+| camera worker    | `/dev/video0` or CSI pipeline                           |
+| tracker worker   | CPU core 1 (configurable); NPU if used by the library   |
+| link worker      | UART serial port                                        |
+| guidance worker  | none — pure computation                                 |
+| control worker   | CPU core 3 (SCHED_FIFO)                                 |
+| ground worker    | TCP port 8080                                           |
 
-| Process                         | Owned resource                |
-| --------------------------------- | ------------------------------- |
-| camera worker                   | `/dev/video0` or CSI pipeline |
-| ccv worker (kcf or mosse)       | CPU core 1                    |
-| ncv worker (nanotrack)          | `/dev/rknpu0` (NPU)           |
-| fusion worker                   | none — pure computation      |
-| link worker                     | UART serial port              |
-| guidance worker                 | none — pure computation      |
-| control worker                  | CPU core 3 (SCHED_FIFO)       |
-| ground worker                   | TCP port 8080                 |
+Six processes total (seven with the optional ground UI). The tracker process
+is the sole owner of all perception state — including, when the configured
+library uses it, the NPU. Quadguide does not branch on NPU type; runtime
+selection is the library's concern.
 
 ### 2.2 Python multiprocessing, not threading
 
-Python's GIL prevents true parallelism between threads. The two tracker workers
-must run simultaneously — KCF at ~200 Hz on CPU and NanoTrack at ~30 Hz on the
-NPU. Using `multiprocessing.Process` gives each worker its own interpreter with
-its own GIL, allowing genuine concurrent execution on separate CPU cores.
+Python's GIL prevents true parallelism between threads. `multiprocessing`
+gives each worker its own interpreter; CPU-bound work (tracker.update,
+control loop) runs concurrently on separate cores.
 
-asyncio is NOT used at the top level. Individual workers may use asyncio
-internally for managing multiple I/O sources (e.g. the link worker managing
-simultaneous UART read and write), but the process model is always
-multiprocessing.
+asyncio is not used at the top level. Individual workers may use asyncio
+internally for I/O multiplexing (e.g. the link worker's simultaneous UART
+read/write).
 
 ### 2.3 Shared memory for frames, structured bus for messages
 
-Camera frames are large (e.g. 640×480×3 = 921 KB). Passing them through a pipe
-or queue on every frame would saturate IPC bandwidth. Instead, the camera worker
-writes frames into a shared memory ring buffer. Tracker workers read the latest
-frame directly from shared memory with zero copy.
-
-All other inter-process data (estimates, commands, telemetry) are small
-dataclasses (< 200 bytes). These travel through the message bus — also shared
-memory backed, but structured as a per-topic ring of serialised dataclass
+Camera frames are large (640×480×3 ≈ 921 KB). The camera writes into a shared
+memory ring buffer (`FrameBuffer`); the tracker reads the latest frame with
+zero copy. All other inter-process data (estimates, commands, telemetry) are
+small dataclasses (< 50 B on the wire) that travel through the bus —
+also shared memory backed, structured as per-topic rings of dataclass
 instances packed with `struct`.
 
-All topics in the bus are **pre-declared** at startup from the IPC table (Section 7).
-This allows per-topic `os.pipe()` pairs to be created before any worker is spawned,
-which is a hard requirement for the pipe-based blocking API (`subscribe_one` /
-`subscribe_any`). Attempting to create synchronisation primitives after fork and
-pass them to already-running processes is not supported.
+The bus topic registry (`core/bus.py:TOPICS`) is created once in the parent
+process before workers fork. Workers inherit the shared memory handles and
+pipe fds across fork; no per-worker re-registration.
 
 ### 2.4 Platform portability via config, not code branches
 
-Adding a new SBC requires:
-
-1. Adding one entry to `platform/factory.py`'s `PLATFORMS` dict
-2. Adding one entry to `inference/factory.py`'s `RUNTIMES` dict
-3. Recompiling ONNX models for the new NPU if applicable
-4. Writing a new platform section in `configs/config.yaml`
-
-No other source files change. Platform-specific behaviour is expressed as
-configuration values, not `if platform == "rpi4"` branches scattered through the
-codebase.
+A new SBC adds a row in `platform/factory.py` for its camera backend and a
+preset YAML — never an `if platform == "rpi": …` in feature code. A new
+tracker is just a new value for `tracker.import` in YAML; the library lives
+in a separate repo with zero quadguide imports.
 
 ### 2.5 Failsafe is a first-class citizen
 
-The control worker runs a watchdog on every input topic. If any of the following
-go stale beyond their timeout, the control worker immediately switches to
-`FailsafeState.LEVEL` and commands zero roll, zero pitch, zero closing velocity:
-
-- `target/estimate` — perception pipeline dead or target lost
-- `fc/attitude` — link worker dead or FC disconnected
-- `guidance/accel` — guidance worker dead
-
-The failsafe does not disarm the FC. It commands level flight and holds until
-inputs recover or the operator intervenes.
+Every loop that drives the FC has a deadline. If `target/estimate` goes stale
+(`watchdog.target_estimate_ms`), control commands level flight and holds
+throttle. If `fc/imu` or `fc/attitude` go stale, control commands neutral
+sticks. The link worker keeps the CRSF uplink at a constant 50 Hz regardless
+of upstream health so the FC never enters its own RX failsafe.
 
 ---
 
@@ -137,34 +124,20 @@ inputs recover or the operator intervenes.
 ```
 quadguide/
 │
-├── pyproject.toml              # package metadata, entry points, optional deps
-├── README.md                   # setup, wiring, HIL quickstart
-├── .gitmodules                 # quadtrack pinned as submodule (weights source only)
+├── pyproject.toml
+├── README.md
 │
 ├── configs/
-│   └── config.yaml             # single unified config file (see Section 5)
-│
-├── models/                     # compiled inference artefacts — NOT tracked in git
-│   ├── nanotrack_backbone.onnx # source ONNX — used for CPU/CUDA runtime
-│   ├── nanotrack_head.onnx
-│   ├── nanotrack_backbone.rknn # compiled for OPi5 NPU by scripts/convert_rknn.py
-│   └── nanotrack_head.rknn
+│   └── config.yaml             # single unified config file (§5)
 │
 ├── src/quadguide/
-│   ├── core/                   # shared primitives — no imports from other modules
+│   ├── core/                   # shared primitives — no cross-module imports
 │   ├── platform/               # SBC hardware abstraction
-│   ├── inference/              # NPU/GPU runtime abstraction
-│   ├── perception/             # workers: camera, ccv (kcf/mosse), ncv (nanotrack), fusion
+│   ├── perception/             # camera worker + tracker worker
 │   │   ├── camera/
-│   │   ├── kcf/
-│   │   ├── mosse/
-│   │   ├── nanotrack/
-│   │   ├── fusion/
-│   │   ├── ccv_tracker_worker.py   # generic IPC loop for classical CV tracker slot
-│   │   ├── ncv_tracker_worker.py   # generic IPC loop for neural CV tracker slot
-│   │   └── tracker_factories.py    # CCV_TRACKERS / NCV_TRACKERS registry + constructors
-│   ├── link/                   # UART ↔ FC bridge
-│   ├── guidance/               # proportional navigation
+│   │   └── tracker_worker.py   # generic tracker process (loader + adapter + loop)
+│   ├── link/                   # UART ↔ FC bridge (CRSF)
+│   ├── guidance/               # pronav, pure_pursuit, LOS, closing-vel
 │   ├── control/                # attitude command + real-time loop
 │   ├── hil/                    # hardware-in-the-loop harness
 │   └── ground/                 # web-based operator interface
@@ -182,205 +155,114 @@ quadguide/
 
 ## 4. Process Architecture and Data Flow
 
-### 4.1 Full data flow diagram
+### 4.1 Data flow diagram
 
 ```
-                    ┌─────────────────────────────────────────────────────┐
-                    │  SHARED MEMORY                                      │
-                    │                                                     │
-                    │  frame_buffer (shm ring, 6 slots, ~1MB each)        │
-                    │  bus topics (shm rings, small structs):             │
-                    │    ccv_tracker/estimate   ncv_tracker/estimate      │
-                    │    target/estimate                                  │
-                    │    fc/attitude    fc/imu          guidance/accel    │
-                    │    control/cmd    system/health   lockon/cmd        │
-                    └─────────────────────────────────────────────────────┘
-                           ↑ write            ↓ read (zero-copy for frames)
+                    ┌─────────────────────────────────────────────────┐
+                    │  SHARED MEMORY                                  │
+                    │                                                 │
+                    │  frame_buffer (shm ring, BGR HxWx3)             │
+                    │  bus topics (shm rings of struct-packed msgs):  │
+                    │    target/estimate                              │
+                    │    fc/attitude    fc/imu          guidance/accel│
+                    │    control/cmd    system/health   lockon/cmd    │
+                    │    arm/cmd                                      │
+                    └─────────────────────────────────────────────────┘
+                          ↑ write           ↓ read (zero-copy frames)
 
-[camera worker]
-  open camera (V4L2 / GStreamer CSI / virtual)
-  loop:
-    frame = camera.read()
-    frame_buffer.write_frame(frame)        → shm frame ring
+[camera worker]                       [tracker worker]
+  open camera                           load tracker from
+  loop:                                 config.tracker.import
+    frame = camera.read()               loop:
+    frame_buffer.write_frame(frame)       check lockon/cmd
+                                          f = frame_buffer.read_latest()
+                                          out = tracker.update(f)
+                                          bus.publish("target/estimate",
+                                                      TrackerEstimate(...))
 
-                    ┌────────────────────────────┐
-                    │ both read frame_buffer      │
-                    ↓                            ↓
+[link worker]                           [guidance worker]
+  rx loop (CRSF):                         loop (50 Hz RateLimiter):
+    parse 0x1E → fc/attitude               est = bus.latest("target/estimate")
+    parse 0x80 → fc/imu                    imu = bus.latest("fc/imu")
+  tx loop (50 Hz):                         ax, ay = method.compute(est, imu, …)
+    ctrl = bus.latest("control/cmd")       bus.publish("guidance/accel", …)
+    arm  = bus.latest("arm/cmd")
+    write CRSF channels                  [control worker]  CPU core 3, SCHED_FIFO
+                                           loop (250 Hz):
+                                             watchdogs on target/estimate,
+                                                          fc/attitude, fc/imu
+                                             accel = bus.latest("guidance/accel")
+                                             cmd   = attitude_cmd(accel, att)
+                                             bus.publish("control/cmd", cmd)
 
-[ccv worker]                        [ncv worker]
-  (kcf or mosse, via CCVTrackerWorker) (nanotrack, via NCVTrackerWorker)
-  CPU core 1                          owns /dev/rknpu0
-  loop (rate: ~200Hz):                loop (rate: ~30Hz):
-    f = frame_buffer.read_latest()      f = frame_buffer.read_latest()
-    est = tracker.update(f)             est = tracker.update(f)
-    bus.publish(                        bus.publish(
-      "ccv_tracker/estimate", est)       "ncv_tracker/estimate", est)
-
-                    ↓                            ↓
-                    └──────────┬─────────────────┘
-                               ↓
-
-[fusion worker]
-  loop:
-    topic, msg = bus.subscribe_any(
-      ["ccv_tracker/estimate", "ncv_tracker/estimate"])
-    update latest_{ccv,ncv}
-    estimate = fuse(latest_kcf, latest_nano)
-    bus.publish("target/estimate", estimate)
-
-[link worker]                               [ground worker]
-  rx loop:                                    subscribe all topics
-    parse CRSF frames from UART (420kbaud)    serve web UI on :8080
-    decode ATTITUDE (0x1E) → angles          handle POST /lockon
-    decode IMU RAW (0x80)  → gyro + accel       → bus.publish("lockon/cmd", cmd)
-    bus.publish("fc/attitude", att)           handle POST /arm
-    bus.publish("fc/imu", imu)                  → bus.publish("arm/cmd", cmd)
-  tx loop (50 Hz, starts immediately):       stream annotated MJPEG
-    cmd     = bus.latest("control/cmd")
-    arm_cmd = bus.latest("arm/cmd")
-    write CRSF RC_CHANNELS_PACKED to UART
-    (FC enters failsafe if uplink stops)
-
-                    ↓ target/estimate
-                    ↓ fc/attitude  +  fc/imu
-
-[guidance worker]
-  loop (50Hz):
-    est = bus.latest("target/estimate")
-    att = bus.latest("fc/attitude")     # angles for frame resolution
-    imu = bus.latest("fc/imu")          # raw body rates for LOS derotation
-    los_r = los.los_rate(
-      est.centroid_norm, imu.body_rates, fov)
-    v_c = closing_vel.estimate(est)
-    accel = pronav.pronav(los_r, v_c, N)
-    bus.publish("guidance/accel", accel)
-
-                    ↓ guidance/accel
-                    ↓ fc/attitude
-
-[control worker]   ← SCHED_FIFO prio 80, CPU core 3
-  loop (100Hz, RateLimiter):
-    watchdog.check_all()           # failsafe if any input stale
-    accel = bus.latest("guidance/accel")
-    att   = bus.latest("fc/attitude")
-    cmd   = attitude_cmd.compute(accel, att)
-    cmd   = limiter.apply(cmd, prev_cmd)
-    bus.publish("control/cmd", cmd)
-    # link worker reads control/cmd and writes to UART
+[ground worker]  (optional)
+  serve web UI on :8080
+  POST /lockon  → bus.publish("lockon/cmd", LockOnCmd)
+  POST /arm     → bus.publish("arm/cmd", ArmCmd)
+  GET /telemetry (SSE) → reads all topics
+  GET /stream  (MJPEG) → frame_buffer + overlay(target/estimate)
 ```
 
 ### 4.2 Lock-on flow
 
-The lock-on command originates from the operator moving the target into the center square crosshair and 
-pressing lock button in the ground station web UI. The flow:
+1. Operator drags a bbox in the ground UI HUD.
+2. Ground server publishes `LockOnCmd(seq=N+1, bbox=…)` on `lockon/cmd`.
+3. Tracker worker sees a new `seq` on its next iteration, reads the latest
+   frame, and calls `tracker.init(frame, bbox)`.
+4. Subsequent iterations call `tracker.update(frame)` and publish
+   `TrackerEstimate` on `target/estimate`.
+5. Control's watchdog clears (`target/estimate` is fresh again) and the loop
+   exits failsafe within the arm-dwell window.
 
-```
-operator locks on with centered bbox in browser
-  → POST /lockon {"x":0,"y":0,"w":0.1,"h":0.1}
-  → ground/server.py
-  → bus.publish("lockon/cmd", LockOnCmd(bbox, timestamp_ns, seq=next_seq()))
-  → CCVTrackerWorker reads lockon/cmd
-      if cmd.seq != last_lockon_seq:
-          tracker.init(frame_buffer.read_latest(), cmd.bbox)
-          last_lockon_seq = cmd.seq
-  → NCVTrackerWorker reads lockon/cmd
-      if cmd.seq != last_lockon_seq:
-          tracker.init(frame_buffer.read_latest(), cmd.bbox)
-          last_lockon_seq = cmd.seq
-  → both trackers now tracking
-  → fusion worker begins producing TargetEstimate with tracker_health=TrackerHealth.NOMINAL
-```
-
-The `seq` counter on `LockOnCmd` is monotonically increasing. Each tracker
-worker tracks the last `seq` it processed. This prevents silent skips if two
-lock-on commands arrive close together (e.g. operator double-clicks): the
-`latest()` read would otherwise return only the second command, and the first
-could be silently dropped. With `seq`, any `seq != last_seen_seq` triggers a
-reinit, regardless of whether intermediate commands were missed.
-
-Until a lock-on command is received, both tracker workers run their update loops
-but publish estimates with `tracker_health=TrackerHealth.NO_LOCK`. The fusion
-worker propagates this through and the control worker watchdog suppresses commands
-while no lock exists.
+A zero-size bbox in `LockOnCmd` triggers `tracker.reset()` — soft state clear,
+no hardware release; next `update()` returns `health="no_lock"`.
 
 ---
 
 ## 5. Configuration (configs/config.yaml)
 
-Single file, four top-level sections. The `config.py` loader merges these and
-provides typed accessors. CLI overrides are supported via `--set key=value`.
-
 ```yaml
 platform:
-  name: orange_pi5           # key into platform/factory.py PLATFORMS dict
-  camera:
-    backend: gstreamer       # "v4l2" | "gstreamer" | "virtual"
-    pipeline: "..."          # GStreamer pipeline string for CSI cameras
-    width: 640
-    height: 480
-    fps: 60
-  serial:
-    port: /dev/ttyS0
-    baud: 420000             # CRSF link rate — MUST match FC UART config
-  inference:
-    device: rknn             # "cpu" | "cuda" | "rknn" | "tensorrt"
-    backbone: models/nanotrack_backbone.rknn
-    head: models/nanotrack_head.rknn
+  name: orange_pi5
+  camera: { backend, pipeline, width, height, fps }
+  serial: { port, baud, rx_pin, tx_pin }
   realtime:
-    kcf_cpu_core: 1
+    tracker_cpu_core: 1            # optional; null/absent → no affinity
     control_cpu_core: 3
     control_sched_fifo: true
     control_fifo_prio: 80
 
-airframe:
-  name: flix_micro
-  mass_kg: 0.18
-  # inertia tensor (kg·m²)
-  inertia: [0.0012, 0.0012, 0.0020]
-  control_limits:
-    max_roll_deg: 35
-    max_pitch_deg: 35
-    max_roll_rate_dps: 200
-    max_pitch_rate_dps: 200
-
 tracker:
-  kcf:
-    detect_thresh: 0.5
-    sigma: 0.2
-    lambda_: 0.0001
-  nanotrack:
-    exemplar_sz: 127
-    instance_sz: 255
-    score_threshold: 0.7
-  fusion:
-    confidence_gate: 0.7      # use nanotrack above this, kcf below
-    iou_divergence_thresh: 0.3
-    nano_staleness_ms: 100    # ignore nano estimate if older than this
+  import: cv2:TrackerKCF           # "module:Class"; cv2:* uses built-in adapter
+  params: {}                       # passed to constructor as **kwargs
 
 guidance:
-  N: 4.0                      # proportional navigation gain (3–5 typical)
-  closing_vel_fallback: 2.0   # m/s, used when bbox size rate is unreliable
-  fov_horizontal_rad: 1.047   # camera horizontal FoV (~60°)
+  method: pure_pursuit             # "pronav" | "pure_pursuit"
+  fov_horizontal_rad: 0.972
+  throttle_hold: 0.4
+  pronav: { N, closing_vel_fallback, closing_vel_ema_alpha, … }
+  pure_pursuit: { K }
 
 watchdog:
-  target_estimate_ms: 150
-  fc_attitude_ms: 50
-  fc_imu_ms: 50
+  target_estimate_ms: 200
+  fc_attitude_ms: 250
+  fc_imu_ms: 250
   guidance_accel_ms: 100
 
-mission:
-  mode: bench_hil             # "flight" | "bench_hil" | "swil"
-  hil:
-    target_model: constant_velocity
-    initial_offset_m: [2.0, 0.0, 0.0]
-    target_speed_mps: 1.5
+link:
+  tx_rate_hz: 50
+  diff_lowpass_alpha: 0.3
+  channels: { roll, pitch, throttle, yaw, arm, flight_mode, … }
 
-logging:
-  level: INFO
-  dir: /var/log/quadguide
-  max_bytes: 10485760         # 10MB per file
-  backup_count: 3
+mission:
+  mode: bench_hil                  # "flight" | "bench_hil" | "swil"
+  hil: { target_model, initial_offset_m, target_speed_mps }
+
+logging: { level, dir, max_bytes, backup_count }
+bus:     { ring_depth }
 ```
+
+Overrides: `python scripts/run.py --set guidance.pure_pursuit.K=15`.
 
 ---
 
@@ -388,1160 +270,226 @@ logging:
 
 ### 6.1 core/
 
-Zero imports from other quadguide modules. Everything else imports from here.
-Never the reverse.
-
-**`core/messages.py`**
-All inter-process data structures as frozen dataclasses. Every message carries
-`timestamp_ns: int` (monotonic) set at production time. This is the single source
-of truth for what crosses process boundaries.
-
-Each dataclass is accompanied by a `struct` format string constant (prefixed
-`FMT_`) that fully describes its wire layout. All enums are `str` subclasses
-decorated with `@_byte_enum`, which adds `_ord` and `_from_ord` dicts for O(1)
-wire encoding/decoding without `struct` format overhead. All message dataclasses
-expose `pack() → bytes` and `unpack(data: bytes)` class methods — the hot path
-never uses `pickle`.
-
-```python
-from enum import Enum
-
-@_byte_enum
-class TrackerHealth(str, Enum):
-    NOMINAL   = "nominal"
-    UNCERTAIN = "uncertain"
-    LOST      = "lost"
-    NO_LOCK   = "no_lock"
-
-@_byte_enum
-class ActiveTracker(str, Enum):
-    CCV   = "ccv"   # classical CV slot (kcf, mosse, …)
-    NANO  = "nano"  # neural CV slot (nanotrack, …)
-    FUSED = "fused"
-
-@_byte_enum
-class ProcessState(str, Enum):
-    OK       = "ok"
-    DEGRADED = "degraded"
-    FAILSAFE = "failsafe"
-    DEAD     = "dead"
-
-@dataclass(frozen=True)
-class BoundingBox:
-    x: float        # top-left x, normalised 0–1
-    y: float        # top-left y, normalised 0–1
-    w: float        # width, normalised 0–1
-    h: float        # height, normalised 0–1
-
-# Wire: timestamp(Q=u64) + bbox.x,y,w,h(4f) + confidence(f) + health(B) = 29 bytes
-FMT_TRACKER_ESTIMATE = "!QfffffB"
-
-@dataclass(frozen=True)
-class TrackerEstimate:
-    timestamp_ns: int
-    bbox: BoundingBox
-    confidence: float           # 0–1
-    tracker_health: TrackerHealth
-
-# Wire: timestamp(Q) + bbox.x,y,w,h(4f) + centroid.x,y(2f) + confidence(f) + health(B) + tracker(B) = 38 bytes
-FMT_TARGET_ESTIMATE = "!QfffffffBB"
-
-@dataclass(frozen=True)
-class TargetEstimate:
-    timestamp_ns: int
-    bbox: BoundingBox
-    centroid_norm: tuple[float, float]  # (-1,1) range, (0,0) = image centre
-    confidence: float
-    tracker_health: TrackerHealth
-    active_tracker: ActiveTracker
-
-# Wire: timestamp(Q) + 6×float = 32 bytes
-FMT_ATTITUDE_STATE = "!Qffffff"
-
-@dataclass(frozen=True)
-class AttitudeState:
-    timestamp_ns: int
-    roll_rad: float
-    pitch_rad: float
-    yaw_rad: float
-    roll_rate_rps: float        # from 0x80 IMU gx; falls back to differentiated 0x1E
-    pitch_rate_rps: float       # from 0x80 IMU gy
-    yaw_rate_rps: float         # from 0x80 IMU gz
-
-# Wire: timestamp(Q) + 6×float = 32 bytes
-FMT_IMU_FRAME = "!Qffffff"
-
-@dataclass(frozen=True)
-class IMUFrame:
-    timestamp_ns: int
-    ax: float; ay: float; az: float     # m/s²   (NED body: ax=North, ay=East, az=Down)
-    gx: float; gy: float; gz: float     # rad/s  (NED body: gx=roll, gy=pitch, gz=yaw)
-
-# Wire: timestamp(Q) + 2×float = 16 bytes
-FMT_ACCEL_CMD = "!Qff"
-
-@dataclass(frozen=True)
-class AccelCmd:
-    timestamp_ns: int
-    ax: float       # body-frame lateral accel command (m/s²)
-    ay: float       # body-frame longitudinal accel command (m/s²)
-
-# Wire: timestamp(Q) + 4×float = 24 bytes
-FMT_CONTROL_CMD = "!Qffff"
-
-@dataclass(frozen=True)
-class ControlCmd:
-    timestamp_ns: int
-    roll_deg: float
-    pitch_deg: float
-    yaw_rate_dps: float
-    throttle_norm: float    # 0–1
-
-# Wire: timestamp(Q) + seq(H) + bbox(4f) = 26 bytes
-# seq is a monotonically increasing counter. Tracker workers record the last
-# seq they processed; if current seq != last_seen_seq, they reinitialise.
-# This prevents silent skip of a lock-on if two arrive close together.
-FMT_LOCKON_CMD = "!QHffff"
-
-@dataclass(frozen=True)
-class LockOnCmd:
-    timestamp_ns: int
-    seq: int                # monotonic lock-on sequence counter
-    bbox: BoundingBox       # operator-selected initial bounding box
-
-# Wire: timestamp(Q) + process(16s) + state(B) = 25 bytes; detail is logged only
-FMT_HEALTH_REPORT = "!Q16sB"
-
-@dataclass(frozen=True)
-class HealthReport:
-    timestamp_ns: int
-    process: str        # max 16 UTF-8 bytes on the wire; longer names are truncated
-    state: ProcessState
-    detail: str         # NOT on the wire — logged only; always "" after unpack
-```
-
-**`core/bus.py`**
-Shared memory message bus. One ring buffer per topic. Each ring holds the last N
-messages serialised as packed bytes via `struct` (see `core/messages.py` for
-per-message format strings). `pickle` is explicitly NOT used on the hot path —
-`struct.pack/unpack` is a single C call with a precompiled format string, giving
-microsecond-level IPC overhead appropriate for a 200 Hz tracker loop.
-
-All topics are **pre-declared** at bus init time (see IPC table in Section 7).
-Lazy creation of per-topic pipe pairs after process spawn is not supported —
-pre-declaration eliminates the lazy-creation vs. pre-spawn-primitive contradiction
-and costs nothing since the full topic set is known at design time.
-
-Blocking is implemented via **`os.pipe()` per topic** created at bus init.
-On `publish`, the writer drains any stale wakeup byte from the read end
-(non-blocking), then writes one byte to the write end. On `subscribe_one`,
-the reader calls `os.read(r_fd, 1)` which blocks with zero CPU until a
-publish occurs. `subscribe_any` uses `select.select([t.r_fd for t in topics])`
-— the kernel wakes the caller on whichever topic fires first. This is the only
-design that gives zero-CPU blocking and multi-topic wakeup without a manager
-process.
-
-Provides:
-
-- `Bus.publish(topic: str, msg: dataclass) → None`
-- `Bus.latest(topic: str) → dataclass | None` — returns the most recent message,
-  non-blocking
-- `Bus.subscribe_one(topic: str) → dataclass` — blocks until a new message
-  arrives on this topic (pipe-backed, zero CPU)
-- `Bus.subscribe_any(topics: list[str]) → tuple[str, dataclass]` — blocks until
-  any of the listed topics receives a new message; returns `(topic, msg)`
-  (implemented via `select.select` over topic pipe read-ends)
-- `Bus.close() → None` — unlinks all shared memory and closes pipe fds; called by
-  the parent process after all workers have joined
-- `Bus.detach() → None` — closes this process's fd references to shm and pipes
-  without unlinking; called by worker processes in their SIGTERM handler
-
-Ring size per topic is configured in `config.yaml` under `bus.ring_depth`
-(default 8). The bus object is initialised once in `scripts/run.py` and passed
-to every worker at spawn time via the `multiprocessing` shared memory handle.
-
-**`core/frame_buffer.py`**
-Shared memory frame ring for zero-copy camera frame delivery. Distinct from the
-bus because frames are numpy arrays (~1MB), not small structs.
-
-- **6 slots** by default (not 4), each sized `width × height × channels` bytes.
-  At 60 fps the ring wraps every ~100ms. KCF at 200 Hz reads every 5ms — well
-  within one slot lifetime. NanoTrack at ~30 Hz reads every ~33ms — safe under
-  normal conditions, but NPU inference can spike to 50ms+ on cold start or during
-  RKNN model warm-up. With only 4 slots (wrap at ~67ms) a 50ms inference spike
-  brings NanoTrack within one slot of the write head. 6 slots provides a
-  comfortable margin and costs ~3MB additional shared memory.
-- An atomic integer (via `multiprocessing.Value`) holds the index of the most
-  recently completed write
-- `FrameBuffer.write_frame(arr: np.ndarray, timestamp_ns: int | None = None) → None`
-  — advances slot index, writes timestamp then frame bytes; defaults to
-  `time.monotonic_ns()` if timestamp_ns is not provided
-- `FrameBuffer.read_latest() → tuple[np.ndarray | None, int]` — returns a
-  zero-copy numpy view of the latest slot and its timestamp_ns; returns `(None, 0)`
-  if no frame has been written yet
-- `FrameBuffer.close() → None` — releases this process's shm reference (workers call this)
-- `FrameBuffer.unlink() → None` — destroys the shm segment; only the parent process
-  should call this, after all workers have joined
-- Reader processes must consume or copy the frame before the camera worker
-  overwrites the slot
-
-**`core/clock.py`**
-
-- `monotonic_ns() → int` — `time.monotonic_ns()` wrapper
-- `RateLimiter(hz: float)` — call `RateLimiter.sleep()` to enforce a fixed loop
-  rate; accounts for loop execution time
-- `sleep_until(target_ns: int) → None` — precise sleep using `clock_nanosleep`
-  via ctypes on Linux
-
-**`core/health.py`**
-
-- `Watchdog(topic: str, timeout_ms: int, bus: Bus)` — raises `HealthFault` if
-  `bus.latest(topic)` timestamp is older than `timeout_ms`
-- `FailsafeState` enum: `NOMINAL`, `LEVEL`, `DISARMED`
-- `HealthReport` publishing helper used by every worker's main loop
-
-**`core/config.py`**
-
-- `load_config(path: str, overrides: dict) → dict` — loads YAML, applies
-  CLI overrides, validates required keys
-- Typed accessor helpers: `cfg_platform(config)`, `cfg_tracker(config)`, etc.
-
-**`core/logging.py`**
-
-- `setup_logging(process_name: str, config: dict) → logging.Logger`
-- Configures a `RotatingFileHandler` per process writing to
-  `/var/log/quadguide/{process_name}.log`
-- Log record format includes `timestamp_ns`, process name, level, message
-
----
+- **`messages.py`** — Wire-format dataclasses with `pack`/`unpack` against
+  fixed `struct` formats. The complete topic-payload type list:
+  `TrackerEstimate`, `BoundingBox`, `TrackerHealth`, `AttitudeState`,
+  `IMUFrame`, `AccelCmd`, `ControlCmd`, `LockOnCmd`, `HealthReport`, `ArmCmd`,
+  `ProcessState`. Format strings are the source of truth for wire layout.
+- **`bus.py`** — `Bus` (shm rings + pipe wakeups) and `TOPICS` registry.
+  Constructor builds all topics; child workers inherit on fork. Methods:
+  `publish`, `latest`, `subscribe_one`, `detach`, `close`.
+- **`frame_buffer.py`** — `FrameBuffer` — shm-backed multi-slot frame ring.
+  Single writer (camera), single reader (tracker). Zero-copy reads.
+- **`config.py`** — YAML loader + typed accessors. Dataclasses: `BusConfig`,
+  `LoggingConfig`, `MissionConfig`, `WatchdogConfig`, `PronavConfig`,
+  `PurePursuitConfig`, `GuidanceConfig`, `TrackerConfig`, `AirframeConfig`,
+  `RealtimeConfig`, `SerialConfig`, `CameraConfig`, `PlatformConfig`,
+  `HILConfig`, `ControlLimitsConfig`. `cfg_*` functions narrow `dict` → typed
+  config. Dot-notation overrides via `load_config(path, overrides)`.
+- **`clock.py`** — `monotonic_ns()` wrapper (one source of time across the
+  stack — never `time.time()` for deltas).
+- **`logging.py`** — `setup_logging(name, config)` rotating-file logger per
+  worker process.
+- **`health.py`** — small helpers for HealthReport authoring.
 
 ### 6.2 platform/
 
-**`platform/adapter.py`**
-Single `PlatformAdapter` class. Constructed with config dict. Methods:
-
-- `open_serial() → serial.Serial` — returns configured, opened serial port
-- `set_realtime(core: int, prio: int) → None` — sets CPU affinity and
-  `SCHED_FIFO` priority via `os.sched_setaffinity` and `os.sched_setscheduler`;
-  no-op if `config.realtime.control_sched_fifo` is false (dev machine)
-- `gpio() → GPIOInterface | None` — returns GPIO handle if available, else None
-
-**`platform/factory.py`**
-Registry dict mapping platform name string to capability flags. `get_platform(config)`
-reads `config["platform"]["name"]`, looks up the dict, returns a configured
-`PlatformAdapter`. To add a new SBC: add one dict entry here.
-
-```python
-PLATFORMS = {
-    "rpi4":        {"sched_fifo": True,  "gpio": "RPi.GPIO"},
-    "orange_pi5":  {"sched_fifo": True,  "gpio": "OPi.GPIO"},
-    "jetson_orin": {"sched_fifo": True,  "gpio": None},
-    "dev_pc":      {"sched_fifo": False, "gpio": None},
-}
-```
-
----
-
-### 6.3 inference/
-
-**`inference/base.py`**
-`NPURuntime` Protocol (structural subtyping via `typing.Protocol`):
-
-```python
-class NPURuntime(Protocol):
-    def load(self, path: str) -> Any: ...
-    def infer(self, model: Any, inputs: dict[str, np.ndarray]
-              ) -> dict[str, np.ndarray]: ...
-    def close(self) -> None: ...
-```
-
-All tracker inference code calls `runtime.infer(model, inputs)`. No tracker
-file imports RKNN, TensorRT, or ONNX directly.
-
-**`inference/onnx_cpu.py`**
-`OnnxCPURuntime` — uses `onnxruntime.InferenceSession` with
-`CPUExecutionProvider`. Universal fallback on any platform.
-
-**`inference/onnx_cuda.py`**
-`OnnxCUDARuntime` — uses `CUDAExecutionProvider`. Used on dev machine with RTX
-3070 for development and benchmark.
-
-**`inference/rknn.py`**
-`RKNNRuntime` — uses `rknnlite.api.RKNNLite` when running on device. Auto-detects
-whether it is on-device (import succeeds) or on x86 sim (uses `rknn.api.RKNN`
-from rknn-toolkit2 for simulation). The nanotrack worker never needs to know which.
-
-**`inference/factory.py`**
-`get_runtime(config) → NPURuntime`. Reads `config["platform"]["inference"]["device"]`,
-returns the correct runtime instance. To add a new NPU: add one entry here and
-one implementation file.
-
-```python
-RUNTIMES = {
-    "cpu":  OnnxCPURuntime,
-    "cuda": OnnxCUDARuntime,
-    "rknn": RKNNRuntime,
-}
-```
-
-Note: `TensorRTRuntime` (for Jetson Orin) is planned but not yet implemented.
-Add `inference/tensorrt.py` and a `"tensorrt"` entry here when needed.
-
----
-
-### 6.4 perception/
-
-Four subdirectories, each containing a `worker.py` (process entry point) and the
-algorithm code that worker uses. Algorithm files are pure functions/classes with
-no bus or IPC dependencies.
-
-#### perception/camera/
-
-**`camera/worker.py`** — process entry point
-
-```
-open camera source (selected by config.platform.camera.backend)
-loop:
-    frame, ts = camera.read()
-    frame_buffer.write_frame(frame, ts)
-    bus.publish("system/health", HealthReport("camera", "ok"))
-on SIGTERM:
-    camera.close()
-    exit cleanly
-```
-
-**`camera/sources.py`** — `CameraSource` ABC and implementations
-
-- `CameraSource` ABC: `open()`, `read() → (np.ndarray, int)`, `close()`,
-  `__iter__`
-- `USBCamera(CameraSource)` — V4L2 via `cv2.VideoCapture`
-- `CSICamera(CameraSource)` — GStreamer pipeline string from config
-- `VirtualCamera(CameraSource)` — reads from `hil/virtual_source.py`; used in
-  HIL mode; selected when `config.mission.mode != "flight"`
-
-#### perception/ccv_tracker_worker.py
-
-`CCVTrackerWorker` — generic IPC loop for the classical CV tracker slot. Wraps
-any tracker implementing `init(frame, bbox)`, `update(frame) → TrackerEstimate`,
-`name() → str`, and `close()`. Publishes to `ccv_tracker/estimate`. Sets CPU
-affinity on construction if `cpu_core` is provided.
-
-The process name for logging and `system/health` is derived from the tracker:
-`"ccv_{tracker.name()}"` (e.g. `"ccv_kcf"`, `"ccv_mosse"`). This means the
-ground station health grid and log file name both reflect the active algorithm.
-
-```
-signal.signal(SIGTERM, _handle_sigterm)
-os.sched_setaffinity(0, {cpu_core})    # no-op on dev machine
-proc_name = f"ccv_{tracker.name()}"
-loop (until SIGTERM):
-    _check_lockon()    # seq-guarded reinit on new lockon/cmd
-    frame, _ = frame_buffer.read_latest()
-    if frame is not None:
-        est = tracker.update(frame)
-        bus.publish("ccv_tracker/estimate", est)
-    every 50 iterations: bus.publish("system/health", HealthReport(proc_name, ...))
-tracker.close()
-bus.detach()
-```
-
-`run_from_config(config, bus, frame_buffer)` — constructs the CCV tracker
-selected by `config.tracker.ccv` via `get_ccv_tracker` and runs it. This is
-the entry point for any caller that should not know which algorithm is active —
-dev launchers, `run.py`, etc. The specific `kcf/worker.py` and `mosse/worker.py`
-entry points exist only for direct systemd service invocation.
-
-#### perception/ncv_tracker_worker.py
-
-`NCVTrackerWorker` — generic IPC loop for the neural CV tracker slot. Same
-contract as `CCVTrackerWorker` but no CPU affinity pinning (NPU handles its own
-scheduling). Process name derived as `"ncv_{tracker.name()}"`. Publishes to
-`ncv_tracker/estimate`. Calls `tracker.close()` on SIGTERM to release the NPU
-handle before exit — critical for RKNN.
-
-#### perception/tracker_factories.py
-
-Registry of available CCV and NCV trackers. Selected via `config.tracker.ccv`
-and `config.tracker.ncv`. Each entry is a constructor callable that takes the
-typed config objects — adding a new tracker is one dict entry plus one file,
-no if-chains anywhere else.
-
-```python
-CCV_TRACKERS = {
-    "kcf":   lambda tcfg: KCFTracker(tcfg.kcf),
-    "mosse": lambda tcfg: MOSSETracker(),
-}
-NCV_TRACKERS = {
-    "nanotrack": lambda tcfg, pcfg, runtime: NanoTracker(
-        runtime, runtime.load(pcfg.inference.backbone),
-        runtime.load(pcfg.inference.head), tcfg.nanotrack,
-    ),
-}
-
-get_ccv_tracker(config) → tracker instance
-get_ncv_tracker(config, runtime) → tracker instance
-```
-
-#### Tracker algorithm contract
-
-Every tracker class (CCV or NCV) must implement:
-
-| Method | Signature | Notes |
-|--------|-----------|-------|
-| `name` | `() → str` | Short lowercase identifier, e.g. `"kcf"`, `"mosse"`, `"nanotrack"`. Used in health-report process names and ground-station telemetry. |
-| `init` | `(frame, bbox) → None` | Initialise or reinitialise on a new target. |
-| `update` | `(frame) → TrackerEstimate` | Returns `NO_LOCK` before first `init`, `LOST` on tracking failure. |
-| `close` | `() → None` | Release resources (NPU handle, OpenCV tracker). |
-
-#### perception/kcf/
-
-**`kcf/worker.py`** — thin process entry point for the KCF systemd service.
-Constructs `KCFTracker` and `CCVTrackerWorker`, then calls `worker.run()`.
-The full IPC loop is in `CCVTrackerWorker`. Do not import this from dev
-launchers — use `ccv_tracker_worker.run_from_config` instead.
-
-Rate is not artificially limited — KCF runs as fast as the CPU allows (~200Hz
-typical). This is intentional: KCF is the high-rate fallback tracker.
-
-**`kcf/tracker.py`**
-
-- `KCFTracker(config)` — wraps `cv2.TrackerKCF_create()`
-- `name() → str` — returns `"kcf"`
-- `init(frame, bbox)`, `update(frame) → TrackerEstimate`, `close()` (no-op)
-- Returns confidence 0 if tracking fails
-
-#### perception/mosse/
-
-**`mosse/tracker.py`**
-
-- `MOSSETracker()` — wraps `cv2.legacy.TrackerMOSSE.create()`; no tunable params
-- `name() → str` — returns `"mosse"`
-- `init(frame, bbox)`, `update(frame) → TrackerEstimate`, `close()` (no-op)
-- Confidence is binary: 1.0 on success, 0.0 on failure; health is `NOMINAL` or
-  `LOST`, never `UNCERTAIN`
-
-**`mosse/worker.py`** — thin process entry point for the MOSSE systemd service.
-Constructs `MOSSETracker` and `CCVTrackerWorker`, then calls `worker.run()`.
-
-#### perception/nanotrack/
-
-**`nanotrack/worker.py`** — thin process entry point for the NanoTrack systemd
-service. Constructs `NanoTracker` and `NCVTrackerWorker`, then calls
-`worker.run()`. The full IPC loop (including SIGTERM / `tracker.close()`) is in
-`NCVTrackerWorker`.
-
-Rate is bottlenecked by NPU inference time (~30Hz on OPi5). This is expected —
-NanoTrack is the high-accuracy, low-rate tracker.
-
-**`nanotrack/tracker.py`**
-
-- `NanoTracker(runtime, backbone, head, config)`
-- `name() → str` — returns `"nanotrack"`
-- `init(frame, bbox)` — runs backbone on exemplar crop, stores template features
-- `update(frame) → TrackerEstimate` — runs backbone on search region, head to
-  score and regress bbox, returns confidence from score map peak
-
-**`nanotrack/preprocess.py`**
-
-- `get_exemplar_crop(frame, bbox, exemplar_sz) → np.ndarray`
-- `get_search_crop(frame, bbox, instance_sz) → np.ndarray`
-- `normalise(crop) → np.ndarray` — ImageNet mean/std normalisation
-
-**`nanotrack/postprocess.py`**
-
-- `decode_response(score_map, bbox_map, stride) → (BoundingBox, float)`
-  — finds peak in score map, reads regression at that location, maps back to
-  image coordinates
-
-#### perception/fusion/
-
-**`fusion/worker.py`** — process entry point
-
-```
-latest_ccv: TrackerEstimate | None = None
-latest_ncv: TrackerEstimate | None = None
-loop:
-    topic, msg = bus.subscribe_any(["ccv_tracker/estimate", "ncv_tracker/estimate"])
-    if topic == "ccv_tracker/estimate":  latest_ccv = msg
-    else:                                latest_ncv = msg
-    estimate = fuse(latest_ccv, latest_ncv, config.tracker.fusion)
-    if estimate is not None:
-        bus.publish("target/estimate", estimate)
-```
-
-Fusion runs on every new arrival from either tracker. It does not wait for both.
-This means guidance always has the freshest possible estimate at the rate of
-whichever tracker last updated (~200 Hz dominated by the CCV tracker; NCV
-contributes at ~30 Hz).
-
-The `subscribe_any` call is the only use of blocking multi-topic wait in the
-entire system. All other workers use `bus.latest()` (non-blocking poll).
-`InterruptedError` from `subscribe_any` on SIGTERM is caught and causes a clean exit.
-
-**`fusion/fusion.py`**
-`fuse(ccv: TrackerEstimate | None, ncv: TrackerEstimate | None, cfg) → TargetEstimate | None`
-
-Returns `None` before any estimate has arrived (startup transient — worker skips publish).
-
-Logic:
-
-1. Staleness check: drop NCV estimate if `monotonic_ns() - ncv.timestamp_ns > cfg.nano_staleness_ms`.
-   Using call-time monotonic_ns is critical: NPU inference time can vary (e.g. cold
-   start, RKNN queue depth), so the gap between NanoTrack publish and fusion evaluate
-   can differ from the gap between NanoTrack and CCV timestamps.
-2. **Passthrough** — if only one tracker is publishing (the other is `None`), its
-   estimate is forwarded directly with no fusion arithmetic. `active_tracker` is set
-   to `ActiveTracker.CCV` or `ActiveTracker.NANO` accordingly. This means the system
-   works correctly when only a CCV tracker is running (no NPU) or only an NCV tracker.
-   `tracker_health` propagates unchanged, so `NO_LOCK` before first lock-on flows
-   through to guidance and control without special-casing in the fusion layer.
-3. Both `NO_LOCK` → passthrough CCV with `NO_LOCK` health (no fusion needed).
-4. Confidence gate: if `ncv.confidence > cfg.confidence_gate`
-   → use nano bbox as primary, label `active_tracker=ActiveTracker.NANO`
-5. Otherwise: weighted average of bboxes by respective confidence scores,
-   label `active_tracker=ActiveTracker.FUSED`
-6. IoU divergence check: if `iou(ccv.bbox, ncv.bbox) < cfg.iou_divergence_thresh`
-   → confidence is penalised by 50%, health = `TrackerHealth.UNCERTAIN`
-7. Compute `centroid_norm` from fused bbox: `((x + w/2 - 0.5) * 2, (y + h/2 - 0.5) * 2)`
-
----
-
-### 6.5 link/
-
-**`link/worker.py`** — process entry point
-Two concurrent loops (asyncio internally, since this is pure I/O):
-
-- RX loop: read bytes from serial, feed to the **CRSF** parser, and on each
-  complete frame dispatch by type:
-    - `0x1E` ATTITUDE → `fc.decode_attitude()` → publish `fc/attitude`
-    - `0x80` IMU RAW  → `fc.decode_imu()`      → publish `fc/imu`, and merge the
-      gyro rates into the `AttitudeState` body-rate fields (see below)
-    - `0x21` FLIGHT MODE → parse string, publish/track current FC mode
-    - `0x02` GPS, `0x08` BATTERY → publish to telemetry (ground only)
-- TX loop: every 20 ms read `bus.latest("control/cmd")`, encode as a CRSF
-  `RC_CHANNELS_PACKED` (`0x16`) frame, write to serial.
-
-> **Attitude vs IMU rate sourcing (changed).** The FC now emits a custom
-> `0x80` IMU RAW frame carrying **true gyro rates and accelerometer data** at
-> 50 Hz. This is the authoritative source of body rates. The link worker fills
-> `AttitudeState.{roll,pitch,yaw}_rate_rps` directly from the `0x80` gyro
-> fields (gx/gy/gz), NOT from finite-differencing the `0x1E` Euler angles.
-> `AttitudeDifferentiator` is retained ONLY as a fallback for the case where
-> `0x80` frames are absent (older FC firmware) — guarded by a `have_imu_frame`
-> flag set on first `0x80` receipt. Real gyro is markedly better for ProNav LOS
-> derotation: differentiated Euler angles are noisy and add a half-sample of lag.
-
-The link worker publishes `HealthReport("link", ...)` at 5 Hz regardless of
-UART state. This is the direct health signal for the link process. Note that
-`fc/attitude` staleness in the control watchdog is an *indirect* signal of link
-health — it only fires once the FC stops sending CRSF frames, which may lag
-behind the underlying serial fault. The direct `system/health` from the link
-worker catches the fault earlier and lets the ground station display the correct
-cause.
-
-On serial disconnect: log error, attempt reconnect every 500ms, publish
-`HealthReport("link", "degraded")` during outage.
-
-**`link/crsf.py`**
-CRSF protocol implementation. No bus or serial dependencies.
-- `CRSF_SYNC = 0xC8`, `CRSF_ATTITUDE = 0x1E`, `CRSF_RC_CHANNELS = 0x16`,
-  `CRSF_GPS = 0x02`, `CRSF_BATTERY = 0x08`, `CRSF_FLIGHT_MODE = 0x21`,
-  `CRSF_IMU_RAW = 0x80`
-- `crc8(data: bytes) → int` — CRC-8 DVB-S2, poly `0xD5`, init `0x00`,
-  precomputed lookup table. Covers type byte through last payload byte
-  (NOT sync or length).
-- `CRSFFrame` dataclass: `type`, `payload`, `timestamp_ns`
-- `CRSFParser` — stateful byte-by-byte parser; states: WAIT_SYNC → READ_LEN → READ_TYPE → READ_PAYLOAD → READ_CRC; resets on bad length or CRC mismatch. Re-aligns on `0xC8` after a framing error.
-- `build_frame(type, payload) → bytes` — `[0xC8][len][type][payload][crc]`
-- `pack_channels(channels: list[int]) → bytes` — packs 16 × 11-bit values into 22 bytes, LSB-first
-- Also exports `us_to_ticks(us) → int` and `ticks_to_us(ticks) → float` — CRSF
-  µs↔tick conversion (988–2012 µs ↔ 172–1811 ticks). `pack_channels` accepts
-  µs values and converts to ticks internally; callers never deal with raw ticks.
-
-**`link/differentiator.py`**
-`AttitudeDifferentiator(alpha: float)` — finite-difference body rate estimator
-with per-axis first-order LP filter. Yaw uses shortest-path angular difference
-to handle ±180° wrap. `alpha=1.0` = no filtering, `alpha→0` = heavy smoothing.
-**Fallback only** — used when no `0x80` IMU RAW frame has been seen. When `0x80`
-is present, body rates come straight from the gyro and this module is bypassed.
-
-**`link/fc.py`**
-FC encoding/decoding. Protocol-level; not firmware-specific.
-- `ChannelConfig` frozen dataclass — per-channel µs calibration (min/mid/max for
-  sticks, disarmed/armed for arm switch, position list for flight mode). Built from
-  `config.yaml` via `channel_config_from_cfg(cfg)` at link worker startup.
-- `decode_attitude(frame, diff, have_imu_frame) → AttitudeState` — unpacks the
-  three `0x1E` int16 fields. **Field order on the wire is pitch, roll, yaw**
-  (radians × 10000); recover radians as `raw / 10000.0`. If `have_imu_frame` is
-  False, body rates are filled from `diff` (the differentiator fallback); if
-  True, the rate fields are left for the `0x80` handler to populate.
-- `decode_imu(frame) → IMUFrame` — unpacks the six `0x80` int16 fields in NED
-  body axes: ax/ay/az in milli-G (`raw / 1000.0` → G, ×9.80665 → m/s²),
-  gx/gy/gz in deci-deg/s (`raw / 10.0` → deg/s, → rad/s). Returns a fully
-  populated `IMUFrame`. The gyro rates are also merged into the live
-  `AttitudeState` body-rate fields by the link worker.
-- `encode_rc(cmd, armed, ch_cfg) → bytes` — maps ControlCmd (engineering units) to
-  CRSF RC_CHANNELS_PACKED using `ch_cfg` for all channel calibration; all µs
-  internally, no ticks visible to callers.
-
-> **Coordinate frame.** The `0x80` IMU frame is NED body-fixed: gx is the
-> roll-axis rate (about body North/X), gy the pitch-axis rate (East/Y), gz the
-> yaw-axis rate (Down/Z). The guidance LOS derotation (Section 6.6) and the
-> control mapping (Section 6.7) must use this convention consistently. If the
-> camera image axes do not align with NED body axes, the alignment rotation is
-> applied once in `guidance/los.py`, not scattered across modules.
-
-**`link/serial_port.py`**
-
-- `SerialPort(port, baud)` — opens with `pyserial` at 420000 baud
-- Non-blocking read with configurable timeout
-- Write queue: `enqueue(data)` is non-blocking; background coroutine drains it
-- `is_connected → bool`
-- Reconnect logic on `serial.SerialException`
-
----
-
-### 6.6 guidance/
-
-The guidance module is organised around a strategy pattern: an algorithm-agnostic
-worker loop selects a `GuidanceMethod` implementation at startup based on
-`config.guidance.method` and calls `method.compute(...)` each tick. Adding a new
-algorithm is one file plus one entry in `factory.py`.
-
-**`guidance/worker.py`** — process entry point
-
-```
-gcfg   = cfg_guidance(config)
-aspect = pcfg.camera.width / pcfg.camera.height
-method = get_guidance(gcfg, aspect)        # selected by gcfg.method
-rate   = RateLimiter(hz=50)
-loop:
-    rate.sleep()
-    est        = bus.latest("target/estimate")
-    att        = bus.latest("fc/attitude")     # Euler angles
-    imu        = bus.latest("fc/imu")          # raw gyro + accel
-    lockon_cmd = bus.latest("lockon/cmd")
-    if est is None or att is None or imu is None: continue
-    if est.tracker_health in ("lost", "no_lock"): continue
-    if monotonic_ns() - imu.timestamp_ns > fc_imu_timeout_ns: continue
-    ax, ay = method.compute(est, imu, lockon_cmd, monotonic_ns())
-    bus.publish("guidance/accel", AccelCmd(monotonic_ns(), ax, ay))
-```
-
-**`guidance/base.py`**
-`GuidanceMethod` Protocol:
-
-```python
-class GuidanceMethod(Protocol):
-    def compute(
-        self,
-        est: TargetEstimate,
-        imu: IMUFrame,
-        lockon_cmd: LockOnCmd | None,
-        now_ns: int,
-    ) -> tuple[float, float]: ...
-    def name(self) -> str: ...
-```
-
-Returns `(ax, ay)` in m/s² (body-frame lateral / longitudinal). Each method
-consumes the same inputs but uses only what it needs — pure pursuit, for example,
-ignores `imu` and `lockon_cmd` entirely.
-
-**`guidance/factory.py`**
-`METHODS` registry plus `get_guidance(gcfg, aspect) → GuidanceMethod`. Mirrors the
-tracker factory pattern: a dict of constructors keyed by method name, raises
-`KeyError` with the valid set if the configured name is unknown.
-
-```python
-METHODS = {
-    "pronav":       _make_pronav,         # → ProNavGuidance
-    "pure_pursuit": _make_pure_pursuit,   # → PurePursuitGuidance
-}
-```
-
-**`guidance/pronav.py`**
-Two exports:
-
-- `pronav(los_rate, closing_vel, N) → (ax, ay)` — the pure functional core,
-  `a_cmd = N × V_c × los_rate`. Kept available for direct testing.
-- `ProNavGuidance(cfg: PronavConfig, fov_horizontal_rad, aspect)` — the
-  `GuidanceMethod` implementation. Constructs an internal `LOSRateEstimator` and
-  `ClosingVelEstimator` and combines them in `compute()`.
-
-`N` is the navigation gain, typically 3–5. Higher N = more aggressive pursuit.
-Requires `LOSRateEstimator` (centroid derivative + body-rate derotation) and
-`ClosingVelEstimator` (bbox-area growth) — see below.
-
-**`guidance/pure_pursuit.py`**
-`PurePursuitGuidance(cfg: PurePursuitConfig, fov_horizontal_rad, aspect)` — the
-simpler homing law:
-
-```
-a_cmd_x = K * centroid_x * (fov_h / 2)
-a_cmd_y = K * centroid_y * (fov_h / aspect / 2)
-```
-
-`centroid_norm` spans `(-1, 1)` across each image axis, so multiplying by the
-half-FoV converts to a physical LOS angle in radians. `K` is in m/s² per radian.
-
-No LOS rate, no closing velocity, no body-rate derotation — by design simpler
-than ProNav. Use when target dynamics are slow relative to the loop, or as a
-debugging baseline to isolate sign / mounting issues from PN tuning. Downstream
-the control mapping `a ≈ g·θ` turns each command back into a tilt setpoint, so
-in steady state `tilt ≈ K/g * LOS_angle` — a straightforward proportional
-crosshair-centring controller.
-
-**`guidance/los.py`**
-`LOSRateEstimator(fov_horizontal_rad, aspect)` with
-`update(centroid_norm, imu, lockon_cmd, now_ns) → (lr_x, lr_y)`.
-
-Computes the inertial line-of-sight rate vector in body frame. The image-plane
-centroid error is a direct measurement of LOS angle (small-angle). The apparent
-LOS rate is estimated by differencing centroid position between the current and
-previous estimate over elapsed time; the body rotation measured by the gyro is
-then subtracted to recover the *inertial* LOS rate — the quantity ProNav
-requires.
-
-```
-los_apparent = (centroid_now - centroid_prev) / dt
-los_rate     = los_apparent - body_rates_projected(imu.gx, imu.gy, imu.gz)
-```
-
-The estimator resets on a new `lockon_cmd.seq` to avoid a spurious rate spike
-from the centroid jump that follows reinitialisation.
-
-> **Body rates source.** Body rates come from the `0x80` gyro (`imu.gx/gy/gz`),
-> not from differentiated Euler angles. Raw gyro at 50 Hz with 0.1°/s resolution
-> gives a clean derotation term; the previous differentiated-Euler path injected
-> quantisation and lag directly into the guidance command.
->
-> **Camera-up axis mapping:** because the bore-sight is +Z (up when level), the
-> mapping from image axes to the body roll/pitch axes used in derotation is the
-> up-facing convention. The image→body axis alignment (including the sign flip)
-> is applied here, once, so that the consuming guidance method and
-> `control/attitude_cmd` downstream see a consistent body-frame LOS rate. This
-> is fixed by the camera mount, not configurable.
-
-**`guidance/closing_vel.py`**
-`ClosingVelEstimator()` with `update(bbox, now_ns, cfg: PronavConfig) → float`.
-
-Estimates closing velocity from the rate of change of bounding box area.
-Growing bbox → target is getting closer → positive closing velocity.
-Falls back to `cfg.closing_vel_fallback` if the EMA-smoothed area rate is
-below `cfg.closing_vel_min_area_rate`, or if the raw V_c would be negative
-(receding) — which would otherwise invert the PN law.
-
-Consumed only by `ProNavGuidance`. Pure pursuit does not need it.
-
-**Important:** whenever the fallback constant is used, the function emits a
-`log.debug("closing_vel: using fallback")`. The fallback is a meaningful
-diagnostic signal — if it fires continuously during a tracking run, the PN gain
-is scaling against a wrong velocity and the guidance output is suspect.
-`scripts/bench_tracker.py` should count fallback activations in its CSV output.
-
-**Configuration block.** Each method has its own nested sub-block; only the one
-named by `method` is required, but both may be present so the operator can
-switch methods via `--set guidance.method=...` without editing other keys.
-
-```yaml
-guidance:
-  method: pronav              # "pronav" | "pure_pursuit"
-  fov_horizontal_rad: 1.047
-  throttle_hold: 0.55
-  pronav:
-    N: 4.0
-    closing_vel_fallback: 2.0
-    closing_vel_ema_alpha: 0.3
-    closing_vel_min_area_rate: 0.001
-    closing_vel_area_scale: 5.0
-  pure_pursuit:
-    K: 6.0
-```
-
----
-
-### 6.7 control/
-
-**`control/worker.py`** — process entry point, SCHED_FIFO, CPU core 3
-
-```
-platform.set_realtime(core=3, prio=80)
-rate    = RateLimiter(hz=100)
-watchdog = Watchdog(topics=[
-    ("target/estimate", cfg.watchdog.target_estimate_ms),
-    ("fc/attitude",     cfg.watchdog.fc_attitude_ms),
-    ("guidance/accel",  cfg.watchdog.guidance_accel_ms),
-], bus=bus)
-prev_cmd = None
-state = FailsafeState.NOMINAL
-
-loop:
-    rate.sleep()
-    try:
-        watchdog.check_all()
-        state = FailsafeState.NOMINAL
-    except HealthFault as e:
-        state = FailsafeState.LEVEL
-        bus.publish("control/cmd", limiter.failsafe_level())
-        log.warning(f"Failsafe: {e}")
-        continue
-
-    accel = bus.latest("guidance/accel")
-    att   = bus.latest("fc/attitude")
-    cmd   = attitude_cmd.compute(accel, att)
-    cmd   = limiter.apply(cmd, prev_cmd, cfg.airframe.control_limits)
-    bus.publish("control/cmd", cmd)
-    prev_cmd = cmd
-```
-
-**`control/attitude_cmd.py`**
-`compute(accel: AccelCmd, att: AttitudeState) → ControlCmd`
-
-Small-angle mapping from body-frame acceleration to attitude setpoints. The
-quad accelerates laterally by tilting its thrust vector, so a horizontal
-acceleration command becomes a tilt-angle command via `a ≈ g·tan(θ) ≈ g·θ`.
-The signs below are fixed for this airframe's **+Z (up when level)** bore-sight:
-
-```
-roll_deg  = -degrees(accel.ay / g)
-pitch_deg =  degrees(accel.ax / g)
-```
-
-> **Sign convention (fixed by hardware).** A conventional nadir/forward camera
-> would use `roll = +ay/g`, `pitch = -ax/g`. Because this airframe's bore-sight
-> is **+Z (up when level)**, the image plane is effectively mirrored about the
-> horizon relative to a downward camera, which inverts both axes of the
-> centroid→tilt relationship — hence the signs above. The camera mount is fixed,
-> so this is a hard-coded property of the build, not a configurable option. The
-> level-flight derivation: a target whose centroid sits at +Y in the (up-facing)
-> image lies physically toward −Y of the airframe once projected through an
-> upward bore-sight, so the corrective roll is opposite in sign to the nadir case.
->
-> **Verify empirically before flight.** On the bench HIL rig, command a known
-> centroid offset and confirm the commanded tilt drives the simulated centroid
-> toward zero (negative feedback). If it diverges, the signs above are wrong for
-> the actual mount and must be corrected in source. This single check is the
-> cheapest guard against an inverted guidance loop, which with an up-facing
-> camera is an easy mistake to make.
-
-Yaw rate command is zero (yaw hold). Throttle is held constant at a config
-value during tracking (altitude hold is delegated to the FC's baro loop if
-available, or held open-loop).
-
-**`control/limiter.py`**
-
-- `saturate(cmd, limits) → ControlCmd` — clamps roll/pitch to
-  `±max_roll_deg` / `±max_pitch_deg`
-- `slew_rate(cmd, prev, max_dps, dt) → ControlCmd` — limits rate of change
-  between consecutive commands
-- `failsafe_level() → ControlCmd` — returns zero roll, zero pitch, zero yaw
-  rate, mid throttle
-
-**`control/watchdog.py`**
-Per-topic staleness check called inside the control loop on every iteration.
-Reads `bus.latest(topic)`, compares `timestamp_ns` to `monotonic_ns()`.
-If delta > timeout: raises `HealthFault(topic)`.
-
----
-
-### 6.8 hil/
-
-Loaded only when `config.mission.mode` is `"bench_hil"` or `"swil"`. In flight
-mode these files are never imported.
-
-**`hil/orchestrator.py`** — HIL entry point
-Spawns all normal workers but replaces the camera source with `VirtualCamera`.
-Runs the target dynamics simulation and feeds it into `virtual_source.py`.
-In `swil` mode, also replaces the link worker with a simulated FC dynamics model
-that emits synthetic `0x1E` attitude and `0x80` IMU frames so the rest of the
-stack sees an identical bus contract to flight.
-
-**`hil/virtual_source.py`**
-`VirtualCamera(CameraSource)` — registered in `camera/sources.py` under the key
-`"virtual"`. On each `read()` call, queries the current sim state from
-`hil/projector.py` and renders a synthetic frame with the target drawn as a
-coloured rectangle. **The projection uses the up-facing (+Z) bore-sight model**
-so the simulated centroid behaves with the same sign convention as the real
-camera — essential for validating the `attitude_cmd` sign convention on the bench.
-
-**`hil/target_models.py`**
-
-- `ConstantVelocity` — target moves at fixed velocity vector; `step(dt) → Pose3D`
-- `Maneuvering` — periodic step changes in velocity direction
-- `Stationary` — fixed position
-
-**`hil/projector.py`**
-`project_target(pose_3d: Pose3D, attitude: AttitudeState, K: np.ndarray) → BoundingBox`
-Projects a 3D target position into image-plane pixel coordinates using the camera
-intrinsic matrix K (from calibration) and the current drone attitude. The
-extrinsic rotation places the optical axis along body **+Z (up)**, matching the
-physical mount. Returns a normalised bounding box.
-
-**`hil/dynamics.py`**
-6-DoF rigid body integrator for the quad (used in `swil` mode only). Takes
-`ControlCmd` from the bus, integrates equations of motion, publishes synthetic
-`AttitudeState` and `IMUFrame` to the bus. Bypasses the real FC entirely. The
-synthetic `IMUFrame` carries true simulated gyro/accel in NED body axes, so the
-guidance derotation path is exercised identically to flight.
-
-**`hil/scenario.py`**
-`load_scenario(path) → Scenario` — loads a YAML scenario file defining initial
-conditions, target trajectory, duration, and pass/fail criteria (e.g. mean IoU
-over run > 0.5).
-
----
-
-### 6.9 ground/
-
-**`ground/worker.py`** — process entry point
-Subscribes to all bus topics. Runs `ground/server.py` FastAPI app. Feeds
-annotated frames to the MJPEG stream. Handles lock-on POST requests by
-publishing to `lockon/cmd`.
-
-**`ground/server.py`**
-FastAPI endpoints:
-
-- `GET /stream` — MJPEG stream of annotated camera frames at ~15Hz
-- `GET /telemetry` — Server-Sent Events; pushes latest `TargetEstimate`,
-  `AttitudeState`, `IMUFrame`, and all `HealthReport` messages as JSON every
-  100ms. Also includes `ccv_algo` and `ncv_algo` strings derived from
-  health-report process names (e.g. `"ccv_kcf"` → `ccv_algo: "kcf"`). These
-  update whenever a new health report arrives and require no additional bus topic.
-- `POST /lockon` — body `{"x","y","w","h"}` normalised; publishes `LockOnCmd`
-- `GET /health` — returns JSON summary of all process health states
-
-**`ground/overlay.py`**
-`draw_overlay(frame, estimate, attitude, health) → bytes`
-Draws bounding box, centroid crosshair, confidence bar, attitude HUD, and
-health indicator onto the frame. Returns JPEG bytes. Runs inside the ground
-worker process — does not affect tracker frame timing.
-
-**`ground/static/index.html`**
-Single-file web UI (vanilla JS, no framework):
-
-- Left pane: `<img>` tag pulling MJPEG stream
-- Click handler on image: maps click coordinates to normalised bbox, POSTs to
-  `/lockon`
-- Right pane: telemetry dials (roll, pitch, confidence, LOS error)
-- Bottom bar: health indicators per process, colour-coded
+`factory.py` maps `platform.name` to a `(camera_factory,
+serial_factory)` tuple. Add a new SBC by adding a row here and a preset
+YAML — no edits to perception/control code.
+
+### 6.3 perception/
+
+- **`camera/`** — `sources.py` (`V4L2Camera`, `GStreamerCamera`,
+  `VirtualCamera`), `worker.py` (loop that pulls frames and writes to
+  `FrameBuffer`).
+- **`tracker_worker.py`** — the entire generic tracker process in ~200 lines:
+  - `_resolve_cv2_factory(class_name)` — finds a cv2 tracker class on `cv2`
+    or `cv2.legacy`.
+  - `OpenCVTrackerAdapter` — wraps a cv2 tracker (pixel tuples + success
+    bool) in the structural output protocol the worker reads.
+  - `load_tracker(config)` — parses `tracker.import` (`module:Class`). For
+    `cv2:*` returns the adapter; otherwise `importlib.import_module(module)`
+    and `cls(**params)`. Errors (malformed spec, missing module, missing
+    class, bad params) surface as ordinary Python exceptions and kill the
+    worker — `run.py` surfaces the exit. No silent degradation.
+  - `TrackerWorker` — IPC loop. Owns: lockon/cmd subscription, SHM frame
+    read, `target/estimate` publish, periodic `system/health` publish.
+    Tracker is opaque; no per-implementation branching. On SIGTERM, calls
+    `tracker.close()` exactly once (last chance for NPU release / subprocess
+    teardown).
+  - `run_from_config(config, bus, frame_buffer)` — entry point used by
+    `scripts/run.py`; constructs the tracker and the worker, sets the
+    optional CPU affinity, and calls `worker.run()`.
+
+  #### Tracker protocol (structural)
+
+  Trackers — built-in or external — expose:
+
+  | Method   | Signature                                | Notes |
+  | -------- | ---------------------------------------- | ----- |
+  | `name`   | `() -> str`                              | Static; used to form the worker process name `tracker_<name>`. |
+  | `init`   | `(frame: np.ndarray, bbox) -> None`      | Called per lock-on. bbox is duck-typed `.x/.y/.w/.h`, normalized 0–1. May be called repeatedly without `close()`. |
+  | `update` | `(frame: np.ndarray) -> object`          | Per tick. Returns an object with `.bbox.x/y/w/h` (normalized 0–1), `.confidence` ∈ [0,1], `.health` ∈ `{"nominal","uncertain","lost","no_lock"}`. |
+  | `reset`  | `() -> None`                             | Soft back-to-pre-init; must not release hardware. |
+  | `close`  | `() -> None`                             | Called once in SIGTERM handler. Releases hardware, tears down internal subprocesses. |
+
+  No quadguide imports required on the library side. Library defines its
+  own bbox / output types (dataclass, namedtuple, attrs, SimpleNamespace —
+  attribute names are read directly).
+
+### 6.4 link/
+
+CRSF parser/serializer + UART worker. RX path decodes `0x1E` (ATTITUDE),
+`0x80` (custom IMU) into `fc/attitude` and `fc/imu`. TX path runs at a fixed
+50 Hz, reading `control/cmd` and `arm/cmd`, mapping to channel ticks via
+the configured `link.channels` table. The 50 Hz cadence is **constant**
+regardless of upstream health — drop it and the FC enters its own RX
+failsafe.
+
+### 6.5 guidance/
+
+- **`base.py`** — `GuidanceMethod` Protocol (`compute(est, imu, lockon_cmd,
+  now_ns) -> (ax, ay)`).
+- **`_centroid.py`** — `bbox_centroid_norm(bbox)` helper that converts
+  `BoundingBox` (top-left, 0–1) to image-centre-relative centroid (-1..+1)
+  on each axis. Used by pronav and pure_pursuit.
+- **`pronav.py`** — Proportional navigation: `a = N · V_c · LOS_rate`. Uses
+  `LOSRateEstimator` (image-plane derivative with body-rate derotation) and
+  `ClosingVelEstimator` (bbox area growth → m/s).
+- **`pure_pursuit.py`** — Simplest homing law: `a = K · LOS_angle`. No LOS
+  rate, no closing velocity, no derotation. Centroid → LOS angle via FoV.
+- **`los.py`**, **`closing_vel.py`** — pure computation.
+- **`worker.py`** — 50 Hz `RateLimiter` loop; reads `target/estimate` +
+  `fc/imu` + `lockon/cmd`; publishes `guidance/accel`.
+
+### 6.6 control/
+
+- **`watchdog.py`** — gates on `target/estimate`, `fc/attitude`, `fc/imu`
+  staleness; flips to failsafe outputs on miss.
+- **`attitude_cmd.py`** — maps `(ax, ay)` and current attitude to
+  `(roll_deg, pitch_deg, yaw_rate_dps, throttle)`. Includes the
+  bore-sight-up sign convention.
+- **`worker.py`** — 250 Hz loop on CPU core 3, SCHED_FIFO. Reads
+  `guidance/accel` + `fc/attitude` + `fc/imu`; publishes `control/cmd`.
+
+### 6.7 hil/
+
+`worker.py` — synthetic FC + target dynamics for `mission.mode: swil`
+(software-in-the-loop) and `bench_hil`. Composes with `run.py`.
+
+### 6.8 ground/
+
+- **`server.py`** — FastAPI app: `GET /` (HUD), `GET /stream` (MJPEG),
+  `GET /telemetry` (SSE), `POST /lockon`, `POST /reset_lockon`, `POST /arm`.
+  The SSE payload includes `tracker_algo` (the tracker's `.name()` exposed
+  via the worker's process name).
+- **`overlay.py`** — draws the bbox over each MJPEG frame based on the
+  latest `target/estimate`.
+- **`worker.py`** — uvicorn launcher.
+- **`static/index.html`** — HUD. Centroid for the crosshair is computed in
+  JS from `bbox_x/y/w/h`.
 
 ---
 
 ## 7. Inter-Process Communication Summary
 
-
-| Topic                    | Type                  | Producer         | Consumers                            | Approx rate      |
-| -------------------------- | ----------------------- | ------------------ | -------------------------------------- | ------------------ |
-| frame_buffer             | shm ring (np.ndarray) | camera worker    | ccv worker, ncv worker               | 30–60 Hz        |
-| `ccv_tracker/estimate`   | TrackerEstimate       | ccv worker       | fusion worker                        | ~200 Hz          |
-| `ncv_tracker/estimate`   | TrackerEstimate       | ncv worker       | fusion worker                        | ~30 Hz           |
-| `target/estimate`        | TargetEstimate        | fusion worker    | guidance, control (watchdog), ground | ~200 Hz          |
-| `fc/attitude`     | AttitudeState         | link worker      | guidance, control (watchdog), ground | 50 Hz (0x1E; rates from 0x80) |
-| `fc/imu`          | IMUFrame              | link worker      | guidance (LOS derotation), ground    | 50 Hz (0x80 raw gyro + accel) |
-| `arm/cmd`         | ArmCmd                | ground worker    | link worker                          | event-driven     |
-| `guidance/accel`  | AccelCmd              | guidance worker  | control worker                       | 50 Hz            |
-| `control/cmd`     | ControlCmd            | control worker   | link worker                          | 100 Hz           |
-| `lockon/cmd`      | LockOnCmd             | ground worker    | ccv worker, ncv worker               | event-driven     |
-| `system/health`   | HealthReport          | all workers      | ground worker                        | 5 Hz per process |
-
-> **Changed:** `fc/imu` now carries real gyro and accelerometer data decoded
-> from the CRSF `0x80` IMU RAW frame (50 Hz, NED body axes), and is consumed by
-> the guidance worker for LOS derotation. Previously it carried only
-> finite-differenced gyro with `ax=ay=az=0`.
+| Topic              | Producer        | Consumers                          | Payload          | Wire |
+| ------------------ | --------------- | ---------------------------------- | ---------------- | ---- |
+| `frame_buffer` (shm) | camera        | tracker, ground                    | `np.ndarray`     | shm  |
+| `target/estimate`  | tracker         | guidance, control watchdog, ground | `TrackerEstimate` | 33 B |
+| `lockon/cmd`       | ground          | tracker                            | `LockOnCmd`      | 26 B |
+| `fc/attitude`      | link            | control, ground                    | `AttitudeState`  | 32 B |
+| `fc/imu`           | link            | guidance, control, ground          | `IMUFrame`       | 32 B |
+| `guidance/accel`   | guidance        | control, ground                    | `AccelCmd`       | 16 B |
+| `control/cmd`      | control         | link, ground                       | `ControlCmd`     | 24 B |
+| `arm/cmd`          | ground          | link                               | `ArmCmd`         |  9 B |
+| `system/health`    | all             | ground                             | `HealthReport`   | 25 B |
 
 ---
 
 ## 8. Startup and Shutdown
 
-### Startup sequence (managed by systemd)
+### Startup (systemd, production)
 
-```
-1. qg-camera.service     starts first — frame_buffer shm created here
-2. qg-kcf.service        After=qg-camera
-3. qg-nano.service       After=qg-camera
-4. qg-fusion.service     After=qg-kcf, qg-nano
-5. qg-link.service       no camera dependency — starts in parallel
-6. qg-guidance.service   After=qg-fusion, qg-link
-7. qg-control.service    After=qg-guidance, qg-link
-8. qg-ground.service     After=network.target (independent)
-```
+`quadguide.target` Wants/After: `qg-camera`, `qg-tracker`, `qg-link`,
+`qg-guidance`, `qg-control`, `qg-ground`. Each unit is a thin invocation of
+the matching worker entry point. The tracker unit has `After=qg-camera`.
 
-### Shutdown sequence
+### Startup (development)
 
-SIGTERM is sent to all workers by systemd. Each worker:
+`python scripts/run.py --config configs/config.yaml [--no-ground]` forks all
+workers from a single parent process. The parent owns `Bus.close()` and
+`FrameBuffer.unlink()` for the lifetime of the run; workers `bus.detach()`
+on SIGTERM.
 
-1. Finishes the current loop iteration
-2. Publishes a final `HealthReport("dead")`
-3. Releases owned resources (camera, NPU handle, serial port)
-4. Exits with code 0
+### Shutdown
 
-The ncv worker (nanotrack) MUST release the NPU handle on exit. `NCVTrackerWorker`
-calls `tracker.close()` in its SIGTERM handler for this purpose. If killed with
-SIGKILL (e.g. timeout), the `/dev/rknpu0` handle may be left open and the NPU
-will require a reboot or driver reload to recover. The systemd `TimeoutStopSec`
-for `qg-nano.service` should be set to at least 2s to allow clean shutdown.
-
-### Manual startup (development)
-
-```bash
-python scripts/run.py --config configs/config.yaml
-```
-
-`run.py` reads config, creates the bus and frame_buffer in shared memory, then
-spawns each worker as a `multiprocessing.Process`. Handles SIGINT/SIGTERM by
-sending SIGTERM to all children and waiting for them to exit.
-
+Any worker exit (clean or error) triggers `_shutdown(procs)` in `run.py`:
+SIGTERM to all, 5 s grace, SIGKILL stragglers, then parent unlinks shm.
 
 ---
 
 ## 9. Scripts
 
-**`scripts/run.py`**
-Main entry point. Usage:
-
-```bash
-python scripts/run.py --config configs/config.yaml [--set platform.name=rpi4]
-```
-
-**`scripts/calibrate.py`**
-Camera intrinsic calibration using a printed checkerboard. Writes `camera.K`
-and `camera.dist_coeffs` into `configs/config.yaml`. Run once per camera/mount
-combination.
-
-```bash
-python scripts/calibrate.py --config configs/config.yaml --board 9x6
-```
-
-**`scripts/bench_tracker.py`**
-Offline benchmark of the full perception pipeline (camera → kcf → nanotrack →
-fusion) against a recorded video file. Outputs per-frame IoU, confidence, and
-inference latency as CSV.
-
-```bash
-python scripts/bench_tracker.py --video path/to/test.mp4 --config configs/config.yaml
-```
-
-**`scripts/convert_rknn.py`**
-Converts ONNX models to RKNN format using rknn-toolkit2. Must be run on an x86
-machine with rknn-toolkit2 installed. Writes output to `models/`.
-
-```bash
-python scripts/convert_rknn.py --backbone models/nanotrack_backbone.onnx \
-                                --head models/nanotrack_head.onnx \
-                                --platform rk3588s
-```
-
-**`scripts/deploy.py`**
-Rsyncs source, configs, and models to the SBC over SSH. Restarts systemd services.
-
-```bash
-python scripts/deploy.py --host orangepi5.local --user plas
-```
+- **`run.py`** — flight orchestrator (above).
+- **`dev_ground_perception.py`** — camera + tracker + ground only (no
+  link/guidance/control). Useful for tracker tuning over the HUD.
+- **`bench_tracker.py`** — frame-by-frame tracker benchmark from a recorded
+  video; emits a CSV of `bbox / confidence / health / latency_ns`.
+- **`calibrate.py`**, **`convert_rknn.py`**, **`deploy.py`**,
+  **`test_link*.py`** — utilities.
 
 ---
 
 ## 10. Adding a New SBC
 
-1. Add a platform entry to `platform/factory.py`:
-   ```python
-   "my_new_sbc": {"sched_fifo": True, "gpio": "MyGPIOLib"}
-   ```
-2. Add an inference entry to `inference/factory.py` if using a new NPU.
-   Write the corresponding `inference/my_npu.py` implementing `NPURuntime`.
-3. Add a config section to `configs/config.yaml` under `platform:`.
-4. Compile ONNX models for the new NPU if applicable (`scripts/convert_rknn.py`
-   or equivalent).
-5. Set `platform.name: my_new_sbc` in config and run.
-
-No other source files change.
+1. Add a `(camera_factory, serial_factory)` row to `platform/factory.py`.
+2. Add a YAML preset under `configs/`.
+3. If the SBC has an NPU you want to use, point `tracker.import` at a
+   library that targets that NPU. Nothing in quadguide branches on NPU type.
 
 ---
 
-## 11. Known Constraints and Limitations
+## 11. Adding a New Tracker
 
-- **Camera bore-sight is +Z (up when level).** The guidance→attitude sign
-  convention is inverted on both axes relative to a nadir camera, and is
-  hard-coded in `control/attitude_cmd.py` (a fixed property of the build, not
-  configurable). The signs MUST be verified on the bench HIL rig before any
-  flight (command a known centroid offset, confirm negative feedback). This is
-  the highest-risk single point of error in the stack.
-- **Body rates now come from the FC `0x80` IMU RAW frame** (true gyro, 50 Hz,
-  NED body axes), not from differentiated Euler angles. The
-  `AttitudeDifferentiator` remains only as a fallback for FC firmware that does
-  not emit `0x80`. Raw accelerometer data (ax/ay/az) is also available on
-  `fc/imu` and is currently consumed only by the ground station; it is a
-  candidate input for augmented proportional navigation (APN) and for an
-  altitude/throttle estimator (see Section 12).
-- **CRSF link is 420000 baud, bidirectional.** Uplink is `0x16`
-  RC_CHANNELS_PACKED at the configured TX rate (default 50 Hz). Downlink frames
-  decoded: `0x1E` attitude, `0x80` IMU raw, `0x21` flight mode, `0x02` GPS,
-  `0x08` battery. The uplink must be continuous — if it stops, the FC enters its
-  own failsafe.
-- **`0x80` is a custom frame.** Standard EdgeTX/OpenTX telemetry will not parse
-  it; only quadguide's CRSF parser consumes it. Ensure the madflight FC firmware
-  is built to emit it at 50 Hz.
-- **Altitude hold** is not implemented in quadguide. Throttle is held open-loop.
-  The FC's barometer loop (if enabled in madflight) handles altitude stability
-  independently. With an up-facing camera, an uncontrolled altitude excursion
-  does not blind the seeker the way a nadir camera flying into the ground would,
-  but it still corrupts the closing-velocity estimate.
-- **Yaw** is not controlled by the guidance system. Yaw hold is delegated to the
-  FC heading hold mode.
-- **Only one target at a time.** The lock-on command replaces any existing target.
-- **No re-acquisition.** If the target is lost (`tracker_health="lost"`), the
-  system enters failsafe level flight. Re-acquisition requires a new lock-on
-  command from the operator.
-- **NPU handle leak on SIGKILL.** Clean shutdown (SIGTERM) is required for the
-  ncv worker (nanotrack). See Section 8.
+In quadguide: edit `configs/config.yaml`:
+
+```yaml
+tracker:
+  import: myhybrid.tracker:HybridTracker
+  params: { model_path: models/hybrid.rknn, … }
+```
+
+In the external library: any class with `name`/`init`/`update`/`reset`/
+`close` whose `update()` returns an object exposing `.bbox.{x,y,w,h}`,
+`.confidence`, `.health`. The library may own its own NPU, spawn internal
+subprocesses, and define its own types. **Zero quadguide imports required.**
 
 ---
 
-## 12. Recommended Changes Given the New IMU Telemetry
+## 12. Known Constraints and Limitations
 
-These follow directly from the FC now streaming real `0x80` IMU data and from
-the up-facing camera. Listed roughly in priority order.
-
-1. **Use ANGLE flight mode on the FC, not RATE.** The uplink `0x16` channels map
-   to roll/pitch sticks. ProNav emits a lateral acceleration → tilt-angle
-   command (`θ = a/g`), which is a static, invertible mapping onto ANGLE-mode
-   stick deflection. RATE mode would require quadguide to close an extra
-   integrator around its own attitude estimate to hold a commanded tilt, adding
-   loop complexity and noise sensitivity for no benefit. `control/attitude_cmd.py`
-   already produces angle setpoints, so ANGLE mode is the natural fit. Confirm
-   the FC flight-mode channel (decoded via `0x21`) reports `ANGLE`.
-
-2. **Feed raw gyro into LOS derotation (done in this revision).** This is the
-   primary payoff of the `0x80` frame and is already wired into
-   `guidance/los.py`. Drop the differentiated-Euler path entirely once `0x80`
-   is confirmed present in flight.
-
-3. **Add accelerometer-based augmented ProNav (APN) as an option.** The `0x80`
-   frame carries body accelerations. APN adds a term proportional to estimated
-   target acceleration: `a_cmd = N·V_c·λ̇ + (N/2)·a_target`. Even a coarse
-   target-accel estimate sharpens pursuit of a maneuvering target. Gate it behind
-   a config flag; start with classical ProNav and enable APN only after the basic
-   loop is validated on the bench.
-
-4. **Use accelerometers for a closing-velocity / altitude aid.** Closing velocity
-   is currently inferred from bbox area rate, which is noisy (hence the fallback
-   constant). Integrating body-frame acceleration over short windows gives an
-   independent velocity estimate to cross-check or complementary-filter against
-   the vision estimate, reducing fallback activations.
-
-5. **Gravity-vector cross-check on the attitude.** With both `0x1E` Euler angles
-   and `0x80` accelerometers available, a slow complementary filter can validate
-   that the reported attitude and the measured gravity direction agree. A
-   persistent disagreement is an early warning of FC attitude-estimator drift
-   before it corrupts the guidance frame transforms.
-
-6. **Tighten the `fc/imu` watchdog.** Now that guidance depends on `fc/imu` for
-   derotation (not just telemetry), add `fc/imu` to the control worker's
-   watchdog set (added to config in Section 5 as `watchdog.fc_imu_ms: 50`). If
-   the IMU stream drops, derotation silently degrades to stale rates — fail safe
-   instead.
-
-7. **Reconcile the remaining MSP references and the baud field.** The original
-   document mixed MSP (`MSP_SET_RAW_RC`, "feed to MSP parser") into an otherwise
-   CRSF link, and set `serial.baud: 115200` while the link is 420000. Both are
-   corrected here; audit the actual `link/` source to ensure no MSP code path
-   survives.
+1. **Loss of intra-perception fault isolation.** With one tracker process, a
+   tracker crash takes the whole tracking path down. Control's watchdog trips
+   on `target/estimate` staleness; the loop fails safe to level flight. This
+   is graceful degradation, not a flight-safety regression — but operational
+   restarts now affect the entire perception path.
+2. **NPU handle leak on SIGKILL is library-owned.** Quadguide guarantees
+   `tracker.close()` is called on SIGTERM. Under SIGKILL, `close()` does not
+   run; libraries that hold the NPU must document their SIGKILL behavior and
+   any required device-reset steps.
+3. **cv2 tracker params are not configurable.** `tracker.params` is held but
+   ignored by `OpenCVTrackerAdapter` — cv2's typed `Params` objects don't
+   map cleanly to a YAML dict. Deferred; the operational tracker is expected
+   to be an external hybrid library, with cv2 trackers serving as a fallback /
+   smoke-test path.
+4. **No multi-tracker redundancy from quadguide's side.** If a library wants
+   ensembles or CCV+NCV fusion, it implements them internally and exposes
+   one face to quadguide.
+5. **Bus topics are pre-declared at startup.** Adding a new topic at runtime
+   is not supported by design — the registry is fixed when the parent forks.
+6. **Single writer / single reader per shm frame slot.** Multiple tracker
+   processes are not supported; that's why the design collapses to one.
+7. **CRSF TX cadence is fixed at 50 Hz.** Drop it and the FC enters its own
+   RX failsafe — independent of quadguide's watchdogs.

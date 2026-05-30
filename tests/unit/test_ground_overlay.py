@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from quadguide.core.messages import (
-    ActiveTracker, BoundingBox, TargetEstimate, TrackerHealth,
+    BoundingBox, TrackerEstimate, TrackerHealth,
 )
 from quadguide.ground.overlay import draw_overlay
 
@@ -12,14 +12,12 @@ def _black_frame() -> np.ndarray:
     return np.zeros((480, 640, 3), dtype=np.uint8)
 
 
-def _estimate(health: TrackerHealth) -> TargetEstimate:
-    return TargetEstimate(
+def _estimate(health: TrackerHealth) -> TrackerEstimate:
+    return TrackerEstimate(
         timestamp_ns=0,
         bbox=BoundingBox(0.25, 0.25, 0.5, 0.5),
-        centroid_norm=(0.0, 0.0),
         confidence=0.9,
         tracker_health=health,
-        active_tracker=ActiveTracker.CCV,
     )
 
 

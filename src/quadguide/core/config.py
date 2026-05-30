@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
+from typing import Any
 import yaml
 
 
@@ -63,44 +64,9 @@ class GuidanceConfig:
 
 
 @dataclass(frozen=True)
-class FusionConfig:
-    confidence_gate: float
-    iou_divergence_thresh: float
-    ncv_staleness_ms: int
-    algorithm: str = "confidence_weighted"  # "confidence_weighted" | "iou_gated" | "passthrough"
-    fast_tracker: str = "ccv"              # "ccv" | "ncv" — which tracker is the high-rate sync source
-    iou_velocity_ema_alpha: float = 0.3    # iou_gated: EMA smoothing for velocity dead-reckoning
-    iou_thresh_high: float = 0.7           # iou_gated: above this, light blend toward slow tracker
-    iou_thresh_low: float = 0.3            # iou_gated: below this, use slow tracker directly
-
-
-@dataclass(frozen=True)
-class NanotrackConfig:
-    exemplar_sz: int
-    instance_sz: int
-    score_threshold: float
-
-
-@dataclass(frozen=True)
-class KCFConfig:
-    detect_thresh: float
-    sigma: float
-    lambda_: float
-
-
-@dataclass(frozen=True)
-class MOSSEConfig:
-    pass  # OpenCV MOSSE exposes no tunable parameters
-
-
-@dataclass(frozen=True)
 class TrackerConfig:
-    fusion: FusionConfig
-    ccv: str | None = None          # "kcf" | "mosse" | None
-    ncv: str | None = None          # "nanotrack" | None
-    kcf: KCFConfig | None = None
-    nanotrack: NanotrackConfig | None = None
-    mosse: MOSSEConfig | None = None
+    import_spec: str                                          # YAML key: "import"
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -121,17 +87,10 @@ class AirframeConfig:
 
 @dataclass(frozen=True)
 class RealtimeConfig:
-    kcf_cpu_core: int
+    tracker_cpu_core: int | None
     control_cpu_core: int
     control_sched_fifo: bool
     control_fifo_prio: int
-
-
-@dataclass(frozen=True)
-class InferenceConfig:
-    device: str
-    backbone: str
-    head: str
 
 
 @dataclass(frozen=True)
@@ -154,7 +113,6 @@ class PlatformConfig:
     name: str
     camera: CameraConfig
     serial: SerialConfig
-    inference: InferenceConfig
     realtime: RealtimeConfig
 
 
@@ -204,13 +162,8 @@ def cfg_platform(d: dict) -> PlatformConfig:
             fps=cam["fps"],
         ),
         serial=SerialConfig(port=p["serial"]["port"], baud=p["serial"]["baud"]),
-        inference=InferenceConfig(
-            device=p["inference"]["device"],
-            backbone=p["inference"]["backbone"],
-            head=p["inference"]["head"],
-        ),
         realtime=RealtimeConfig(
-            kcf_cpu_core=p["realtime"]["kcf_cpu_core"],
+            tracker_cpu_core=p["realtime"].get("tracker_cpu_core"),
             control_cpu_core=p["realtime"]["control_cpu_core"],
             control_sched_fifo=p["realtime"]["control_sched_fifo"],
             control_fifo_prio=p["realtime"]["control_fifo_prio"],
@@ -236,32 +189,9 @@ def cfg_airframe(d: dict) -> AirframeConfig:
 
 def cfg_tracker(d: dict) -> TrackerConfig:
     t = d["tracker"]
-    kcf_raw = t.get("kcf")
-    nt_raw = t.get("nanotrack")
     return TrackerConfig(
-        fusion=FusionConfig(
-            confidence_gate=t["fusion"]["confidence_gate"],
-            iou_divergence_thresh=t["fusion"]["iou_divergence_thresh"],
-            ncv_staleness_ms=t["fusion"]["ncv_staleness_ms"],
-            algorithm=t["fusion"].get("algorithm", "confidence_weighted"),
-            fast_tracker=t["fusion"].get("fast_tracker", "ccv"),
-            iou_velocity_ema_alpha=t["fusion"].get("iou_velocity_ema_alpha", 0.3),
-            iou_thresh_high=t["fusion"].get("iou_thresh_high", 0.7),
-            iou_thresh_low=t["fusion"].get("iou_thresh_low", 0.3),
-        ),
-        ccv=t.get("ccv"),
-        ncv=t.get("ncv"),
-        kcf=KCFConfig(
-            detect_thresh=kcf_raw["detect_thresh"],
-            sigma=kcf_raw["sigma"],
-            lambda_=kcf_raw["lambda_"],
-        ) if kcf_raw else None,
-        nanotrack=NanotrackConfig(
-            exemplar_sz=nt_raw["exemplar_sz"],
-            instance_sz=nt_raw["instance_sz"],
-            score_threshold=nt_raw["score_threshold"],
-        ) if nt_raw else None,
-        mosse=MOSSEConfig() if "mosse" in t else None,
+        import_spec=t["import"],
+        params=dict(t.get("params") or {}),
     )
 
 
