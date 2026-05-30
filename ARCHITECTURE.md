@@ -470,26 +470,5 @@ subprocesses, and define its own types. **Zero quadguide imports required.**
 
 ## 12. Known Constraints and Limitations
 
-1. **Loss of intra-perception fault isolation.** With one tracker process, a
-   tracker crash takes the whole tracking path down. Control's watchdog trips
-   on `target/estimate` staleness; the loop fails safe to level flight. This
-   is graceful degradation, not a flight-safety regression — but operational
-   restarts now affect the entire perception path.
-2. **NPU handle leak on SIGKILL is library-owned.** Quadguide guarantees
-   `tracker.close()` is called on SIGTERM. Under SIGKILL, `close()` does not
-   run; libraries that hold the NPU must document their SIGKILL behavior and
-   any required device-reset steps.
-3. **cv2 tracker params are not configurable.** `tracker.params` is held but
-   ignored by `OpenCVTrackerAdapter` — cv2's typed `Params` objects don't
-   map cleanly to a YAML dict. Deferred; the operational tracker is expected
-   to be an external hybrid library, with cv2 trackers serving as a fallback /
-   smoke-test path.
-4. **No multi-tracker redundancy from quadguide's side.** If a library wants
-   ensembles or CCV+NCV fusion, it implements them internally and exposes
-   one face to quadguide.
-5. **Bus topics are pre-declared at startup.** Adding a new topic at runtime
-   is not supported by design — the registry is fixed when the parent forks.
-6. **Single writer / single reader per shm frame slot.** Multiple tracker
-   processes are not supported; that's why the design collapses to one.
-7. **CRSF TX cadence is fixed at 50 Hz.** Drop it and the FC enters its own
+1. **CRSF TX cadence is fixed at 50 Hz.** Drop it and the FC enters its own
    RX failsafe — independent of quadguide's watchdogs.
