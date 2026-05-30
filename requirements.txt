@@ -1,0 +1,21 @@
+# quadguide runtime + dev dependencies
+# Install with: pip install -r requirements.txt
+# For production SBC deploys, RKNN backend deps (rknnlite / rknn-toolkit2) and
+# onnxruntime-gpu are installed separately — see ARCHITECTURE.md.
+
+# Core runtime
+pyyaml>=6.0
+numpy>=2.0
+opencv-python>=4.10
+pyserial>=3.5
+
+# Ground station (FastAPI + uvicorn)
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# Inference (CPU backend; GPU/NPU backends installed per-target)
+onnxruntime>=1.20
+
+# Test
+pytest>=8.0
+httpx>=0.27

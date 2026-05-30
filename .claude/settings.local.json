@@ -70,7 +70,19 @@
       "Bash(PYTHONPATH=/home/plas/quadguide/src python *)",
       "Bash(PYTHONPATH=src python -c \"from quadguide.guidance.worker import run; print\\('ok'\\)\")",
       "Bash(xargs ls -la)",
-      "Bash(awk 'NR>=159 && NR<=200' /home/plas/quadguide/src/quadguide/control/worker.py)"
+      "Bash(awk 'NR>=159 && NR<=200' /home/plas/quadguide/src/quadguide/control/worker.py)",
+      "Bash(py -3.11 --version)",
+      "Bash(py -3.12 --version)",
+      "Bash(py -3.13 --version)",
+      "Bash(awk '{print $2}')",
+      "Bash(uv --version)",
+      "Bash(pip --version)",
+      "Bash(.venv/Scripts/python.exe -m pip install -e \".[ground]\" numpy opencv-python pyserial pytest httpx onnxruntime)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/unit -q)",
+      "Bash(pdftotext -layout \"C:/Users/plas/projects/quadguide/sensors-23-07082.pdf\" \"C:/Users/plas/projects/quadguide/sensors-23-07082.txt\")",
+      "Bash(ls docs *)",
+      "Bash(ls docs/superpowers)",
+      "Bash(ls docs/superpowers/specs)"
     ]
   }
 }
