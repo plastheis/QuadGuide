@@ -6,11 +6,11 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    background: #111; color: #ccc; font-family: monospace; font-size: 12px;
+    background: #111; color: #e0e0e0; font-family: monospace; font-size: 12px;
     display: flex; flex-direction: column; align-items: flex-start;
     padding: 12px; gap: 8px; min-height: 100vh;
   }
-  h1 { font-size: 13px; letter-spacing: 3px; color: #555; align-self: center; }
+  h1 { font-size: 13px; letter-spacing: 3px; color: #aaa; align-self: center; }
 
   /* Two-column main layout */
   #main {
@@ -20,7 +20,36 @@
     width: 100%;
   }
 
-  /* Left column: video + keybindings + health/latency */
+  /* Module health column (left of video) */
+  #health-col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+    width: 120px;
+  }
+  .mod {
+    height: 88px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #000;
+    font-weight: bold;
+    background: #444;
+    transition: background-color 120ms linear;
+    user-select: none;
+  }
+  .mod.uninit   { background: #444; color: #888; }
+  .mod.ok       { background: #2ecc40; color: #000; }
+  .mod.degraded { background: #ffdc00; color: #000; }
+  .mod.failsafe,
+  .mod.dead     { background: #ff4136; color: #000; }
+
+  /* Center column: video + keybindings + status */
   #left-col {
     display: flex;
     flex-direction: column;
@@ -47,11 +76,11 @@
     border: 1px solid #2a2a2a;
     padding: 6px 8px;
   }
-  .sec-title { color: #444; font-size: 10px; letter-spacing: 1px; margin-bottom: 4px; }
+  .sec-title { color: #aaa; font-size: 10px; letter-spacing: 1px; margin-bottom: 4px; }
   .row { display: flex; justify-content: space-between; gap: 4px; line-height: 1.6; }
-  .lbl { color: #444; white-space: nowrap; }
+  .lbl { color: #bbb; white-space: nowrap; }
   .val { color: #0f0; text-align: right; }
-  .val.dim     { color: #333; }
+  .val.dim     { color: #888; }
   .val.warn    { color: #fa0; }
   .val.danger  { color: #f44; }
 
@@ -60,14 +89,14 @@
     background: #181818;
     border: 1px solid #2a2a2a;
     padding: 6px 8px;
-    color: #333;
+    color: #bbb;
     font-size: 11px;
     line-height: 1.8;
   }
-  #keybindings .sec-title { color: #444; font-size: 10px; letter-spacing: 1px; margin-bottom: 2px; }
+  #keybindings .sec-title { color: #aaa; font-size: 10px; letter-spacing: 1px; margin-bottom: 2px; }
   .kb-row { display: flex; flex-wrap: wrap; gap: 0 16px; }
   .kb { white-space: nowrap; }
-  .kb span { color: #555; }
+  .kb span { color: #ddd; }
 
   /* Health/status section (left col) */
   #status-box {
@@ -78,15 +107,6 @@
     flex-direction: column;
     gap: 4px;
   }
-
-  /* health grid */
-  #health-grid { display: flex; flex-wrap: wrap; gap: 4px 12px; }
-  .hentry .hname { color: #444; }
-  .hentry .hstate.ok       { color: #0f0; }
-  .hentry .hstate.degraded { color: #fa0; }
-  .hentry .hstate.failsafe,
-  .hentry .hstate.dead     { color: #f44; }
-  .hentry .hstate.unknown  { color: #333; }
 
   /* Attitude section — wider rows */
   #att-grid {
@@ -114,7 +134,16 @@
 
 <div id="main">
 
-  <!-- LEFT COLUMN -->
+  <!-- MODULE HEALTH COLUMN -->
+  <div id="health-col">
+    <div class="mod uninit" data-mod="camera">CAMERA</div>
+    <div class="mod uninit" data-mod="tracker">TRACKER</div>
+    <div class="mod uninit" data-mod="link">LINK</div>
+    <div class="mod uninit" data-mod="guidance">GUIDANCE</div>
+    <div class="mod uninit" data-mod="control">CONTROL</div>
+  </div>
+
+  <!-- CENTER COLUMN -->
   <div id="left-col">
 
     <!-- Video feed -->
@@ -149,10 +178,6 @@
           <div class="row"><span class="lbl">crosshair</span><span class="val" id="hud-size">160 px</span></div>
         </div>
       </div>
-      <div style="border-top:1px solid #222; margin-top:4px; padding-top:4px;">
-        <div class="sec-title">SYSTEM / HEALTH</div>
-        <div id="health-grid"></div>
-      </div>
     </div>
 
   </div><!-- end left-col -->
@@ -173,23 +198,6 @@
           <div class="row"><span class="lbl">centroid x/y</span><span class="val dim" id="h-centroid">—</span></div>
           <div class="row"><span class="lbl">bbox x/y</span><span class="val dim" id="h-bbox-xy">—</span></div>
           <div class="row"><span class="lbl">bbox w/h</span><span class="val dim" id="h-bbox-wh">—</span></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- TRACKERS -->
-    <div class="section">
-      <div class="sec-title">TRACKERS</div>
-      <div class="two-col">
-        <div>
-          <div class="row"><span class="lbl">ccv algo</span><span class="val dim" id="h-ccv-algo">—</span></div>
-          <div class="row"><span class="lbl">ccv health</span><span class="val dim" id="h-ccv-health">—</span></div>
-          <div class="row"><span class="lbl">ccv conf</span><span class="val dim" id="h-ccv-conf">—</span></div>
-        </div>
-        <div>
-          <div class="row"><span class="lbl">ncv algo</span><span class="val dim" id="h-ncv-algo">—</span></div>
-          <div class="row"><span class="lbl">ncv health</span><span class="val dim" id="h-ncv-health">—</span></div>
-          <div class="row"><span class="lbl">ncv conf</span><span class="val dim" id="h-ncv-conf">—</span></div>
         </div>
       </div>
     </div>
@@ -346,11 +354,30 @@ function set(id, text, cssClass) {
   el.className = 'val ' + (text != null ? (cssClass || '') : 'dim');
 }
 
-function healthClass(state) {
-  if (!state)               return 'unknown';
+const MODULE_KEYS = ['camera', 'tracker', 'link', 'guidance', 'control'];
+
+function modStateClass(state) {
   if (state === 'ok')       return 'ok';
   if (state === 'degraded') return 'degraded';
-  return 'danger';
+  if (state === 'failsafe' || state === 'dead') return 'failsafe';
+  return 'uninit';
+}
+
+function updateModuleHealth(health) {
+  for (const key of MODULE_KEYS) {
+    // tracker key in health is "tracker_<algo>"; match by prefix
+    let state = null;
+    if (health) {
+      if (key === 'tracker') {
+        const k = Object.keys(health).find(k => k === 'tracker' || k.startsWith('tracker_'));
+        if (k) state = health[k];
+      } else if (key in health) {
+        state = health[key];
+      }
+    }
+    const el = document.querySelector(`.mod[data-mod="${key}"]`);
+    if (el) el.className = 'mod ' + modStateClass(state);
+  }
 }
 
 // ── SSE ────────────────────────────────────────────────────────────────────
@@ -367,14 +394,6 @@ sse.onmessage = (ev) => {
   set('h-centroid', d.centroid_x != null ? f(d.centroid_x, 3) + ' / ' + f(d.centroid_y, 3) : null);
   set('h-bbox-xy',  d.bbox_x     != null ? f(d.bbox_x, 3)     + ' / ' + f(d.bbox_y, 3)     : null);
   set('h-bbox-wh',  d.bbox_w     != null ? f(d.bbox_w, 3)     + ' / ' + f(d.bbox_h, 3)     : null);
-
-  // trackers
-  set('h-ccv-algo',   d.ccv_algo);
-  set('h-ccv-health', d.ccv_health);
-  set('h-ccv-conf',   f(d.ccv_conf, 2));
-  set('h-ncv-algo',   d.ncv_algo);
-  set('h-ncv-health', d.ncv_health);
-  set('h-ncv-conf',   f(d.ncv_conf, 2));
 
   // attitude (CRSF link telemetry)
   set('h-roll',       f(d.roll_deg,       1, '°'));
@@ -403,27 +422,12 @@ sse.onmessage = (ev) => {
   const fpsClass = fps == null ? '' : fps < 10 ? 'warn' : '';
   set('h-video-fps', f(d.video_fps, 1, ' fps'), fpsClass);
 
-  // system/health
-  if (d.health) {
-    const grid = document.getElementById('health-grid');
-    grid.innerHTML = '';
-    const entries = Object.entries(d.health);
-    if (entries.length === 0) {
-      grid.innerHTML = '<span style="color:#333">—</span>';
-    } else {
-      for (const [proc, state] of entries) {
-        const div = document.createElement('div');
-        div.className = 'hentry';
-        div.innerHTML = `<span class="hname">${proc}</span>:<span class="hstate ${healthClass(state)}">${state}</span>`;
-        grid.appendChild(div);
-      }
-    }
-  }
+  // system/health → module column
+  updateModuleHealth(d.health);
 };
 
 sse.onerror = () => {
-  document.getElementById('health-grid').innerHTML =
-    '<span class="hstate danger">connection lost</span>';
+  updateModuleHealth(null);
 };
 
 // ── Arm control ────────────────────────────────────────────────────────────
