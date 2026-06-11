@@ -1,0 +1,91 @@
+platform:
+  name: rk3588               # label only; camera backend comes from camera.backend
+  camera:
+    backend: v4l2       # "v4l2" | "gstreamer" | "virtual"
+    pipeline: "v4l2src device=/dev/video0 ! video/x-raw,width=640,height=480,framerate=60/1 ! appsink"
+    width: 640
+    height: 480
+    fps: 60
+  serial:
+    # This board exposes only /dev/ttyFIQ0 out of the box. For the CRSF link to
+    # the FC, enable a UART overlay (e.g. uart3/uart5) so a /dev/ttyS* node
+    # appears, then set it here. ttyFIQ0 is the fiq/console UART — not for CRSF.
+    port: /dev/ttyS6      # set to your enabled UART node
+    baud: 420000          # CRSF standard — do not change without matching FC config
+    rx_pin: "UART_RX"     # wiring reference only — not used by driver
+    tx_pin: "UART_TX"     # wiring reference only — not used by driver
+  realtime:
+    tracker_cpu_core: 4   # A76 big core — EdgeCV CF/NN runs inline in this worker
+    control_cpu_core: 6
+    control_sched_fifo: true
+    control_fifo_prio: 80
+
+airframe:
+  name: flix_micro
+  mass_kg: 0.18
+  inertia: [0.0012, 0.0012, 0.0020]
+  control_limits:
+    max_roll_deg: 35
+    max_pitch_deg: 35
+    max_roll_rate_dps: 200
+    max_pitch_rate_dps: 200
+
+tracker:
+  # EdgeCV NanoTrack on the RK3588 NPU via the QuadGuide↔EdgeCV adapter.
+  # Swap `tracker:` for mosse (CPU, no model), siamfc, or yolo. `backend: auto`
+  # prefers rknn then onnx; force `mock` for a no-NPU dry run.
+  import: quadguide.perception.edgecv_adapter:EdgeCVTracker
+  params:
+    tracker: nanotrack            # mosse | nanotrack | siamfc | yolo
+    backend: onnx                 # auto | onnx | rknn | mock
+    model_dir: /home/radxa/EdgeCV/models   # resolves *.rknn artifacts (EDGECV_MODEL_DIR)
+    color: bgr                    # QuadGuide camera frames are BGR; adapter swaps to RGB
+
+guidance:
+  method: pure_pursuit              # "pronav" | "pure_pursuit"
+  fov_horizontal_rad: 0.972   # Logitech C920 @ 640x480 (4:3, sides cropped from 16:9 sensor) ≈ 55.7°
+  throttle_hold: 0.4         # constant throttle during tracking (0–1)
+  pronav:
+    N: 4.0                    # PN navigation gain (typical 3–5)
+    closing_vel_fallback: 2.0
+    closing_vel_ema_alpha: 0.3       # EMA smoothing for bbox area rate (0=heavy, 1=raw)
+    closing_vel_min_area_rate: 0.001 # fallback if smoothed area rate is below this
+    closing_vel_area_scale: 5.0      # area-rate (normalised/s) → m/s conversion
+  pure_pursuit:
+    K: 20                    # m/s² per radian of LOS angle
+
+watchdog:
+  target_estimate_ms: 200
+  fc_attitude_ms: 250
+  fc_imu_ms: 250
+  guidance_accel_ms: 100
+
+link:
+  tx_rate_hz: 50          # RC channels uplink rate to FC (Hz) — must stay constant to keep FC out of failsafe
+  diff_lowpass_alpha: 0.3 # LP filter alpha for attitude-derived body rates (0=heavy smooth, 1=raw)
+  channels:
+    # madflight channel calibration (µs). Used by encode_rc to map ControlCmd to CRSF ticks.
+    roll:        {min_us: 1100, mid_us: 1500, max_us: 1900}
+    pitch:       {min_us: 1100, mid_us: 1500, max_us: 1900}
+    throttle:    {min_us: 1100, max_us: 1900}
+    yaw:         {min_us: 1100, mid_us: 1500, max_us: 1900}
+    arm:         {disarmed_us: 988, armed_us: 2012}
+    flight_mode: {mode_index: 4, positions_us: [1165, 1295, 1425, 1555, 1685, 1815]}
+    roll_pitch_scale: 30.0
+    yaw_rate_scale: 160.0
+
+mission:
+  mode: bench_hil             # "flight" | "bench_hil" | "swil"
+  hil:
+    target_model: constant_velocity
+    initial_offset_m: [2.0, 0.0, 0.0]
+    target_speed_mps: 1.5
+
+logging:
+  level: INFO
+  dir: /var/log/quadguide
+  max_bytes: 10485760         # 10 MB per file
+  backup_count: 3
+
+bus:
+  ring_depth: 8

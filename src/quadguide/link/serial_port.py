@@ -14,9 +14,13 @@ class SerialPort:
 
     async def open(self) -> None:
         loop = asyncio.get_running_loop()
-        self._ser = await loop.run_in_executor(
-            None, lambda: serial.Serial(self._port, self._baud, timeout=0.05)
-        )
+        try:
+            self._ser = await loop.run_in_executor(
+                None, lambda: serial.Serial(self._port, self._baud, timeout=0.05)
+            )
+        except serial.SerialException as exc:
+            self._connected = False
+            raise ConnectionError(str(exc)) from exc
         self._connected = True
 
     async def read_stream(self) -> AsyncGenerator[int, None]:

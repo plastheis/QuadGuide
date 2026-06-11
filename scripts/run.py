@@ -64,9 +64,9 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="QuadGuide flight orchestrator")
     parser.add_argument(
         "--config",
-        default="configs/config.yaml",
+        default="configs/rk3588.yaml",
         metavar="PATH",
-        help="Path to YAML config file (default: configs/config.yaml)",
+        help="Path to YAML config file (default: configs/rk3588.yaml)",
     )
     parser.add_argument(
         "--set",

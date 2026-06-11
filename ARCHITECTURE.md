@@ -466,6 +466,31 @@ In the external library: any class with `name`/`init`/`update`/`reset`/
 `.confidence`, `.health`. The library may own its own NPU, spawn internal
 subprocesses, and define its own types. **Zero quadguide imports required.**
 
+### EdgeCV trackers
+
+[EdgeCV](../EdgeCV) is the reference external library. Its `Tracker` contract is
+close but not identical to the §6.4 protocol — `update()` returns a
+`TrackResult(bbox|None, confidence|None, status: TrackStatus)`, it has no
+`reset()`, and its trackers take a manifest + backend rather than plain kwargs.
+`perception/edgecv_adapter.py:EdgeCVTracker` is the impedance match (analogous
+to `OpenCVTrackerAdapter` for cv2): it converts BGR→RGB, maps `TrackStatus`→the
+health strings, normalises confidence to 0–1 via the tracker's calibrator, and
+implements `reset()` as a soft clear. EdgeCV stays quadguide-free; all EdgeCV
+imports are lazy so the orchestrator parent never loads RKNN before fork (the
+tracker child builds it). Wire it via config:
+
+```yaml
+tracker:
+  import: quadguide.perception.edgecv_adapter:EdgeCVTracker
+  params:
+    tracker: nanotrack            # mosse | nanotrack | siamfc | yolo
+    backend: rknn                 # auto | onnx | rknn | mock
+    model_dir: /home/radxa/EdgeCV/models   # resolves *.rknn artifacts
+```
+
+`configs/rk3588.yaml` ships this preset (NanoTrack on the RK3588 NPU). MOSSE
+needs no model and runs on CPU — handy for a no-NPU dry run.
+
 ---
 
 ## 12. Known Constraints and Limitations

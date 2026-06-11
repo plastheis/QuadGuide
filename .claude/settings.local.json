@@ -82,7 +82,12 @@
       "Bash(pdftotext -layout \"C:/Users/plas/projects/quadguide/sensors-23-07082.pdf\" \"C:/Users/plas/projects/quadguide/sensors-23-07082.txt\")",
       "Bash(ls docs *)",
       "Bash(ls docs/superpowers)",
-      "Bash(ls docs/superpowers/specs)"
+      "Bash(ls docs/superpowers/specs)",
+      "Bash(mkdir -p /home/radxa/.local/lib/python3.11/site-packages)",
+      "Bash(printf '/home/radxa/EdgeCV\\\\n')",
+      "Read(//dev/**)",
+      "Bash(grep -vE \"tty[0-9]+$\")",
+      "Read(//home/radxa/EdgeCV/**)"
     ]
   }
 }
