@@ -29,7 +29,7 @@ class TestEnumOrdinals:
 
 class TestFormatSizes:
     def test_tracker_estimate(self):
-        assert struct.calcsize(FMT_TRACKER_ESTIMATE) == 33
+        assert struct.calcsize(FMT_TRACKER_ESTIMATE) == 37
 
     def test_attitude_state(self):
         assert struct.calcsize(FMT_ATTITUDE_STATE) == 32
@@ -38,10 +38,10 @@ class TestFormatSizes:
         assert struct.calcsize(FMT_IMU_FRAME) == 32
 
     def test_accel_cmd(self):
-        assert struct.calcsize(FMT_ACCEL_CMD) == 16
+        assert struct.calcsize(FMT_ACCEL_CMD) == 24
 
     def test_control_cmd(self):
-        assert struct.calcsize(FMT_CONTROL_CMD) == 24
+        assert struct.calcsize(FMT_CONTROL_CMD) == 32
 
     def test_lockon_cmd(self):
         assert struct.calcsize(FMT_LOCKON_CMD) == 26
@@ -57,7 +57,7 @@ class TestRoundTrips:
             bbox=BoundingBox(0.1, 0.2, 0.3, 0.4),
             confidence=0.9,
             tracker_health=TrackerHealth.NOMINAL,
-            latency_ns=12_345_678,
+            origin_ns=999_000_000_000,  # absolute monotonic ts — exceeds uint32
         )
         r = TrackerEstimate.unpack(msg.pack())
         assert r.timestamp_ns == msg.timestamp_ns
@@ -67,7 +67,7 @@ class TestRoundTrips:
         assert r.bbox.h == pytest.approx(msg.bbox.h, rel=1e-6)
         assert r.confidence == pytest.approx(msg.confidence, rel=1e-6)
         assert r.tracker_health == msg.tracker_health
-        assert r.latency_ns == msg.latency_ns
+        assert r.origin_ns == msg.origin_ns
 
     def test_attitude_state(self):
         msg = AttitudeState(
@@ -100,17 +100,19 @@ class TestRoundTrips:
         assert r.gz == pytest.approx(msg.gz, rel=1e-6)
 
     def test_accel_cmd(self):
-        msg = AccelCmd(timestamp_ns=5_000_000, ax=1.5, ay=-0.5)
+        msg = AccelCmd(timestamp_ns=5_000_000, ax=1.5, ay=-0.5, origin_ns=4_900_000)
         r = AccelCmd.unpack(msg.pack())
         assert r.timestamp_ns == msg.timestamp_ns
         assert r.ax == pytest.approx(msg.ax, rel=1e-6)
         assert r.ay == pytest.approx(msg.ay, rel=1e-6)
+        assert r.origin_ns == msg.origin_ns
 
     def test_control_cmd(self):
         msg = ControlCmd(
             timestamp_ns=6_000_000,
             roll_deg=10.0, pitch_deg=-5.0,
             yaw_rate_dps=0.0, throttle_norm=0.5,
+            origin_ns=5_900_000,
         )
         r = ControlCmd.unpack(msg.pack())
         assert r.timestamp_ns == msg.timestamp_ns
@@ -118,6 +120,7 @@ class TestRoundTrips:
         assert r.pitch_deg == pytest.approx(msg.pitch_deg, rel=1e-6)
         assert r.yaw_rate_dps == pytest.approx(msg.yaw_rate_dps, abs=1e-9)  # abs= required: rel= against 0.0 resolves to 0 tolerance
         assert r.throttle_norm == pytest.approx(msg.throttle_norm, rel=1e-6)
+        assert r.origin_ns == msg.origin_ns
 
     def test_lockon_cmd(self):
         msg = LockOnCmd(

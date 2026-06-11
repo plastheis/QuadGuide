@@ -134,7 +134,47 @@ class TestTrackerWorkerPublish:
         assert est.bbox.h == pytest.approx(0.4)
         assert est.confidence == pytest.approx(0.75)
         assert est.tracker_health == TrackerHealth.NOMINAL
-        assert est.latency_ns > 0
+        assert est.origin_ns > 0  # = frame_ts (capture timestamp lineage)
+
+
+def _run_n_loops(worker: TrackerWorker, n: int) -> None:
+    """Drive the loop for n passes using _check_lockon (called once per pass) as a
+    counter, then stop. Works with the new-frame gate (which sleeps + continues)."""
+    calls = {"n": 0}
+    original = worker._check_lockon
+    def _counting():
+        calls["n"] += 1
+        if calls["n"] >= n:
+            worker._stop = True
+        original()
+    worker._check_lockon = _counting
+    worker.run()
+
+
+class TestNewFrameGate:
+    def test_repeated_frame_processed_once(self):
+        # Constant frame_ts → only the first pass should run the tracker; the rest
+        # must skip (no reprocessing of a stale frame).
+        bus = _StubBus()
+        fb = _StubFrameBuffer(frame=_frame(), ts=12_345)
+        tracker = _StubTracker()
+        worker = TrackerWorker(tracker, bus, fb, cpu_core=None, config={})
+        _run_n_loops(worker, 5)
+        assert tracker.update_calls == 1
+        assert len([m for t, m in bus.published if t == "target/estimate"]) == 1
+
+    def test_new_frame_each_pass_is_processed(self):
+        # A fresh frame_ts every read → every pass processes.
+        class _IncrementingFB:
+            def __init__(self): self.ts = 1_000
+            def read_latest(self):
+                self.ts += 1_000
+                return _frame(), self.ts
+        bus = _StubBus()
+        tracker = _StubTracker()
+        worker = TrackerWorker(tracker, bus, _IncrementingFB(), cpu_core=None, config={})
+        _run_n_loops(worker, 5)
+        assert tracker.update_calls == 5
 
 
 class TestTrackerWorkerLifecycle:

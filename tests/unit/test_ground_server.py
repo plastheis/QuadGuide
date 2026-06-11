@@ -4,7 +4,7 @@ import asyncio
 from starlette.testclient import TestClient
 
 from quadguide.core.messages import (
-    BoundingBox, LockOnCmd, TrackerEstimate, TrackerHealth,
+    BoundingBox, ControlCmd, LockOnCmd, TrackerEstimate, TrackerHealth,
 )
 from quadguide.ground.server import create_app
 
@@ -98,6 +98,7 @@ def _read_one_sse_event(client) -> dict:
 
 @pytest.fixture
 def client_with_estimate():
+    # End-to-end latency now comes from control/cmd: timestamp_ns - origin_ns.
     class _EstimateBus(_MockBus):
         def latest(self, topic: str):
             if topic == "target/estimate":
@@ -106,7 +107,15 @@ def client_with_estimate():
                     bbox=BoundingBox(0.2, 0.2, 0.3, 0.3),
                     confidence=0.9,
                     tracker_health=TrackerHealth.NOMINAL,
-                    latency_ns=5_000_000,  # 5 ms
+                    origin_ns=995_000_000,
+                )
+            if topic == "control/cmd":
+                # cum = timestamp_ns - origin_ns = 5 ms (glass→control-publish)
+                return ControlCmd(
+                    timestamp_ns=1_000_000_000,
+                    roll_deg=0.0, pitch_deg=0.0,
+                    yaw_rate_dps=0.0, throttle_norm=0.0,
+                    origin_ns=995_000_000,
                 )
             return None
     app = create_app(_EstimateBus(), _MockFrameBuffer())
@@ -120,13 +129,13 @@ def test_telemetry_includes_latency_keys(client):
     assert "latency_avg_ms" in data
 
 
-def test_telemetry_latency_null_when_no_estimate(client):
+def test_telemetry_latency_null_when_no_lineage(client):
     data = _read_one_sse_event(client)
     assert data["latency_ms"] is None
     assert data["latency_avg_ms"] is None
 
 
-def test_telemetry_latency_ms_matches_estimate(client_with_estimate):
+def test_telemetry_latency_ms_is_glass_to_control(client_with_estimate):
     data = _read_one_sse_event(client_with_estimate)
     assert data["latency_ms"] == pytest.approx(5.0, rel=0.01)
 

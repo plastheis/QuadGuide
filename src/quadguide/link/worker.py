@@ -52,9 +52,10 @@ async def _rx_loop(serial, parser: CRSFParser, state: _LinkState,
 
 
 async def _tx_loop(serial, bus, tx_rate_hz: float,
-                   ch_cfg: ChannelConfig, log: logging.Logger) -> None:
+                   ch_cfg: ChannelConfig, log: logging.Logger, trace) -> None:
     interval = 1.0 / tx_rate_hz
     prev_armed = None
+    i = 0
     while True:
         cmd     = bus.latest("control/cmd")
         arm_cmd = bus.latest("arm/cmd")
@@ -63,24 +64,39 @@ async def _tx_loop(serial, bus, tx_rate_hz: float,
             log.info("arm state → %s", "ARMED" if armed else "DISARMED")
             prev_armed = armed
         await serial.write(encode_rc(cmd, armed, ch_cfg))
+        # Actuation point: glass→TX latency for the command just sent to the FC.
+        now = monotonic_ns()
+        if cmd is not None and cmd.origin_ns > 0:
+            trace.latency(now, cmd.timestamp_ns, cmd.origin_ns)
+        i += 1
+        if i % 25 == 0:  # ~2 Hz at 50 Hz TX
+            trace.state(now, armed=armed)
         await asyncio.sleep(interval)
 
 
-async def _health_loop(bus, state: _LinkState, log: logging.Logger) -> None:
+async def _health_loop(bus, state: _LinkState, log: logging.Logger, trace) -> None:
     while True:
         bus.publish(
             "system/health",
             HealthReport(monotonic_ns(), "link", ProcessState.OK, state.flight_mode),
         )
+        trace.health(monotonic_ns(), "ok", state.flight_mode)
         await asyncio.sleep(0.2)
 
 
 async def _run_async(config: dict, bus) -> None:
+    from quadguide.core.config import cfg_diag
+    from quadguide.core.diagtrace import DiagTrace
+
     log        = setup_logging("link", config)
     tx_rate_hz = config["link"]["tx_rate_hz"]
     ch_cfg     = channel_config_from_cfg(config)
     port       = config["platform"]["serial"]["port"]
     baud       = config["platform"]["serial"]["baud"]
+
+    dcfg = cfg_diag(config)
+    trace = DiagTrace("link", enabled=dcfg.trace,
+                      dir=dcfg.trace_dir, max_rows=dcfg.trace_max_rows)
 
     loop = asyncio.get_running_loop()
 
@@ -100,8 +116,8 @@ async def _run_async(config: dict, bus) -> None:
 
             tasks = [
                 asyncio.create_task(_rx_loop(serial, CRSFParser(), state, bus, log)),
-                asyncio.create_task(_tx_loop(serial, bus, tx_rate_hz, ch_cfg, log)),
-                asyncio.create_task(_health_loop(bus, state, log)),
+                asyncio.create_task(_tx_loop(serial, bus, tx_rate_hz, ch_cfg, log, trace)),
+                asyncio.create_task(_health_loop(bus, state, log, trace)),
             ]
             await asyncio.gather(*tasks)
 
@@ -123,6 +139,7 @@ async def _run_async(config: dict, bus) -> None:
         log.info("Reconnecting in 500 ms...")
         await asyncio.sleep(0.5)
 
+    trace.flush()
     bus.detach()
     log.info("Link worker stopped.")
 

@@ -2,10 +2,10 @@ platform:
   name: rk3588               # label only; camera backend comes from camera.backend
   camera:
     backend: v4l2       # "v4l2" | "gstreamer" | "virtual"
-    pipeline: "v4l2src device=/dev/video0 ! video/x-raw,width=640,height=480,framerate=60/1 ! appsink"
+    pipeline: "v4l2src device=/dev/video0 ! video/x-raw,width=640,height=480,framerate=30/1 ! appsink"
     width: 640
     height: 480
-    fps: 60
+    fps: 30             # C920 hardware max (no 60fps mode); see USBCamera._force_constant_framerate
   serial:
     # This board exposes only /dev/ttyFIQ0 out of the box. For the CRSF link to
     # the FC, enable a UART overlay (e.g. uart3/uart5) so a /dev/ttyS* node
@@ -37,7 +37,7 @@ tracker:
   import: quadguide.perception.edgecv_adapter:EdgeCVTracker
   params:
     tracker: nanotrack            # mosse | nanotrack | siamfc | yolo
-    backend: onnx                 # auto | onnx | rknn | mock
+    backend: rknn                 # auto | onnx | rknn | mock
     model_dir: /home/radxa/EdgeCV/models   # resolves *.rknn artifacts (EDGECV_MODEL_DIR)
     color: bgr                    # QuadGuide camera frames are BGR; adapter swaps to RGB
 
@@ -89,3 +89,8 @@ logging:
 
 bus:
   ring_depth: 8
+
+diag:
+  trace: false        # post-run latency/state trace; enable per-run with `run.py --log`
+  trace_dir: null     # default: {logging.dir}/trace/<timestamp> (resolved by run.py)
+  trace_max_rows: 0   # per-process row cap; 0 = unbounded

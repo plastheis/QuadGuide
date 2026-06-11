@@ -36,7 +36,14 @@ def run(source: CameraSource, frame_buffer: FrameBuffer, bus: Bus,
     i = 0
     try:
         while not stop:
-            frame, ts = source.read()
+            try:
+                frame, ts = source.read()
+            except RuntimeError:
+                # A read can fail because SIGTERM interrupted a blocking capture
+                # mid-shutdown — that's expected teardown, not a fault.
+                if stop:
+                    break
+                raise
             frame_buffer.write_frame(frame, ts)
             i += 1
             if i % _HEALTH_EVERY == 0:

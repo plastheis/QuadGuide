@@ -42,8 +42,10 @@ class ProcessState(str, Enum):
 # Byte-count comments show the arithmetic; if a comment disagrees with
 # struct.calcsize(fmt), the format string wins.
 
-FMT_TRACKER_ESTIMATE = "!QfffffBI"
-# Q(8) + bbox.x,y,w,h(4×f=16) + confidence(f=4) + health(B=1) + latency_ns(I=4) = 33 bytes
+FMT_TRACKER_ESTIMATE = "!QfffffBQ"
+# Q(8) + bbox.x,y,w,h(4×f=16) + confidence(f=4) + health(B=1) + origin_ns(Q=8) = 37 bytes
+# origin_ns is the absolute monotonic capture timestamp (frame_ts) — needs 64 bits,
+# unlike the old latency_ns delta which fit in uint32.
 
 FMT_ATTITUDE_STATE = "!Qffffff"
 # Q(8) + roll,pitch,yaw,roll_rate,pitch_rate,yaw_rate(6×f=24) = 32 bytes
@@ -51,11 +53,13 @@ FMT_ATTITUDE_STATE = "!Qffffff"
 FMT_IMU_FRAME = "!Qffffff"
 # Q(8) + ax,ay,az,gx,gy,gz(6×f=24) = 32 bytes
 
-FMT_ACCEL_CMD = "!Qff"
-# Q(8) + ax,ay(2×f=8) = 16 bytes
+FMT_ACCEL_CMD = "!QffQ"
+# Q(8) + ax,ay(2×f=8) + origin_ns(Q=8) = 24 bytes
+# origin_ns is copied from the consumed estimate's origin_ns (capture lineage).
 
-FMT_CONTROL_CMD = "!Qffff"
-# Q(8) + roll_deg,pitch_deg,yaw_rate_dps,throttle_norm(4×f=16) = 24 bytes
+FMT_CONTROL_CMD = "!QffffQ"
+# Q(8) + roll_deg,pitch_deg,yaw_rate_dps,throttle_norm(4×f=16) + origin_ns(Q=8) = 32 bytes
+# origin_ns is copied from the consumed accel's origin_ns; 0 = no lineage (failsafe/disarmed).
 
 FMT_LOCKON_CMD = "!QHffff"
 # Q(8) + seq(H=2) + bbox.x,y,w,h(4×f=16) = 26 bytes
@@ -94,7 +98,7 @@ class TrackerEstimate:
     bbox: BoundingBox
     confidence: float
     tracker_health: TrackerHealth
-    latency_ns: int = 0  # set by tracker worker via dataclasses.replace; 0 = no frame yet
+    origin_ns: int = 0  # capture timestamp (frame_ts) of the frame this estimate came from; 0 = no frame yet
 
     def pack(self) -> bytes:
         return _ST_TRACKER_ESTIMATE.pack(
@@ -102,18 +106,18 @@ class TrackerEstimate:
             self.bbox.x, self.bbox.y, self.bbox.w, self.bbox.h,
             self.confidence,
             TrackerHealth._ord[self.tracker_health],
-            self.latency_ns,
+            self.origin_ns,
         )
 
     @classmethod
     def unpack(cls, data: bytes) -> TrackerEstimate:
-        ts, x, y, w, h, conf, health_b, latency = _ST_TRACKER_ESTIMATE.unpack(data)
+        ts, x, y, w, h, conf, health_b, origin = _ST_TRACKER_ESTIMATE.unpack(data)
         return cls(
             timestamp_ns=ts,
             bbox=BoundingBox(x, y, w, h),
             confidence=conf,
             tracker_health=TrackerHealth._from_ord[health_b],
-            latency_ns=latency,
+            origin_ns=origin,
         )
 
 
@@ -168,14 +172,15 @@ class AccelCmd:
     timestamp_ns: int
     ax: float
     ay: float
+    origin_ns: int = 0  # capture timestamp of the estimate this accel was derived from; 0 = no lineage
 
     def pack(self) -> bytes:
-        return _ST_ACCEL_CMD.pack(self.timestamp_ns, self.ax, self.ay)
+        return _ST_ACCEL_CMD.pack(self.timestamp_ns, self.ax, self.ay, self.origin_ns)
 
     @classmethod
     def unpack(cls, data: bytes) -> AccelCmd:
-        ts, ax, ay = _ST_ACCEL_CMD.unpack(data)
-        return cls(ts, ax, ay)
+        ts, ax, ay, origin = _ST_ACCEL_CMD.unpack(data)
+        return cls(ts, ax, ay, origin)
 
 
 @dataclass(frozen=True)
@@ -185,18 +190,20 @@ class ControlCmd:
     pitch_deg: float
     yaw_rate_dps: float
     throttle_norm: float
+    origin_ns: int = 0  # capture timestamp of the frame lineage driving this command; 0 = no lineage
 
     def pack(self) -> bytes:
         return _ST_CONTROL_CMD.pack(
             self.timestamp_ns,
             self.roll_deg, self.pitch_deg,
             self.yaw_rate_dps, self.throttle_norm,
+            self.origin_ns,
         )
 
     @classmethod
     def unpack(cls, data: bytes) -> ControlCmd:
-        ts, roll, pitch, yaw_rate, throttle = _ST_CONTROL_CMD.unpack(data)
-        return cls(ts, roll, pitch, yaw_rate, throttle)
+        ts, roll, pitch, yaw_rate, throttle, origin = _ST_CONTROL_CMD.unpack(data)
+        return cls(ts, roll, pitch, yaw_rate, throttle, origin)
 
 
 @dataclass(frozen=True)

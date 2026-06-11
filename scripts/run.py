@@ -92,6 +92,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip the ground station worker (no HTTP API for arm/lockon)",
     )
+    parser.add_argument(
+        "--log",
+        action="store_true",
+        help="Write a post-run diagnostic trace (per-process latency + state) to "
+             "{logging.dir}/trace/<timestamp>/ for offline analysis",
+    )
     return parser.parse_args()
 
 
@@ -121,6 +127,14 @@ def main() -> int:
     except (FileNotFoundError, KeyError) as exc:
         print(f"[orchestrator] config error: {exc}", file=sys.stderr)
         return 2
+
+    if args.log:
+        from quadguide.core.diagtrace import resolve_trace_dir
+        trace_dir = resolve_trace_dir(config.get("logging", {}).get("dir"))
+        config.setdefault("diag", {})
+        config["diag"]["trace"] = True
+        config["diag"]["trace_dir"] = trace_dir
+        print(f"[orchestrator] diagnostic trace → {trace_dir}")
 
     bcfg = cfg_bus(config)
     pcfg = cfg_platform(config)

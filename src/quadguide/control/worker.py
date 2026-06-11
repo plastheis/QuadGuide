@@ -27,11 +27,18 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     pcfg = cfg_platform(config)
     wcfg = cfg_watchdog(config)
 
+    from quadguide.core.config import cfg_diag
+    from quadguide.core.diagtrace import DiagTrace
+
     platform = PlatformAdapter(config)
     platform.set_realtime(pcfg.realtime.control_cpu_core, pcfg.realtime.control_fifo_prio)
 
     watchdog = build_watchdog(wcfg, bus)
     rate = RateLimiter(hz=100)
+
+    dcfg = cfg_diag(config)
+    trace = DiagTrace("control", enabled=dcfg.trace,
+                      dir=dcfg.trace_dir, max_rows=dcfg.trace_max_rows)
 
     prev_cmd: ControlCmd | None = None
     state = FailsafeState.NOMINAL
@@ -109,9 +116,14 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
             roll, pitch = 0.0, 0.0
             prev_cmd = None  # reset slew baseline so re-entry starts from level
 
-        cmd = ControlCmd(now_ns, roll, pitch, 0.0, thr)
+        # origin_ns tracks the capture lineage regardless of whether the command is
+        # applied — so end-to-end latency is observable even disarmed (during bench).
+        origin_ns = accel.origin_ns if accel is not None else 0
+        cmd = ControlCmd(now_ns, roll, pitch, 0.0, thr, origin_ns=origin_ns)
         bus.publish("control/cmd", cmd)
         prev_cmd = cmd
+        if accel is not None and accel.origin_ns > 0:
+            trace.latency(now_ns, accel.timestamp_ns, accel.origin_ns)
 
         if i % _HEALTH_EVERY == 0:
             proc_state = ProcessState.FAILSAFE if in_failsafe else ProcessState.OK
@@ -120,6 +132,9 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
                 "system/health",
                 HealthReport(monotonic_ns(), "control", proc_state, detail),
             )
+            trace.state(monotonic_ns(), armed=armed, dwell_done=dwell_done,
+                        in_failsafe=in_failsafe, fault=detail, throttle=thr)
 
+    trace.flush()
     bus.detach()
     log.info("control: stopped (last state=%s)", state.value)

@@ -17,6 +17,9 @@ _HEALTH_EVERY = 10   # iterations; 50 Hz / 10 = 5 Hz health rate
 
 
 def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
+    from quadguide.core.config import cfg_diag
+    from quadguide.core.diagtrace import DiagTrace
+
     log = setup_logging("guidance", config)
     gcfg = cfg_guidance(config)
     pcfg = cfg_platform(config)
@@ -26,6 +29,10 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     aspect = pcfg.camera.width / pcfg.camera.height
     method = get_guidance(gcfg, aspect)
     rate = RateLimiter(hz=50)
+
+    dcfg = cfg_diag(config)
+    trace = DiagTrace("guidance", enabled=dcfg.trace,
+                      dir=dcfg.trace_dir, max_rows=dcfg.trace_max_rows)
 
     stop = False
 
@@ -57,7 +64,9 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
 
         ax, ay = method.compute(est, imu, lockon_cmd, now_ns)
 
-        bus.publish("guidance/accel", AccelCmd(now_ns, ax, ay))
+        bus.publish("guidance/accel", AccelCmd(now_ns, ax, ay, origin_ns=est.origin_ns))
+        # stage = age of the estimate we consumed; cum = age since capture.
+        trace.latency(now_ns, est.timestamp_ns, est.origin_ns)
 
         i += 1
         if i % _HEALTH_EVERY == 0:
@@ -65,6 +74,9 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
                 "system/health",
                 HealthReport(monotonic_ns(), "guidance", ProcessState.OK, ""),
             )
+            trace.state(monotonic_ns(), method=method.name(), publishing=True,
+                        est_health=str(est.tracker_health))
 
+    trace.flush()
     bus.detach()
     log.info("guidance: stopped")

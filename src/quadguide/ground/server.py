@@ -131,18 +131,21 @@ async def _sse(app: FastAPI):
     while True:
         await asyncio.sleep(_SSE_RATE)
         estimate = app.state.bus.latest("target/estimate")
-        lat_ms = estimate.latency_ns / 1e6 if estimate and estimate.latency_ns > 0 else None
-        if lat_ms is not None:
-            app.state.latency_window.append(estimate.latency_ns)
-        avg_ms = (
-            sum(app.state.latency_window) / len(app.state.latency_window) / 1e6
-            if app.state.latency_window else None
-        )
         attitude = app.state.bus.latest("fc/attitude")
         imu      = app.state.bus.latest("fc/imu")
         accel    = app.state.bus.latest("guidance/accel")
         control  = app.state.bus.latest("control/cmd")
         report   = app.state.bus.latest("system/health")
+
+        # End-to-end glass→control latency from the propagated origin_ns.
+        # Use control.timestamp_ns (the publish time) rather than now, so the
+        # SSE polling delay is excluded by construction. None until a lock exists.
+        lat_ms = ((control.timestamp_ns - control.origin_ns) / 1e6
+                  if control and control.origin_ns > 0 else None)
+        if lat_ms is not None:
+            app.state.latency_window.append(lat_ms)
+        avg_ms = (sum(app.state.latency_window) / len(app.state.latency_window)
+                  if app.state.latency_window else None)
         if report is not None:
             app.state.process_health[report.process] = report.state.value
         # Derive tracker algo from health process key ("tracker_kcf" → "kcf")

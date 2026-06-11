@@ -188,7 +188,7 @@ quadguide/
     ctrl = bus.latest("control/cmd")       bus.publish("guidance/accel", …)
     arm  = bus.latest("arm/cmd")
     write CRSF channels                  [control worker]  CPU core 3, SCHED_FIFO
-                                           loop (250 Hz):
+                                           loop (100 Hz):
                                              watchdogs on target/estimate,
                                                           fc/attitude, fc/imu
                                              accel = bus.latest("guidance/accel")
@@ -260,6 +260,7 @@ mission:
 
 logging: { level, dir, max_bytes, backup_count }
 bus:     { ring_depth }
+diag:    { trace, trace_dir, trace_max_rows }   # latency trace (§13); off by default, set via --log
 ```
 
 Overrides: `python scripts/run.py --set guidance.pure_pursuit.K=15`.
@@ -281,7 +282,7 @@ Overrides: `python scripts/run.py --set guidance.pure_pursuit.K=15`.
 - **`frame_buffer.py`** — `FrameBuffer` — shm-backed multi-slot frame ring.
   Single writer (camera), single reader (tracker). Zero-copy reads.
 - **`config.py`** — YAML loader + typed accessors. Dataclasses: `BusConfig`,
-  `LoggingConfig`, `MissionConfig`, `WatchdogConfig`, `PronavConfig`,
+  `DiagConfig`, `LoggingConfig`, `MissionConfig`, `WatchdogConfig`, `PronavConfig`,
   `PurePursuitConfig`, `GuidanceConfig`, `TrackerConfig`, `AirframeConfig`,
   `RealtimeConfig`, `SerialConfig`, `CameraConfig`, `PlatformConfig`,
   `HILConfig`, `ControlLimitsConfig`. `cfg_*` functions narrow `dict` → typed
@@ -291,6 +292,10 @@ Overrides: `python scripts/run.py --set guidance.pure_pursuit.K=15`.
 - **`logging.py`** — `setup_logging(name, config)` rotating-file logger per
   worker process.
 - **`health.py`** — small helpers for HealthReport authoring.
+- **`diagtrace.py`** — `DiagTrace`, the per-process diagnostic trace used by the
+  `--log` latency capture (§13). No-op when disabled; RAM-buffered and flushed to
+  one JSONL file per process at shutdown when enabled. `resolve_trace_dir()`
+  picks/creates the timestamped output dir.
 
 ### 6.2 platform/
 
@@ -300,9 +305,14 @@ YAML — no edits to perception/control code.
 
 ### 6.3 perception/
 
-- **`camera/`** — `sources.py` (`V4L2Camera`, `GStreamerCamera`,
-  `VirtualCamera`), `worker.py` (loop that pulls frames and writes to
-  `FrameBuffer`).
+- **`camera/`** — `sources.py` (`USBCamera`, `CSICamera`, `VirtualCamera`),
+  `worker.py` (loop that pulls frames and writes to `FrameBuffer`; a read that
+  fails because SIGTERM interrupted a blocking capture mid-shutdown is treated as
+  teardown, not a fault). `USBCamera.open()` calls `_force_constant_framerate()`,
+  which disables the UVC `exposure_dynamic_framerate` control — without it,
+  auto-exposure lengthens exposure in low light and silently drops the frame rate
+  (a Logitech C920 fell from 30 → 24 fps). Note the C920's hardware max is 30 fps
+  in every format; there is no 60 fps mode.
 - **`tracker_worker.py`** — the entire generic tracker process in ~200 lines:
   - `_resolve_cv2_factory(class_name)` — finds a cv2 tracker class on `cv2`
     or `cv2.legacy`.
@@ -317,7 +327,12 @@ YAML — no edits to perception/control code.
     read, `target/estimate` publish, periodic `system/health` publish.
     Tracker is opaque; no per-implementation branching. On SIGTERM, calls
     `tracker.close()` exactly once (last chance for NPU release / subprocess
-    teardown).
+    teardown). **New-frame gate:** the loop processes each frame exactly once —
+    it skips (and briefly sleeps, `_IDLE_POLL_S`) when `frame_ts` is unchanged
+    rather than re-running on a stale frame. Without this gate the loop free-ran
+    at ~80 kHz, re-timestamping each frame thousands of times and producing a
+    capture→track latency *sawtooth* that the 10 Hz HUD aliased into a rhythmic
+    8–30 ms wobble (see §13). It also stamps `est.origin_ns = frame_ts`.
   - `run_from_config(config, bus, frame_buffer)` — entry point used by
     `scripts/run.py`; constructs the tracker and the worker, sets the
     optional CPU affinity, and calls `worker.run()`.
@@ -370,7 +385,7 @@ failsafe.
 - **`attitude_cmd.py`** — maps `(ax, ay)` and current attitude to
   `(roll_deg, pitch_deg, yaw_rate_dps, throttle)`. Includes the
   bore-sight-up sign convention.
-- **`worker.py`** — 250 Hz loop on CPU core 3, SCHED_FIFO. Reads
+- **`worker.py`** — 100 Hz loop on CPU core 3, SCHED_FIFO. Reads
   `guidance/accel` + `fc/attitude` + `fc/imu`; publishes `control/cmd`.
 
 ### 6.7 hil/
@@ -397,14 +412,26 @@ failsafe.
 | Topic              | Producer        | Consumers                          | Payload          | Wire |
 | ------------------ | --------------- | ---------------------------------- | ---------------- | ---- |
 | `frame_buffer` (shm) | camera        | tracker, ground                    | `np.ndarray`     | shm  |
-| `target/estimate`  | tracker         | guidance, control watchdog, ground | `TrackerEstimate` | 33 B |
+| `target/estimate`  | tracker         | guidance, control watchdog, ground | `TrackerEstimate` | 37 B |
 | `lockon/cmd`       | ground          | tracker                            | `LockOnCmd`      | 26 B |
 | `fc/attitude`      | link            | control, ground                    | `AttitudeState`  | 32 B |
 | `fc/imu`           | link            | guidance, control, ground          | `IMUFrame`       | 32 B |
-| `guidance/accel`   | guidance        | control, ground                    | `AccelCmd`       | 16 B |
-| `control/cmd`      | control         | link, ground                       | `ControlCmd`     | 24 B |
+| `guidance/accel`   | guidance        | control, ground                    | `AccelCmd`       | 24 B |
+| `control/cmd`      | control         | link, ground                       | `ControlCmd`     | 32 B |
 | `arm/cmd`          | ground          | link                               | `ArmCmd`         |  9 B |
 | `system/health`    | all             | ground                             | `HealthReport`   | 25 B |
+
+**Latency lineage (`origin_ns`).** `target/estimate`, `guidance/accel` and
+`control/cmd` each carry an `origin_ns` field: the monotonic capture timestamp
+(`frame_ts`) of the frame the message ultimately derives from. The tracker stamps
+it; guidance and control copy it forward verbatim. Any stage can then compute the
+true end-to-end "glass→here" age as `now − origin_ns` along the real consumed
+lineage (see §13). `origin_ns == 0` means "no lineage yet" (pre-lock-on, or
+control with no upstream accel). This is why those three payloads grew by 8 B
+(`target/estimate` also swapped its old 4 B `latency_ns` delta for the 8 B
+absolute `origin_ns`). The diagnostic trace (§13) does **not** use the bus — it
+writes per-process files, because the bus is a latest-value transport, not a
+lossless log.
 
 ---
 
@@ -432,9 +459,14 @@ SIGTERM to all, 5 s grace, SIGKILL stragglers, then parent unlinks shm.
 
 ## 9. Scripts
 
-- **`run.py`** — flight orchestrator (above).
+- **`run.py`** — flight orchestrator (above). `--log` enables the diagnostic
+  trace (§13) for every worker.
 - **`dev_ground_perception.py`** — camera + tracker + ground only (no
-  link/guidance/control). Useful for tracker tuning over the HUD.
+  link/guidance/control). Useful for tracker tuning over the HUD, and for a
+  latency baseline with no FC connected. Also accepts `--log`.
+- **`diagnose_latency.py`** — offline latency analysis (§13). `trace <dir>`
+  ingests a `--log` dump and reports per-stage / cumulative latency + a spectral
+  view; `sim` reproduces the free-running sawtooth with no hardware.
 - **`bench_tracker.py`** — frame-by-frame tracker benchmark from a recorded
   video; emits a CSV of `bbox / confidence / health / latency_ns`.
 - **`calibrate.py`**, **`convert_rknn.py`**, **`deploy.py`**,
@@ -497,3 +529,68 @@ needs no model and runs on CPU — handy for a no-NPU dry run.
 
 1. **CRSF TX cadence is fixed at 50 Hz.** Drop it and the FC enters its own
    RX failsafe — independent of quadguide's watchdogs.
+
+---
+
+## 13. Latency Model & Diagnostics
+
+### 13.1 What "latency" means here
+
+This is a closed homing loop (§4.1), so the number that governs stability is the
+**glass→actuation age**: how old a frame is when the control action it produced
+reaches the FC. Every stage runs on the SBC as a `fork()`ed child sharing one
+`CLOCK_MONOTONIC`, so timestamps stamped in one process and subtracted in another
+are directly comparable — no clock sync.
+
+Two complementary quantities:
+
+- **Cumulative age** `now − origin_ns` — the true age of the data lineage at a
+  given stage. `origin_ns` (the capture `frame_ts`) is stamped by the tracker and
+  copied verbatim through `target/estimate → guidance/accel → control/cmd` (§7),
+  so it follows the *actual consumed* messages even though every consumer reads
+  `bus.latest()` and skips intermediate ones. This is the trustworthy end-to-end
+  number.
+- **Per-stage latency** `now − input.timestamp_ns` — how stale the freshest input
+  was when a stage ran (its rate-limit wait + upstream age). Useful for finding
+  the bottleneck stage; these do **not** telescope to the cumulative total,
+  because they are asynchronous snapshots of different lineages.
+
+The HUD shows the cumulative glass→control age (`control/cmd.timestamp_ns −
+origin_ns`, which excludes SSE polling delay). The control→link/TX hop is visible
+only in the trace (§13.3), since the link writes to UART and publishes no bus
+message the HUD can read.
+
+### 13.2 Why the bus is not used for raw latency capture
+
+The bus is a **latest-value** transport (`bus.latest()` returns only the newest
+slot; `subscribe_one()` also returns `latest()`; ring depth 8; the only reader is
+the 10 Hz ground server; external processes can't attach to the inherited shm).
+Pushing raw per-iteration samples through it would lose most of them and re-alias
+the rest. So raw capture uses files, not topics.
+
+### 13.3 The `--log` trace
+
+`run.py --log` (or `dev_ground_perception.py --log`) sets `diag.trace` for every
+worker and resolves a timestamped output dir (`{logging.dir}/trace/<ts>`, falling
+back to `./quadguide-trace/<ts>` when the log dir isn't writable). Each worker
+holds a `core/diagtrace.py:DiagTrace` that, when enabled, buffers records in RAM
+and flushes one `{process}.jsonl` file at shutdown — **never** writing inside a
+loop, so the SCHED_FIFO control loop takes no I/O. Record kinds: `lat` (raw
+`t`/`in`/`org` timestamps), `state` (periodic worker state), `health`. Stats are
+computed offline from the raw timestamps. Trace mode is for bench/diagnosis runs,
+not production flight (unbounded RAM unless `diag.trace_max_rows` is set).
+
+### 13.4 Analysis & a worked example
+
+`scripts/diagnose_latency.py trace <dir>` derives per-stage and cumulative latency
+and runs a spectral check that pins any rhythmic beat; `sim` reproduces the
+mechanism with no hardware.
+
+The original symptom — the HUD latency "bouncing 8–30 ms rhythmically, even with
+no lock-on" — was the free-running tracker (§6.3) re-timestamping a stale frame
+into a sawtooth at the camera frame interval, aliased by the 10 Hz SSE. Measured
+on hardware before/after the new-frame gate (no-lock): tracker loop **83 kHz →
+~30 Hz**, capture→track latency **p50 20.3 → 1.6 ms, p95 39.7 → 2.8 ms, std 11.5
+→ 0.7 ms**; the sawtooth vanished. Locked, the trace then exposed the genuine
+NanoTrack inference cost (~21.5 ms p50, well under the 33 ms frame interval) — a
+number the old sawtooth had masked.

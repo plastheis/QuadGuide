@@ -12,6 +12,13 @@ class BusConfig:
 
 
 @dataclass(frozen=True)
+class DiagConfig:
+    trace: bool = False              # write a post-run latency/state trace (enabled per-run via --log)
+    trace_dir: str | None = None     # destination dir; resolved by run.py when --log is set
+    trace_max_rows: int = 0          # per-process row cap; 0 = unbounded
+
+
+@dataclass(frozen=True)
 class LoggingConfig:
     level: str
     dir: str
@@ -252,3 +259,12 @@ def cfg_logging(d: dict) -> LoggingConfig:
 def cfg_bus(d: dict) -> BusConfig:
     bus_raw = d.get("bus", {})
     return BusConfig(ring_depth=bus_raw.get("ring_depth", 8))
+
+
+def cfg_diag(d: dict) -> DiagConfig:
+    diag_raw = d.get("diag") or {}
+    return DiagConfig(
+        trace=diag_raw.get("trace", False),
+        trace_dir=diag_raw.get("trace_dir"),
+        trace_max_rows=diag_raw.get("trace_max_rows", 0),
+    )

@@ -27,11 +27,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="dev ground + perception launcher")
     parser.add_argument("--port",   type=int, default=8080)
     parser.add_argument("--config", default="configs/config.yaml")
+    parser.add_argument("--log", action="store_true",
+                        help="Write a post-run latency/state trace for offline analysis")
     args = parser.parse_args()
 
     config = load_config(args.config, {})
     config["platform"]["camera"]["backend"] = "v4l2"
     config["ground"] = {"port": args.port}
+
+    if args.log:
+        from quadguide.core.diagtrace import resolve_trace_dir
+        trace_dir = resolve_trace_dir(config.get("logging", {}).get("dir"))
+        config.setdefault("diag", {})
+        config["diag"]["trace"] = True
+        config["diag"]["trace_dir"] = trace_dir
+        print(f"diagnostic trace → {trace_dir}")
 
     w = config["platform"]["camera"]["width"]
     h = config["platform"]["camera"]["height"]

@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib
 import os
 import signal
+import time
 from collections import namedtuple
 
 from quadguide.core.bus import Bus
@@ -28,6 +29,7 @@ __all__ = [
 ]
 
 _HEALTH_EVERY = 50
+_IDLE_POLL_S  = 0.001  # CPU yield when no new frame; caps new-frame detection delay
 
 _TrackerOutput = namedtuple("_TrackerOutput", "bbox confidence health")
 _BBox          = namedtuple("_BBox",          "x y w h")
@@ -141,6 +143,9 @@ class TrackerWorker:
         self._proc_name = f"tracker_{tracker.name()}"
 
     def run(self) -> None:
+        from quadguide.core.config import cfg_diag
+        from quadguide.core.diagtrace import DiagTrace
+
         log = setup_logging(self._proc_name, self._config)
         signal.signal(signal.SIGTERM, self._handle_sigterm)
 
@@ -150,34 +155,55 @@ class TrackerWorker:
             except (AttributeError, OSError):
                 pass
 
+        dcfg = cfg_diag(self._config)
+        trace = DiagTrace(self._proc_name, enabled=dcfg.trace,
+                          dir=dcfg.trace_dir, max_rows=dcfg.trace_max_rows)
+
         log.info(f"{self._proc_name}: started")
         i = 0
-        while not self._stop:
-            self._check_lockon()
-            frame, frame_ts = self._fb.read_latest()
-            if frame is not None:
+        last_ts = -1
+        try:
+            while not self._stop:
+                self._check_lockon()
+                frame, frame_ts = self._fb.read_latest()
+                # New-frame gate: process each frame exactly once. When the camera
+                # hasn't produced a new frame yet, yield the CPU instead of
+                # re-timestamping the same frame thousands of times — that
+                # reprocessing was what manufactured the latency sawtooth and pinned
+                # the core. Adds at most _IDLE_POLL_S of new-frame detection delay.
+                if frame is None or frame_ts == last_ts:
+                    time.sleep(_IDLE_POLL_S)
+                    continue
+                last_ts = frame_ts
+
                 out     = self._tracker.update(frame)
                 now_ns  = monotonic_ns()
-                latency = min(now_ns - frame_ts, 0xFFFF_FFFF) if frame_ts > 0 else 0
+                # origin_ns is the capture timestamp this estimate derives from.
+                origin_ns = frame_ts if frame_ts > 0 else 0
                 est = TrackerEstimate(
                     timestamp_ns=now_ns,
                     bbox=BoundingBox(out.bbox.x, out.bbox.y, out.bbox.w, out.bbox.h),
                     confidence=float(out.confidence),
                     tracker_health=TrackerHealth(out.health),
-                    latency_ns=latency,
+                    origin_ns=origin_ns,
                 )
                 self._bus.publish("target/estimate", est)
+                # First hop: stage == cumulative (in_ts == origin == frame_ts).
+                trace.latency(now_ns, origin_ns or None, origin_ns)
 
-            i += 1
-            if i % _HEALTH_EVERY == 0:
-                self._bus.publish(
-                    "system/health",
-                    HealthReport(monotonic_ns(), self._proc_name, ProcessState.OK, ""),
-                )
-
-        self._tracker.close()
-        self._bus.detach()
-        log.info(f"{self._proc_name}: stopped")
+                i += 1
+                if i % _HEALTH_EVERY == 0:
+                    self._bus.publish(
+                        "system/health",
+                        HealthReport(monotonic_ns(), self._proc_name, ProcessState.OK, ""),
+                    )
+                    trace.state(monotonic_ns(), algo=self._tracker.name(),
+                                health=str(out.health), confidence=float(out.confidence))
+        finally:
+            trace.flush()
+            self._tracker.close()
+            self._bus.detach()
+            log.info(f"{self._proc_name}: stopped")
 
     def _check_lockon(self) -> None:
         cmd: LockOnCmd | None = self._bus.latest("lockon/cmd")

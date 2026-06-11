@@ -29,6 +29,8 @@ class CameraSource(abc.ABC):
 class USBCamera(CameraSource):
     """V4L2 USB camera via cv2.VideoCapture."""
 
+    _DEVICE = "/dev/video0"  # matches cv2.VideoCapture(0)
+
     def __init__(self, config) -> None:
         # config is a CameraConfig dataclass or dict-like with width/height/fps
         self._width  = getattr(config, "width",  640)
@@ -44,6 +46,23 @@ class USBCamera(CameraSource):
         self._cap.set(cv2.CAP_PROP_FPS,          self._fps)
         if not self._cap.isOpened():
             raise RuntimeError("USBCamera: failed to open /dev/video0")
+        self._force_constant_framerate()
+
+    def _force_constant_framerate(self) -> None:
+        # UVC webcams (e.g. Logitech C920) ship with exposure_dynamic_framerate=1,
+        # which lets auto-exposure lengthen exposure in low light and silently drop
+        # the frame rate (measured 30 → 24 fps on this rig). Force a constant rate so
+        # the tracker/guidance loop sees frames at the configured cadence. Best-effort:
+        # needs v4l2-ctl and is a harmless no-op if the control is absent.
+        import subprocess
+        for ctrl in ("exposure_dynamic_framerate", "exposure_auto_priority"):
+            try:
+                subprocess.run(
+                    ["v4l2-ctl", "-d", self._DEVICE, "-c", f"{ctrl}=0"],
+                    capture_output=True, timeout=2,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     def read(self) -> tuple[np.ndarray, int]:
         ret, frame = self._cap.read()

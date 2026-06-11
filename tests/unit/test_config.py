@@ -6,8 +6,8 @@ from quadguide.core.config import (
     load_config,
     cfg_platform, cfg_airframe, cfg_tracker,
     cfg_guidance, cfg_watchdog, cfg_mission,
-    cfg_logging, cfg_bus,
-    BusConfig,
+    cfg_logging, cfg_bus, cfg_diag,
+    BusConfig, DiagConfig,
 )
 
 CONFIG_PATH = str(pathlib.Path(__file__).parents[2] / "configs" / "config.yaml")
@@ -129,3 +129,12 @@ class TestAccessors:
     def test_cfg_guidance_pure_pursuit_block(self):
         g = cfg_guidance(self.config)
         assert g.pure_pursuit is not None
+
+    def test_cfg_diag_defaults_when_section_absent(self):
+        assert cfg_diag({}) == DiagConfig(trace=False, trace_dir=None, trace_max_rows=0)
+
+    def test_cfg_diag_from_config(self):
+        d = cfg_diag({"diag": {"trace": True, "trace_dir": "/tmp/t", "trace_max_rows": 500}})
+        assert d.trace is True
+        assert d.trace_dir == "/tmp/t"
+        assert d.trace_max_rows == 500
