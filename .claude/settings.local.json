@@ -87,7 +87,8 @@
       "Bash(printf '/home/radxa/EdgeCV\\\\n')",
       "Read(//dev/**)",
       "Bash(grep -vE \"tty[0-9]+$\")",
-      "Read(//home/radxa/EdgeCV/**)"
+      "Read(//home/radxa/EdgeCV/**)",
+      "Bash(grep -n \"^## 9\\\\|^## 10\\\\|^## 11\\\\|^## 12\\\\|dev_ground_perception\\\\|bench_tracker\\\\|^- \\\\*\\\\*\\\\`run.py\\\\`\" ARCHITECTURE.md)"
     ]
   }
 }
