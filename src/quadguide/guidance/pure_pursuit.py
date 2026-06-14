@@ -33,4 +33,10 @@ class PurePursuitGuidance:
         now_ns: int,
     ) -> tuple[float, float]:
         cx, cy = bbox_centroid_norm(est.bbox)
-        return self._K * cx * self._scale_x, self._K * cy * self._scale_y
+        # Image axes → body-frame accel for the bore-up mount: the camera's
+        # horizontal axis (cx) is a *lateral* (body +Y) offset, nulled by roll
+        # (AccelCmd.ay); the vertical axis (cy) is a *fore/aft* (body +X) offset,
+        # nulled by pitch (AccelCmd.ax). attitude_cmd then maps ax→pitch, ay→roll.
+        ax = self._K * cy * self._scale_y   # forward / pitch ← vertical image error
+        ay = self._K * cx * self._scale_x   # lateral / roll  ← horizontal image error
+        return ax, ay

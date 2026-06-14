@@ -8,10 +8,16 @@ from quadguide.core.frame_buffer import FrameBuffer
 from quadguide.core.logging import setup_logging
 from quadguide.core.messages import HealthReport, ProcessState
 from quadguide.perception.camera.sources import CameraSource, USBCamera, CSICamera, VirtualCamera
+from quadguide.perception.camera.network_source import NetworkCamera
 
 __all__ = ["run", "run_from_config"]
 
-_SOURCES = {"v4l2": USBCamera, "gstreamer": CSICamera, "virtual": VirtualCamera}
+_SOURCES = {
+    "v4l2": USBCamera,
+    "gstreamer": CSICamera,
+    "virtual": VirtualCamera,
+    "network": NetworkCamera,   # HIL: HTTP MJPEG from the dev machine
+}
 _HEALTH_EVERY = 60  # publish health every N frames
 
 

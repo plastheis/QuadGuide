@@ -39,5 +39,6 @@ class ProNavGuidance:
         now_ns: int,
     ) -> tuple[float, float]:
         los_r = self._los.update(bbox_centroid_norm(est.bbox), imu, lockon_cmd, now_ns)
-        v_c = self._cv.update(est.bbox, now_ns, self._cfg)
+        v_c = 1.0
+        #v_c = self._cv.update(est.bbox, now_ns, self._cfg)
         return pronav(los_r, v_c, self._cfg.N)

@@ -104,6 +104,9 @@ class RealtimeConfig:
 class SerialConfig:
     port: str
     baud: int
+    mode: str = "uart"          # "uart" | "tcp" (HIL); selects the link transport
+    tcp_host: str = ""          # used when mode=tcp — dev-machine CRSF bridge host
+    tcp_port: int = 0           # used when mode=tcp — dev-machine CRSF bridge port
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,7 @@ class CameraConfig:
     width: int
     height: int
     fps: int
+    url: str = ""               # used when backend=network (HIL) — MJPEG stream URL
 
 
 @dataclass(frozen=True)
@@ -167,8 +171,16 @@ def cfg_platform(d: dict) -> PlatformConfig:
             width=cam["width"],
             height=cam["height"],
             fps=cam["fps"],
+            url=cam.get("url", ""),
         ),
-        serial=SerialConfig(port=p["serial"]["port"], baud=p["serial"]["baud"]),
+        serial=SerialConfig(
+            # port/baud are irrelevant in tcp (HIL) mode — tolerate their absence.
+            port=p["serial"].get("port", ""),
+            baud=p["serial"].get("baud", 0),
+            mode=p["serial"].get("mode", "uart"),
+            tcp_host=p["serial"].get("tcp_host", ""),
+            tcp_port=p["serial"].get("tcp_port", 0),
+        ),
         realtime=RealtimeConfig(
             tracker_cpu_core=p["realtime"].get("tracker_cpu_core"),
             control_cpu_core=p["realtime"]["control_cpu_core"],

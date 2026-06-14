@@ -14,6 +14,7 @@ from quadguide.link.fc import (
     decode_attitude, decode_flight_mode, decode_imu, encode_rc,
 )
 from quadguide.link.serial_port import SerialPort
+from quadguide.link.tcp_serial import TCPSerialPort
 
 
 class _LinkState:
@@ -84,6 +85,28 @@ async def _health_loop(bus, state: _LinkState, log: logging.Logger, trace) -> No
         await asyncio.sleep(0.2)
 
 
+def _serial_factory(config: dict, log: logging.Logger):
+    """Pick the link transport from platform.serial.mode.
+
+    Returns ``(make_serial, label)`` where ``make_serial()`` builds a fresh
+    port each reconnect. "uart" → real CRSF over UART; "tcp" → CRSF over a TCP
+    socket to the dev machine's HIL bridge. Both satisfy the same async port
+    interface, so the RX/TX loops below are transport-agnostic.
+    """
+    scfg = config["platform"]["serial"]
+    mode = scfg.get("mode", "uart")
+    if mode == "tcp":
+        host = scfg["tcp_host"]
+        port = scfg["tcp_port"]
+        log.info(f"HIL: CRSF over TCP → {host}:{port}")
+        return (lambda: TCPSerialPort(host, port), f"tcp {host}:{port}")
+    if mode != "uart":
+        raise ValueError(f"Unknown serial mode {mode!r}. Valid values: 'uart', 'tcp'")
+    dev  = scfg["port"]
+    baud = scfg["baud"]
+    return (lambda: SerialPort(dev, baud), f"uart {dev} @ {baud}")
+
+
 async def _run_async(config: dict, bus) -> None:
     from quadguide.core.config import cfg_diag
     from quadguide.core.diagtrace import DiagTrace
@@ -91,8 +114,7 @@ async def _run_async(config: dict, bus) -> None:
     log        = setup_logging("link", config)
     tx_rate_hz = config["link"]["tx_rate_hz"]
     ch_cfg     = channel_config_from_cfg(config)
-    port       = config["platform"]["serial"]["port"]
-    baud       = config["platform"]["serial"]["baud"]
+    make_serial, transport = _serial_factory(config, log)
 
     dcfg = cfg_diag(config)
     trace = DiagTrace("link", enabled=dcfg.trace,
@@ -107,12 +129,12 @@ async def _run_async(config: dict, bus) -> None:
     signal.signal(signal.SIGTERM, _on_sigterm)
 
     while True:
-        serial = SerialPort(port, baud)
+        serial = make_serial()
         tasks: list[asyncio.Task] = []
         state = _LinkState()
         try:
             await serial.open()
-            log.info(f"Serial opened {port} @ {baud}")
+            log.info(f"Link opened ({transport})")
 
             tasks = [
                 asyncio.create_task(_rx_loop(serial, CRSFParser(), state, bus, log)),

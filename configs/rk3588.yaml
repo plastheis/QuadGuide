@@ -1,17 +1,23 @@
 platform:
   name: rk3588               # label only; camera backend comes from camera.backend
   camera:
-    backend: v4l2       # "v4l2" | "gstreamer" | "virtual"
+    # HIL toggle: set backend=network (+ serial.mode=tcp below) to drive the
+    # stack from the dev-machine simulator instead of real hardware.
+    backend: v4l2       # "v4l2" | "gstreamer" | "virtual" | "network" (HIL)
     pipeline: "v4l2src device=/dev/video0 ! video/x-raw,width=640,height=480,framerate=30/1 ! appsink"
     width: 640
     height: 480
     fps: 30             # C920 hardware max (no 60fps mode); see USBCamera._force_constant_framerate
+    url: "http://192.168.86.46:8090/camera"   # used when backend=network — dev-machine MJPEG stream
   serial:
     # This board exposes only /dev/ttyFIQ0 out of the box. For the CRSF link to
     # the FC, enable a UART overlay (e.g. uart3/uart5) so a /dev/ttyS* node
     # appears, then set it here. ttyFIQ0 is the fiq/console UART — not for CRSF.
-    port: /dev/ttyS6      # set to your enabled UART node
+    mode: tcp            # "uart" (real FC) | "tcp" (HIL — CRSF over TCP)
+    port: /dev/ttyS6      # used when mode=uart — set to your enabled UART node
     baud: 420000          # CRSF standard — do not change without matching FC config
+    tcp_host: "192.168.86.46"   # used when mode=tcp — dev-machine CRSF bridge host
+    tcp_port: 42000             # used when mode=tcp — dev-machine CRSF bridge port
     rx_pin: "UART_RX"     # wiring reference only — not used by driver
     tx_pin: "UART_TX"     # wiring reference only — not used by driver
   realtime:
@@ -25,8 +31,8 @@ airframe:
   mass_kg: 0.18
   inertia: [0.0012, 0.0012, 0.0020]
   control_limits:
-    max_roll_deg: 35
-    max_pitch_deg: 35
+    max_roll_deg: 40
+    max_pitch_deg: 40
     max_roll_rate_dps: 200
     max_pitch_rate_dps: 200
 
@@ -42,17 +48,17 @@ tracker:
     color: bgr                    # QuadGuide camera frames are BGR; adapter swaps to RGB
 
 guidance:
-  method: pure_pursuit              # "pronav" | "pure_pursuit"
+  method: pronav              # "pronav" | "pure_pursuit"
   fov_horizontal_rad: 0.972   # Logitech C920 @ 640x480 (4:3, sides cropped from 16:9 sensor) ≈ 55.7°
   throttle_hold: 0.4         # constant throttle during tracking (0–1)
   pronav:
-    N: 4.0                    # PN navigation gain (typical 3–5)
-    closing_vel_fallback: 2.0
-    closing_vel_ema_alpha: 0.3       # EMA smoothing for bbox area rate (0=heavy, 1=raw)
+    N: 1.7                    # PN navigation gain (typical 3–5)
+    closing_vel_fallback: 1.0
+    closing_vel_ema_alpha: 0.01       # EMA smoothing for bbox area rate (0=heavy, 1=raw)
     closing_vel_min_area_rate: 0.001 # fallback if smoothed area rate is below this
-    closing_vel_area_scale: 5.0      # area-rate (normalised/s) → m/s conversion
+    closing_vel_area_scale: 0.01      # area-rate (normalised/s) → m/s conversion
   pure_pursuit:
-    K: 20                    # m/s² per radian of LOS angle
+    K: 50                    # m/s² per radian of LOS angle
 
 watchdog:
   target_estimate_ms: 200
@@ -71,7 +77,7 @@ link:
     yaw:         {min_us: 1100, mid_us: 1500, max_us: 1900}
     arm:         {disarmed_us: 988, armed_us: 2012}
     flight_mode: {mode_index: 4, positions_us: [1165, 1295, 1425, 1555, 1685, 1815]}
-    roll_pitch_scale: 30.0
+    roll_pitch_scale: 40.0
     yaw_rate_scale: 160.0
 
 mission:

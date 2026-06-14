@@ -1,14 +1,20 @@
 platform:
-  name: orange_pi5           # key into platform/factory.py PLATFORMS dict
+  name: orange_pi5           # label only; camera backend comes from camera.backend
   camera:
-    backend: v4l2       # "v4l2" | "gstreamer" | "virtual"
+    # HIL toggle: set backend=network (+ serial.mode=tcp below) to drive the
+    # stack from the dev-machine simulator instead of real hardware.
+    backend: v4l2       # "v4l2" | "gstreamer" | "virtual" | "network" (HIL)
     pipeline: "v4l2src device=/dev/video0 ! video/x-raw,width=640,height=480,framerate=60/1 ! appsink"
     width: 640
     height: 480
     fps: 60
+    url: "http://192.168.1.100:8090/camera"   # used when backend=network — dev-machine MJPEG stream
   serial:
-    port: /dev/ttyAMA0    # UART device path — change per SBC (e.g. /dev/ttyAMA0 on RPi4)
+    mode: uart            # "uart" (real FC) | "tcp" (HIL — CRSF over TCP)
+    port: /dev/ttyAMA0    # used when mode=uart — UART device path, change per SBC
     baud: 420000          # CRSF standard — do not change without matching FC config
+    tcp_host: "192.168.1.100"   # used when mode=tcp — dev-machine CRSF bridge host
+    tcp_port: 42000             # used when mode=tcp — dev-machine CRSF bridge port
     rx_pin: "GPIO15"      # wiring reference only — not used by driver
     tx_pin: "GPIO14"      # wiring reference only — not used by driver
   realtime:
