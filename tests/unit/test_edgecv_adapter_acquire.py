@@ -95,6 +95,19 @@ def test_none_bbox_maps_to_lost():
     assert out.health == "lost"
 
 
+def test_none_bbox_while_acquiring_stays_acquiring():
+    # YOLO has no candidate in the crop this frame: bbox=None but still scanning
+    # (INITIALIZING). Must report "acquiring" (zero bbox), not "lost" — otherwise
+    # the acquire box flickers off and the tracker drops to lost before any lock.
+    res = SimpleNamespace(bbox=None, confidence=None,
+                          status=_status("INITIALIZING"), timestamp=2.0)
+    a = _acquire_adapter([res])
+    out = a.update(_frame())
+    assert out.health == "acquiring"
+    assert (out.bbox.x, out.bbox.y, out.bbox.w, out.bbox.h) == (0.0, 0.0, 0.0, 0.0)
+    assert out.origin_ns == int(2.0 * 1e9)
+
+
 def test_init_forwards_to_edge_tracker_commit():
     a = _acquire_adapter([SimpleNamespace(
         bbox=_eb(0, 0, 0.1, 0.1), confidence=0.5,

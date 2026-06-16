@@ -128,6 +128,23 @@ class EdgeCVTracker:
 
         resolved = select_backend(backend)
 
+        if name == "kalman_track":
+            # YOLO-acquire → in-parent Kalman tracking-by-detection (EdgeCV
+            # AcquireKalmanTrack). Same acquire-before-lock policy as acquire_track
+            # but the track stage is a constant-velocity Kalman filter instead of
+            # NanoTrack — one spawned YOLO worker, the filter runs in the parent.
+            # Async: the parent predicts every frame and YOLO corrects behind it,
+            # so update() runs every frame (pre-lock too) and carries source-frame
+            # lineage. Pass the manifest PATH (model loads in-child).
+            from edgecv.trackers.hybrid import AcquireKalmanTrack
+
+            self._always_update = True
+            self._async = True
+            return AcquireKalmanTrack(
+                yolo_manifest=self._manifests_dir() / "yolo11n.yaml",
+                backend=resolved, **params,
+            )
+
         if name in ("acquire_track", "verified_acquire_track"):
             # YOLO-acquire → NanoTrack-track hybrid (EdgeCV AcquireTrack). Owns its
             # own process group + two NPU cores; runs YOLO before lock and locks the
@@ -195,15 +212,23 @@ class EdgeCVTracker:
         if not self._always_update and not self._initialized:
             return _NO_LOCK
         res = self._tracker.update(self._rgb(frame))
-        if res.bbox is None:
-            return _LOST
-        b = res.bbox
         health = _HEALTH_BY_STATUS.get(res.status.name, "uncertain")
         # For async trackers, res.timestamp is the source frame's monotonic capture
         # time (shared CLOCK_MONOTONIC) → forward it as origin_ns so the worker's
         # latency lineage reflects the inference lag (spec §4).
         origin_ns = (int(res.timestamp * 1e9)
                      if self._async and getattr(res, "timestamp", 0) else 0)
+        if res.bbox is None:
+            # No bbox this frame. Status — not bbox presence — distinguishes a
+            # genuine LOST from the pre-lock / re-acquire scan: AcquireTrack reports
+            # INITIALIZING ("acquiring") with bbox=None whenever YOLO has no
+            # candidate in the crop this frame. Conflating that with LOST made the
+            # cyan acquire box flicker off and dropped the tracker to "lost" before
+            # any lock. Forward the real health (zero bbox) so acquisition survives.
+            if health == "lost":
+                return _LOST
+            return _TrackerOutput(_BBox(0.0, 0.0, 0.0, 0.0), 0.0, health, origin_ns)
+        b = res.bbox
         return _TrackerOutput(
             _BBox(b.x, b.y, max(0.0, b.w), max(0.0, b.h)),
             self._normalize_confidence(res.confidence),

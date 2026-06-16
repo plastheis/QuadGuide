@@ -5,7 +5,7 @@ import pytest
 from quadguide.core.messages import (
     BoundingBox, TrackerEstimate, TrackerHealth,
 )
-from quadguide.ground.overlay import draw_overlay
+from quadguide.ground.overlay import acquire_crop_from_config, draw_overlay
 
 
 def _black_frame() -> np.ndarray:
@@ -85,3 +85,46 @@ def test_does_not_mutate_input_frame():
     original = frame.copy()
     draw_overlay(frame, _estimate(TrackerHealth.NOMINAL))
     assert np.array_equal(frame, original)
+
+
+# ── acquire-crop guideline ───────────────────────────────────────────────────
+
+def test_acquire_guide_drawn_without_estimate():
+    # Faint crop square is drawn even with no tracking box (pre-lock acquire view).
+    frame = _black_frame()
+    assert draw_overlay(frame, None, acquire_crop=0.7) != _plain_jpeg(frame)
+
+
+def test_acquire_guide_drawn_with_lost_estimate():
+    # Drawn in every state, including NO_LOCK/LOST where no tracking box appears.
+    frame = _black_frame()
+    assert draw_overlay(frame, _estimate(TrackerHealth.LOST), acquire_crop=0.7) \
+        != _plain_jpeg(frame)
+
+
+def test_acquire_guide_none_is_plain():
+    frame = _black_frame()
+    assert draw_overlay(frame, None, acquire_crop=None) == _plain_jpeg(frame)
+
+
+def test_acquire_guide_does_not_mutate_input_frame():
+    frame = _black_frame()
+    original = frame.copy()
+    draw_overlay(frame, None, acquire_crop=0.7)
+    assert np.array_equal(frame, original)
+
+
+def test_acquire_crop_from_config_for_acquire_tracker():
+    cfg = {"tracker": {"params": {"tracker": "acquire_track", "acquire_crop": 0.7}}}
+    assert acquire_crop_from_config(cfg) == pytest.approx(0.7)
+
+
+def test_acquire_crop_from_config_default_when_unset():
+    cfg = {"tracker": {"params": {"tracker": "verified_acquire_track"}}}
+    assert acquire_crop_from_config(cfg) == pytest.approx(0.5)
+
+
+def test_acquire_crop_from_config_none_for_other_trackers():
+    assert acquire_crop_from_config({"tracker": {"params": {"tracker": "mosse"}}}) is None
+    assert acquire_crop_from_config(None) is None
+    assert acquire_crop_from_config({}) is None

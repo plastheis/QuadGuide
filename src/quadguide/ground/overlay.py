@@ -10,6 +10,13 @@ _COLOR_NOMINAL   = (0, 165, 255)   # orange BGR
 _COLOR_UNCERTAIN = (0, 255, 255)   # yellow BGR
 _COLOR_ACQUIRING = (255, 255, 0)   # cyan BGR — pre-lock detection candidate
 
+# Acquire-crop guideline: faint cyan square showing the central region YOLO scans
+# before lock (AcquireTrack family only; see acquire_crop_from_config).
+_COLOR_ACQUIRE_GUIDE = (255, 255, 0)   # cyan BGR, matches the candidate box
+_ACQUIRE_GUIDE_ALPHA = 0.30            # blend weight — a low-opacity guideline
+_ACQUIRE_TRACKERS    = ("acquire_track", "verified_acquire_track")
+_DEFAULT_ACQUIRE_CROP = 0.5            # AcquireTrack's own default crop fraction
+
 # Health states where nothing is drawn (no target / not tracking).
 _NO_DRAW = (TrackerHealth.NO_LOCK, TrackerHealth.LOST)
 _COLOR_BY_HEALTH = {
@@ -19,26 +26,65 @@ _COLOR_BY_HEALTH = {
 }
 
 
-def draw_overlay(frame: np.ndarray, estimate: TrackerEstimate | None) -> bytes:
+def acquire_crop_from_config(config: dict | None) -> float | None:
+    """Central acquire-crop side fraction to draw as a HUD guideline, or None.
+
+    Only the EdgeCV AcquireTrack family scans a fixed central crop before lock, so
+    the guideline is drawn for those trackers only. Mirrors AcquireTrack's
+    ``_central_crop`` geometry: a centred square of side ``acquire_crop·min(w,h)``.
+    """
+    params = (config or {}).get("tracker", {}).get("params") or {}
+    if params.get("tracker") not in _ACQUIRE_TRACKERS:
+        return None
+    return float(params.get("acquire_crop", _DEFAULT_ACQUIRE_CROP))
+
+
+def draw_overlay(
+    frame: np.ndarray,
+    estimate: TrackerEstimate | None,
+    acquire_crop: float | None = None,
+) -> bytes:
     """Return frame encoded as JPEG, with tracking bbox drawn if tracker is active.
 
-    Does not mutate the input frame. Returns a plain encode when estimate is
-    None, NO_LOCK, or LOST — nothing is drawn in those states. ACQUIRING draws the
-    pre-lock candidate box in cyan (guidance ignores it; see guidance.worker).
+    Does not mutate the input frame. The tracking box is drawn only when the
+    tracker is active (not None/NO_LOCK/LOST); ACQUIRING draws the pre-lock
+    candidate box in cyan (guidance ignores it; see guidance.worker). When
+    ``acquire_crop`` is given (the AcquireTrack central-crop fraction), a faint
+    cyan square marking that scan region is drawn underneath in every state.
     """
-    if estimate is None or estimate.tracker_health in _NO_DRAW:
-        return _encode(frame)
+    out = None  # copy lazily — only when something is actually drawn
 
+    if acquire_crop:
+        out = frame.copy()
+        _draw_acquire_guide(out, float(acquire_crop))
+
+    if estimate is not None and estimate.tracker_health not in _NO_DRAW:
+        if out is None:
+            out = frame.copy()
+        h, w = frame.shape[:2]
+        b = estimate.bbox
+        x1 = int(b.x * w)
+        y1 = int(b.y * h)
+        x2 = int((b.x + b.w) * w)
+        y2 = int((b.y + b.h) * h)
+        color = _COLOR_BY_HEALTH.get(estimate.tracker_health, _COLOR_UNCERTAIN)
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+
+    return _encode(out if out is not None else frame)
+
+
+def _draw_acquire_guide(frame: np.ndarray, frac: float) -> None:
+    """Blend a faint centred square (side = frac·min(w,h)) into ``frame`` in place."""
     h, w = frame.shape[:2]
-    b = estimate.bbox
-    x1 = int(b.x * w)
-    y1 = int(b.y * h)
-    x2 = int((b.x + b.w) * w)
-    y2 = int((b.y + b.h) * h)
-    color = _COLOR_BY_HEALTH.get(estimate.tracker_health, _COLOR_UNCERTAIN)
-    out = frame.copy()
-    cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-    return _encode(out)
+    side = frac * min(h, w)
+    x1 = int((w - side) / 2)
+    y1 = int((h - side) / 2)
+    x2 = int((w + side) / 2)
+    y2 = int((h + side) / 2)
+    layer = frame.copy()
+    cv2.rectangle(layer, (x1, y1), (x2, y2), _COLOR_ACQUIRE_GUIDE, 1)
+    cv2.addWeighted(layer, _ACQUIRE_GUIDE_ALPHA, frame, 1.0 - _ACQUIRE_GUIDE_ALPHA,
+                    0.0, dst=frame)
 
 
 def _encode(frame: np.ndarray) -> bytes:

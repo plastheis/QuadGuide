@@ -27,12 +27,14 @@ _NO_SIGNAL_JPEG: bytes = cv2.imencode(
 )[1].tobytes()
 
 
-def create_app(bus, frame_buffer) -> FastAPI:
+def create_app(bus, frame_buffer, config: dict | None = None) -> FastAPI:
+    acquire_crop = overlay.acquire_crop_from_config(config)
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
         app.state.bus            = bus
         app.state.frame_buffer   = frame_buffer
+        app.state.acquire_crop   = acquire_crop
         app.state.lockon_seq     = 0
         app.state.process_health: dict[str, str] = {}
         app.state.latency_window: deque = deque(maxlen=20)
@@ -116,7 +118,7 @@ async def _mjpeg(app: FastAPI):
             jpeg = _NO_SIGNAL_JPEG
         else:
             estimate = app.state.bus.latest("target/estimate")
-            jpeg = overlay.draw_overlay(frame, estimate)
+            jpeg = overlay.draw_overlay(frame, estimate, app.state.acquire_crop)
         app.state.mjpeg_frames += 1
         now = monotonic_ns()
         dt = (now - app.state.mjpeg_fps_ts) / 1e9
