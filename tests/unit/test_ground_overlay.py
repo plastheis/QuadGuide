@@ -75,6 +75,11 @@ def test_uncertain_modifies_frame():
     assert draw_overlay(frame, _estimate(TrackerHealth.UNCERTAIN)) != _plain_jpeg(frame)
 
 
+def test_acquiring_modifies_frame():
+    frame = _black_frame()
+    assert draw_overlay(frame, _estimate(TrackerHealth.ACQUIRING)) != _plain_jpeg(frame)
+
+
 def test_does_not_mutate_input_frame():
     frame = _black_frame()
     original = frame.copy()

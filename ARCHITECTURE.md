@@ -523,6 +523,31 @@ tracker:
 `configs/rk3588.yaml` ships this preset (NanoTrack on the RK3588 NPU). MOSSE
 needs no model and runs on CPU — handy for a no-NPU dry run.
 
+#### AcquireTrack (`tracker: acquire_track`)
+
+EdgeCV's `AcquireTrack` is a YOLO-acquire → NanoTrack-track hybrid that owns its
+own process group (a YOLO worker on one NPU core, NanoTrack on another). It adds
+two small contract points the adapter handles, with **no wire-format change**:
+
+- **It runs before lock-on.** YOLO scans a fixed central crop continuously and the
+  adapter calls `update()` every frame (the `_always_update` path), so pre-lock
+  detection candidates flow even before any `init`. These report
+  `TrackerHealth.ACQUIRING` — a new health that the **HUD draws (cyan) but guidance
+  ignores** (`guidance/worker.py:_NON_DRIVING_HEALTH`), so a candidate box never
+  drives flight. The HUD also draws the static crop guide (`index.html`,
+  `ACQUIRE_CROP`).
+- **The lock-on command commits, it doesn't pick.** Any **non-zero** `LockOnCmd`
+  bbox means "lock the current best YOLO detection"; the existing crosshair box is
+  fine as the carrier (its exact value is only a seed fallback when no detection is
+  present). A **zero-size** bbox still means `reset()`.
+
+`AcquireTrack` is async (workers infer behind the caller), so the adapter forwards
+the result's **source-frame `origin_ns`** and `tracker_worker` prefers it over its
+own `frame_ts`, keeping the §13 latency lineage honest about inference lag. See the
+EdgeCV spec `docs/superpowers/specs/2026-06-14-acquire-track-design.md`. The
+`acquire_track` preset (commented) is in `configs/rk3588.yaml`; it needs
+`yolo11n.<soc>.rknn` in `model_dir`.
+
 ---
 
 ## 12. Known Constraints and Limitations

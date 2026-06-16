@@ -136,6 +136,19 @@ class TestTrackerWorkerPublish:
         assert est.tracker_health == TrackerHealth.NOMINAL
         assert est.origin_ns > 0  # = frame_ts (capture timestamp lineage)
 
+    def test_tracker_origin_ns_preferred_over_frame_ts(self):
+        # An async tracker (AcquireTrack via the adapter) supplies its own
+        # source-frame origin_ns; the worker must forward it, not frame_ts.
+        bus = _StubBus()
+        fb = _StubFrameBuffer(frame=_frame(), ts=999_000)
+        out = _StubTrackerOutput(0.1, 0.2, 0.3, 0.4, 0.9, "nominal")
+        out.origin_ns = 555_000  # tracker-provided lineage
+        tracker = _StubTracker(out)
+        worker = TrackerWorker(tracker, bus, fb, cpu_core=None, config={})
+        _run_one_iteration(worker)
+        _, est = [(t, m) for t, m in bus.published if t == "target/estimate"][0]
+        assert est.origin_ns == 555_000
+
 
 def _run_n_loops(worker: TrackerWorker, n: int) -> None:
     """Drive the loop for n passes using _check_lockon (called once per pass) as a

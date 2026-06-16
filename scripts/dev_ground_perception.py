@@ -49,11 +49,15 @@ def main() -> None:
     bus = Bus()
     fb  = FrameBuffer(width=w, height=h)
 
+    # daemon=False (matches run.py): the tracker may spawn its own children — e.g.
+    # the EdgeCV AcquireTrack orchestrator's YOLO/NanoTrack workers — and Python
+    # forbids daemonic processes from having children. Teardown is handled by the
+    # SIGTERM + join in the finally block below.
     cam_proc = multiprocessing.Process(
-        target=camera_run, args=(config, bus, fb), daemon=True, name="camera",
+        target=camera_run, args=(config, bus, fb), daemon=False, name="camera",
     )
     tracker_proc = multiprocessing.Process(
-        target=tracker_run, args=(config, bus, fb), daemon=True, name="tracker",
+        target=tracker_run, args=(config, bus, fb), daemon=False, name="tracker",
     )
 
     cam_proc.start()

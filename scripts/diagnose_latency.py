@@ -37,6 +37,17 @@ import matplotlib.pyplot as plt  # noqa: E402
 NS_PER_MS = 1e6
 STAGE_ORDER = ["tracker", "guidance", "control", "link"]
 
+# Tracker health → colour, for the handoff overlay. For AcquireTrack these are the
+# YOLO↔NanoTrack states: acquiring = YOLO scan/re-acquire, nominal = NanoTrack
+# locked, uncertain = coasting, lost = no track, no_lock = pre-lock idle.
+_HEALTH_COLORS = {
+    "acquiring": "#00bcd4",  # cyan
+    "nominal":   "#27ae60",  # green
+    "uncertain": "#e67e22",  # orange
+    "lost":      "#c0392b",  # red
+    "no_lock":   "#95a5a6",  # grey
+}
+
 
 def _canon(proc: str) -> str:
     """Map a process name to its canonical stage. The tracker worker names itself
@@ -214,6 +225,12 @@ def _load_trace(dir_: str) -> dict[str, list[dict]]:
     return records
 
 
+def _health_events(rows: list[dict]) -> list[tuple[int, str, str]]:
+    """Return [(t_ns, state, detail)] from 'health' transition records, in order."""
+    return [(r["t"], r.get("state", ""), r.get("detail", ""))
+            for r in rows if r.get("k") == "health"]
+
+
 def _lat_arrays(rows: list[dict]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (t_ns, stage_ms, cum_ms) from 'lat' records. cum_ms is NaN where
     origin is unknown (org == 0)."""
@@ -258,6 +275,26 @@ def run_trace(args) -> int:
         if not np.isnan(per):
             print(f"    └ {p} stage dominant period ≈ {per:.1f} ms ({frq:.1f} Hz)")
 
+    # Handoff timeline: tracker health transitions (e.g. YOLO↔NanoTrack for
+    # AcquireTrack). Each line is a state entry + how long it held.
+    for p in procs:
+        events = _health_events(records[p])
+        if not events:
+            continue
+        print(f"\n  HANDOFF TIMELINE ({p}):  acquiring=YOLO  nominal=NanoTrack  "
+              f"uncertain=coast  lost  no_lock")
+        for k, (t, state, detail) in enumerate(events):
+            rel = (t - t0) / 1e9
+            held = (events[k + 1][0] - t) / 1e9 if k + 1 < len(events) else None
+            held_s = f"{held:7.2f}s" if held is not None else "  (end) "
+            print(f"    {rel:8.2f}s  {state:<10} held {held_s}   {detail}")
+        n_lock = sum(1 for _, s, _ in events if s == "nominal")
+        n_reacq = sum(1 for k, (_, s, _) in enumerate(events)
+                      if s in ("acquiring", "uncertain") and k > 0
+                      and events[k - 1][1] == "nominal")
+        print(f"    └ {len(events)} transitions: {n_lock} lock(s), "
+              f"{n_reacq} drop/re-acquire(s)")
+
     # end-to-end = furthest-downstream cumulative available
     by_stage = {_canon(p): p for p in series}
     for s in reversed(STAGE_ORDER):
@@ -273,12 +310,24 @@ def run_trace(args) -> int:
     if n == 0:
         ax = [ax]
     for i, (p, (t, stage, cum)) in enumerate(series.items()):
+        # Shade health spans (the handoff) behind the latency lines.
+        events = _health_events(records[p])
+        if events:
+            t_end = max(t[-1], events[-1][0])
+            seen = set()
+            for k, (te, state, _detail) in enumerate(events):
+                te_next = events[k + 1][0] if k + 1 < len(events) else t_end
+                color = _HEALTH_COLORS.get(state, "#bbbbbb")
+                label = state if state not in seen else None
+                seen.add(state)
+                ax[i].axvspan((te - t0) / 1e9, (te_next - t0) / 1e9,
+                              color=color, alpha=0.12, label=label)
         ax[i].plot((t - t0) / 1e9, stage, lw=0.7, label=f"{p} stage")
         if cum[~np.isnan(cum)].size:
             ax[i].plot((t - t0) / 1e9, cum, lw=0.7, alpha=0.6, label=f"{p} cum")
         ax[i].set_ylabel("ms")
-        ax[i].set_title(f"{p} latency")
-        ax[i].legend(loc="upper right", fontsize=8)
+        ax[i].set_title(f"{p} latency" + (" + handoff spans" if events else ""))
+        ax[i].legend(loc="upper right", fontsize=7, ncol=2)
         ax[i].grid(alpha=0.3)
     # histogram panel of tracker stage (the suspected jitter source)
     tracker_proc = next((p for p in series if _canon(p) == "tracker"), None)

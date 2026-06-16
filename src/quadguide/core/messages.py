@@ -28,6 +28,10 @@ class TrackerHealth(str, Enum):
     UNCERTAIN = "uncertain"
     LOST      = "lost"
     NO_LOCK   = "no_lock"
+    # ACQUIRING: a tracker is showing pre-lock detection candidates (e.g. EdgeCV
+    # AcquireTrack's YOLO scan). Drawn on the HUD but IGNORED by guidance — it must
+    # not drive flight. Appended last so existing wire ordinals are unchanged.
+    ACQUIRING = "acquiring"
 
 
 @_byte_enum

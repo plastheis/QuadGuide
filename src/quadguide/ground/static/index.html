@@ -262,10 +262,29 @@ const STEP = 20;
 const MIN_SIZE = 40;
 const MAX_SIZE = Math.min(W, H) - 20;
 
+// EdgeCV AcquireTrack scans a fixed central crop for the target before lock-on.
+// Mirror its `acquire_crop` (fraction of the shorter dimension) so the operator
+// sees where YOLO is looking. Drawn only while an AcquireTrack-family tracker is
+// active. Keep in sync with configs/*.yaml tracker.params.acquire_crop.
+const ACQUIRE_CROP = 0.5;
+let acquireActive = false;
+
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function drawAcquireCrop() {
+  const side = ACQUIRE_CROP * Math.min(W, H);
+  const x = (W - side) / 2, y = (H - side) / 2;
+  ctx.save();
+  ctx.strokeStyle = '#00ffff';   // cyan, matches the ACQUIRING overlay colour
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([8, 6]);
+  ctx.strokeRect(x, y, side, side);
+  ctx.restore();
+}
 
 function drawCrosshair() {
   ctx.clearRect(0, 0, W, H);
+  if (acquireActive) drawAcquireCrop();
   const cx   = W / 2;
   const cy   = H / 2;
   const half = crosshairSize / 2;
@@ -390,6 +409,14 @@ sse.onmessage = (ev) => {
   // target/estimate
   set('h-tracker',  d.tracker_health);
   set('h-active',   d.active_tracker);
+
+  // Show the YOLO acquisition crop guide while an AcquireTrack-family tracker is
+  // active (matches by name; redraw only on change to avoid clobbering the canvas).
+  const isAcquire = (d.active_tracker || '').toLowerCase().includes('acquire');
+  if (isAcquire !== acquireActive) {
+    acquireActive = isAcquire;
+    drawCrosshair();
+  }
   set('h-conf',     f(d.confidence,   2));
   set('h-centroid', d.centroid_x != null ? f(d.centroid_x, 3) + ' / ' + f(d.centroid_y, 3) : null);
   set('h-bbox-xy',  d.bbox_x     != null ? f(d.bbox_x, 3)     + ' / ' + f(d.bbox_y, 3)     : null);

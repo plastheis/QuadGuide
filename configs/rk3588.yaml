@@ -1,14 +1,19 @@
 platform:
   name: rk3588               # label only; camera backend comes from camera.backend
   camera:
-    # HIL toggle: set backend=network (+ serial.mode=tcp below) to drive the
-    # stack from the dev-machine simulator instead of real hardware.
-    backend: v4l2       # "v4l2" | "gstreamer" | "virtual" | "network" (HIL)
+    # HIL toggle: set backend=raw_tcp (or network) + serial.mode=tcp below to
+    # drive the stack from the dev-machine simulator instead of real hardware.
+    backend: v4l2       # "v4l2" | "gstreamer" | "virtual" | "network" | "raw_tcp" (HIL)
     pipeline: "v4l2src device=/dev/video0 ! video/x-raw,width=640,height=480,framerate=30/1 ! appsink"
     width: 640
     height: 480
     fps: 30             # C920 hardware max (no 60fps mode); see USBCamera._force_constant_framerate
     url: "http://192.168.86.46:8090/camera"   # used when backend=network — dev-machine MJPEG stream
+    # raw_tcp (HIL): low-latency uncompressed BGR frames from the dev-machine
+    # RawFrameServer over TCP (no JPEG, no VideoCapture buffering). Preferred HIL
+    # camera path on a direct-connect 1GbE link.
+    raw_tcp_host: "192.168.86.46"   # used when backend=raw_tcp — dev-machine frame server host
+    raw_tcp_port: 8091              # used when backend=raw_tcp — dev-machine frame server port
   serial:
     # This board exposes only /dev/ttyFIQ0 out of the box. For the CRSF link to
     # the FC, enable a UART overlay (e.g. uart3/uart5) so a /dev/ttyS* node
@@ -38,14 +43,56 @@ airframe:
 
 tracker:
   # EdgeCV NanoTrack on the RK3588 NPU via the QuadGuide↔EdgeCV adapter.
-  # Swap `tracker:` for mosse (CPU, no model), siamfc, or yolo. `backend: auto`
-  # prefers rknn then onnx; force `mock` for a no-NPU dry run.
+  # Swap `tracker:` for mosse (CPU, no model), siamfc, yolo, acquire_track, or
+  # verified_acquire_track (acquire_track + concurrent YOLO verification during
+  # LOCKED — catches confident NanoTrack drift onto clutter; same params + verify_*).
+  # `backend: auto` prefers rknn then onnx; force `mock` for a no-NPU dry run.
   import: quadguide.perception.edgecv_adapter:EdgeCVTracker
   params:
-    tracker: nanotrack            # mosse | nanotrack | siamfc | yolo
+    tracker: acquire_track           # mosse | nanotrack | siamfc | yolo | acquire_track | verified_acquire_track
     backend: rknn                 # auto | onnx | rknn | mock
     model_dir: /home/radxa/EdgeCV/models   # resolves *.rknn artifacts (EDGECV_MODEL_DIR)
     color: bgr                    # QuadGuide camera frames are BGR; adapter swaps to RGB
+    acquire_crop: 0.7          # central crop side, fraction of shorter dim
+    lock_pad: 1.5              # padding on the YOLO box seeding NanoTrack
+    lock_min_score: 0.1       # min YOLO score to commit a lock on operator LOCK
+    drop_score: 0.9           # re-acquire confidence threshold: locked track below
+                               # this for drop_frames frames triggers re-acquire
+    drop_frames: 3             # sub-threshold (< drop_score) frames before re-acquire
+    reacq_crop_factor: 3.0     # re-acq crop = factor × last bbox
+    reacq_crop_frames: 15      # frames on the crop before full-frame escalation
+    reacq_assoc_sigma: 0.5     # spatial gate (frac of frame) matching re-acq detections to last bbox
+    lost_timeout_frames: 90    # coast budget before reporting LOST (~3 s @30fps)
+    search_timeout_frames: 300 # post-LOST full-frame search before reset (~10 s)
+
+    # verified_acquire_track only (YOLO runs concurrently during LOCKED):
+    # verify: true               # enable concurrent YOLO verification (default true)
+    # verify_min_iou: 0.1        # min IoU of NanoTrack box with a YOLO detection to count as supported
+    # verify_min_score: 0.6     # min YOLO score for a detection to count toward support
+    # verify_miss_frames: 5      # consecutive unsupported YOLO checks before declaring drift
+
+  # ── AcquireTrack preset (YOLO-acquire → NanoTrack-track hybrid) ──
+  # YOLO (yolo11n, NPU core 1) scans a fixed central crop and streams candidate
+  # boxes to the HUD; the operator's LOCK button locks the current best detection
+  # into NanoTrack (NPU core 2). On confidence drop YOLO re-acquires (crop → full
+  # frame) and re-locks. Both models run in their own spawned workers. Requires
+  # yolo11n.<soc>.rknn in model_dir (convert the trained ONNX with EdgeCV
+  # tools/convert.py). To use, replace the params block above with:
+  #   params:
+  #     tracker: acquire_track
+  #     backend: rknn
+  #     model_dir: /home/radxa/EdgeCV/models
+  #     color: bgr
+  #     acquire_crop: 0.5          # central crop side, fraction of shorter dim
+  #     lock_pad: 1.15             # padding on the YOLO box seeding NanoTrack
+  #     lock_min_score: 0.35       # min YOLO score to commit a lock on operator LOCK
+  #     drop_score: 0.35           # re-acquire confidence threshold (see active block)
+  #     drop_frames: 5             # sub-threshold (< drop_score) frames before re-acquire
+  #     reacq_crop_factor: 3.0     # re-acq crop = factor × last bbox
+  #     reacq_crop_frames: 15      # frames on the crop before full-frame escalation
+  #     reacq_assoc_sigma: 0.5     # spatial gate (frac of frame) matching re-acq detections to last bbox
+  #     lost_timeout_frames: 90    # coast budget before reporting LOST (~3 s @30fps)
+  #     search_timeout_frames: 300 # post-LOST full-frame search before reset (~10 s)
 
 guidance:
   method: pronav              # "pronav" | "pure_pursuit"

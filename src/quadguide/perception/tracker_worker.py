@@ -162,6 +162,7 @@ class TrackerWorker:
         log.info(f"{self._proc_name}: started")
         i = 0
         last_ts = -1
+        last_health: str | None = None
         try:
             while not self._stop:
                 self._check_lockon()
@@ -179,7 +180,12 @@ class TrackerWorker:
                 out     = self._tracker.update(frame)
                 now_ns  = monotonic_ns()
                 # origin_ns is the capture timestamp this estimate derives from.
-                origin_ns = frame_ts if frame_ts > 0 else 0
+                # Async trackers (e.g. EdgeCV AcquireTrack) supply their own
+                # source-frame origin so the lineage reflects inference lag; fall
+                # back to this worker's frame_ts when the tracker provides none.
+                tracker_origin = getattr(out, "origin_ns", 0)
+                origin_ns = tracker_origin if tracker_origin else (
+                    frame_ts if frame_ts > 0 else 0)
                 est = TrackerEstimate(
                     timestamp_ns=now_ns,
                     bbox=BoundingBox(out.bbox.x, out.bbox.y, out.bbox.w, out.bbox.h),
@@ -190,6 +196,15 @@ class TrackerWorker:
                 self._bus.publish("target/estimate", est)
                 # First hop: stage == cumulative (in_ts == origin == frame_ts).
                 trace.latency(now_ns, origin_ns or None, origin_ns)
+
+                # Record every health transition (not just the periodic snapshot
+                # below) so the trace captures the exact YOLO→NanoTrack handoff:
+                # acquiring→nominal is a lock, nominal→acquiring/uncertain a
+                # drop/re-acquire. Transitions are rare, so this is near-free.
+                health = str(out.health)
+                if health != last_health:
+                    trace.health(now_ns, health, detail=f"conf={float(out.confidence):.2f}")
+                    last_health = health
 
                 i += 1
                 if i % _HEALTH_EVERY == 0:

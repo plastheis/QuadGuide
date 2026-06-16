@@ -15,6 +15,12 @@ __all__ = ["run"]
 
 _HEALTH_EVERY = 10   # iterations; 50 Hz / 10 = 5 Hz health rate
 
+# Tracker health states that must NOT drive guidance. LOST/NO_LOCK = no target;
+# ACQUIRING = pre-lock detection candidates shown on the HUD but not committed.
+_NON_DRIVING_HEALTH = (
+    TrackerHealth.LOST, TrackerHealth.NO_LOCK, TrackerHealth.ACQUIRING,
+)
+
 
 def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     from quadguide.core.config import cfg_diag
@@ -55,7 +61,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
 
         if est is None or att is None or imu is None:
             continue
-        if est.tracker_health in (TrackerHealth.LOST, TrackerHealth.NO_LOCK):
+        if est.tracker_health in _NON_DRIVING_HEALTH:
             continue
 
         now_ns = monotonic_ns()

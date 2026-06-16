@@ -45,17 +45,22 @@ import numpy as np
 __all__ = ["EdgeCVTracker"]
 
 # Structural output types the worker reads (same shape OpenCVTrackerAdapter uses).
-_TrackerOutput = namedtuple("_TrackerOutput", "bbox confidence health")
+# origin_ns: source-frame capture time (ns) for async trackers (AcquireTrack); 0
+# means "no lineage from the tracker" → the worker falls back to its own frame_ts.
+_TrackerOutput = namedtuple("_TrackerOutput", "bbox confidence health origin_ns",
+                            defaults=(0,))
 _BBox = namedtuple("_BBox", "x y w h")
 
 _NO_LOCK = _TrackerOutput(_BBox(0.0, 0.0, 0.0, 0.0), 0.0, "no_lock")
 _LOST = _TrackerOutput(_BBox(0.0, 0.0, 0.0, 0.0), 0.0, "lost")
 
-# EdgeCV TrackStatus.name → QuadGuide TrackerHealth string.
+# EdgeCV TrackStatus.name → QuadGuide TrackerHealth string. INITIALIZING maps to
+# "acquiring": for AcquireTrack it's the pre-lock YOLO scan; for other trackers
+# it's a brief warm-up. Either way it must not drive guidance (HUD draws it).
 _HEALTH_BY_STATUS = {
     "LOCKED": "nominal",
     "COASTING": "uncertain",
-    "INITIALIZING": "uncertain",
+    "INITIALIZING": "acquiring",
     "LOST": "lost",
 }
 
@@ -87,6 +92,12 @@ class EdgeCVTracker:
         if model_dir is not None:
             os.environ["EDGECV_MODEL_DIR"] = str(model_dir)
 
+        # acquire_track self-manages its acquisition state and runs YOLO before any
+        # lock, so update() must be called every frame (not gated on init); it is
+        # also async (workers infer behind the caller), so it carries its own
+        # source-frame lineage. _build sets these for the acquire_track branch.
+        self._always_update = False
+        self._async = False
         self._tracker = self._build(tracker.lower(), backend, tracker_params)
         # CF trackers carry a default calibrator (raw PSR → 0–1); NN trackers
         # generally do not (scores already 0–1).
@@ -116,6 +127,27 @@ class EdgeCVTracker:
         from edgecv.trackers.nn.base import select_backend
 
         resolved = select_backend(backend)
+
+        if name in ("acquire_track", "verified_acquire_track"):
+            # YOLO-acquire → NanoTrack-track hybrid (EdgeCV AcquireTrack). Owns its
+            # own process group + two NPU cores; runs YOLO before lock and locks the
+            # current best detection on init. Pass manifest PATHS — the spawned
+            # workers load models in-child (RKNN never created in this process).
+            # `verified_acquire_track` adds concurrent YOLO verification during
+            # LOCKED to catch confident NanoTrack drift onto clutter (accepts the
+            # extra verify_* params); same interface otherwise.
+            from edgecv.trackers.hybrid import AcquireTrack, VerifiedAcquireTrack
+
+            cls = (VerifiedAcquireTrack if name == "verified_acquire_track"
+                   else AcquireTrack)
+            mdir = self._manifests_dir()
+            self._always_update = True
+            self._async = True
+            return cls(
+                yolo_manifest=mdir / "yolo11n.yaml",
+                nanotrack_manifest=mdir / "nanotrack.yaml",
+                backend=resolved, **params,
+            )
 
         if name == "nanotrack":
             from edgecv.trackers.nn import NanoTrack
@@ -158,23 +190,40 @@ class EdgeCVTracker:
         self._initialized = True
 
     def update(self, frame):
-        if not self._initialized:
+        # acquire_track runs (YOLO acquisition) before any lock; other trackers
+        # stay silent until init().
+        if not self._always_update and not self._initialized:
             return _NO_LOCK
         res = self._tracker.update(self._rgb(frame))
         if res.bbox is None:
             return _LOST
         b = res.bbox
         health = _HEALTH_BY_STATUS.get(res.status.name, "uncertain")
+        # For async trackers, res.timestamp is the source frame's monotonic capture
+        # time (shared CLOCK_MONOTONIC) → forward it as origin_ns so the worker's
+        # latency lineage reflects the inference lag (spec §4).
+        origin_ns = (int(res.timestamp * 1e9)
+                     if self._async and getattr(res, "timestamp", 0) else 0)
         return _TrackerOutput(
             _BBox(b.x, b.y, max(0.0, b.w), max(0.0, b.h)),
             self._normalize_confidence(res.confidence),
             health,
+            origin_ns,
         )
 
     def reset(self) -> None:
-        # Soft clear: next update() reports no_lock until re-init. No hardware
-        # release — EdgeCV trackers re-init cleanly via init().
+        # Clear the adapter's init gate. For trackers that go silent until the
+        # next init() this is enough — update() returns no_lock. But acquire_track
+        # is _always_update=True: its update() ignores _initialized and keeps
+        # running its YOLO→NanoTrack state machine, so the gate alone leaves a
+        # LOCKED AcquireTrack locked and the operator's "r" (reset lock-on) does
+        # nothing. AcquireTrack exposes its own reset() (back to ACQUIRE); forward
+        # to it when present. reset() is NOT part of the base EdgeCV Tracker
+        # protocol, so guard with getattr for the inline trackers that lack it.
         self._initialized = False
+        tracker_reset = getattr(self._tracker, "reset", None)
+        if callable(tracker_reset):
+            tracker_reset()
 
     def close(self) -> None:
         self._tracker.close()
