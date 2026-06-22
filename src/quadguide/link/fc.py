@@ -47,3 +47,74 @@ def decode_heartbeat(msg) -> tuple[bool, int]:
     """HEARTBEAT → (armed, custom_mode)."""
     armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
     return armed, msg.custom_mode
+
+
+import math
+
+from quadguide.core.messages import ControlCmd
+from quadguide.link.mavlink_codec import (
+    ATT_TARGET_IGNORE_RATES, MAV_AUTOPILOT_NONE, MAV_TYPE_COMPANION,
+    euler_to_quaternion,
+)
+
+
+def encode_attitude_target(
+    mav, cmd: ControlCmd | None, yaw_hold: float,
+    target_sys: int, target_comp: int,
+    max_roll_deg: float, max_pitch_deg: float, now_ms: int,
+) -> bytes:
+    """Build a SET_ATTITUDE_TARGET (#82) frame.
+
+    roll/pitch come from `cmd` (clamped to limits) and yaw from the latched
+    `yaw_hold`, all baked into the quaternion (type_mask ignores body rates).
+    thrust = clamped throttle_norm. `cmd is None` → level attitude, zero thrust.
+    """
+    if cmd is None:
+        roll_rad = pitch_rad = 0.0
+        thrust = 0.0
+    else:
+        roll_rad = math.radians(_clamp(cmd.roll_deg, -max_roll_deg, max_roll_deg))
+        pitch_rad = math.radians(_clamp(cmd.pitch_deg, -max_pitch_deg, max_pitch_deg))
+        thrust = _clamp(cmd.throttle_norm, 0.0, 1.0)
+    q = euler_to_quaternion(roll_rad, pitch_rad, yaw_hold)
+    msg = mav.set_attitude_target_encode(
+        now_ms, target_sys, target_comp, ATT_TARGET_IGNORE_RATES,
+        list(q), 0.0, 0.0, 0.0, thrust,
+    )
+    return msg.pack(mav)
+
+
+def encode_arm(mav, arm: bool, target_sys: int, target_comp: int) -> bytes:
+    """COMMAND_LONG / MAV_CMD_COMPONENT_ARM_DISARM. param1: 1=arm, 0=disarm."""
+    msg = mav.command_long_encode(
+        target_sys, target_comp,
+        mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
+        1.0 if arm else 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    )
+    return msg.pack(mav)
+
+
+def encode_set_message_interval(
+    mav, msg_id: int, rate_hz: float, target_sys: int, target_comp: int
+) -> bytes:
+    """COMMAND_LONG / MAV_CMD_SET_MESSAGE_INTERVAL. param2 is the interval in µs."""
+    interval_us = 0.0 if rate_hz <= 0 else 1_000_000.0 / rate_hz
+    msg = mav.command_long_encode(
+        target_sys, target_comp,
+        mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
+        float(msg_id), interval_us, 0.0, 0.0, 0.0, 0.0, 0.0,
+    )
+    return msg.pack(mav)
+
+
+def encode_heartbeat(mav) -> bytes:
+    """Companion HEARTBEAT so the FC sees quadguide as a live onboard controller."""
+    msg = mav.heartbeat_encode(
+        MAV_TYPE_COMPANION, MAV_AUTOPILOT_NONE, 0, 0,
+        mavutil.mavlink.MAV_STATE_ACTIVE,
+    )
+    return msg.pack(mav)
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))

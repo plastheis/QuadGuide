@@ -78,3 +78,98 @@ def test_decode_heartbeat_disarmed(mav):
     armed, mode = decode_heartbeat(msg)
     assert armed is False
     assert mode == 0
+
+
+import math as _math
+from quadguide.link.mavlink_codec import (
+    ATT_TARGET_IGNORE_RATES, MSG_ID_ATTITUDE, euler_to_quaternion,
+)
+from quadguide.link.fc import (
+    encode_arm, encode_attitude_target, encode_heartbeat,
+    encode_set_message_interval,
+)
+from quadguide.core.messages import ControlCmd
+
+
+def _roundtrip(data: bytes):
+    """Parse packed MAVLink2 bytes back into a message via a fresh codec."""
+    rx = make_mav(1, 1)
+    out = None
+    for b in data:
+        m = rx.parse_char(bytes([b]))
+        if m is not None:
+            out = m
+    return out
+
+
+# ── encode_attitude_target ───────────────────────────────────────────────────
+
+def test_encode_attitude_target_mask_thrust_and_quaternion(mav):
+    cmd = ControlCmd(0, roll_deg=0.0, pitch_deg=0.0, yaw_rate_dps=0.0, throttle_norm=0.4)
+    msg = _roundtrip(encode_attitude_target(
+        mav, cmd, yaw_hold=0.0, target_sys=1, target_comp=1,
+        max_roll_deg=35.0, max_pitch_deg=35.0, now_ms=0))
+    assert msg.get_type() == "SET_ATTITUDE_TARGET"
+    assert msg.type_mask == ATT_TARGET_IGNORE_RATES
+    assert msg.thrust == pytest.approx(0.4)
+    assert list(msg.q) == pytest.approx([1.0, 0.0, 0.0, 0.0], abs=1e-6)
+
+
+def test_encode_attitude_target_clamps_roll_to_limit(mav):
+    cmd = ControlCmd(0, roll_deg=90.0, pitch_deg=0.0, yaw_rate_dps=0.0, throttle_norm=0.0)
+    msg = _roundtrip(encode_attitude_target(
+        mav, cmd, 0.0, 1, 1, max_roll_deg=35.0, max_pitch_deg=35.0, now_ms=0))
+    expected = euler_to_quaternion(_math.radians(35.0), 0.0, 0.0)
+    assert list(msg.q) == pytest.approx(list(expected), abs=1e-5)
+
+
+def test_encode_attitude_target_clamps_thrust(mav):
+    cmd = ControlCmd(0, 0.0, 0.0, 0.0, throttle_norm=2.0)
+    msg = _roundtrip(encode_attitude_target(mav, cmd, 0.0, 1, 1, 35.0, 35.0, 0))
+    assert msg.thrust == pytest.approx(1.0)
+
+
+def test_encode_attitude_target_none_is_level_zero_thrust(mav):
+    msg = _roundtrip(encode_attitude_target(mav, None, 0.0, 1, 1, 35.0, 35.0, 0))
+    assert msg.thrust == pytest.approx(0.0)
+    assert list(msg.q) == pytest.approx([1.0, 0.0, 0.0, 0.0], abs=1e-6)
+
+
+def test_encode_attitude_target_bakes_yaw_hold(mav):
+    cmd = ControlCmd(0, 0.0, 0.0, 0.0, 0.0)
+    msg = _roundtrip(encode_attitude_target(
+        mav, cmd, yaw_hold=_math.pi / 2, target_sys=1, target_comp=1,
+        max_roll_deg=35.0, max_pitch_deg=35.0, now_ms=0))
+    assert list(msg.q) == pytest.approx(
+        [_math.sqrt(0.5), 0.0, 0.0, _math.sqrt(0.5)], abs=1e-6)
+
+
+# ── encode_arm ───────────────────────────────────────────────────────────────
+
+def test_encode_arm_arms(mav):
+    msg = _roundtrip(encode_arm(mav, True, 1, 1))
+    assert msg.get_type() == "COMMAND_LONG"
+    assert msg.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
+    assert msg.param1 == pytest.approx(1.0)
+
+
+def test_encode_arm_disarms(mav):
+    msg = _roundtrip(encode_arm(mav, False, 1, 1))
+    assert msg.param1 == pytest.approx(0.0)
+
+
+# ── encode_set_message_interval ──────────────────────────────────────────────
+
+def test_encode_set_message_interval_converts_hz_to_us(mav):
+    msg = _roundtrip(encode_set_message_interval(mav, MSG_ID_ATTITUDE, 50.0, 1, 1))
+    assert msg.command == mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL
+    assert msg.param1 == pytest.approx(MSG_ID_ATTITUDE)
+    assert msg.param2 == pytest.approx(20000.0)  # 1e6 / 50
+
+
+# ── encode_heartbeat ─────────────────────────────────────────────────────────
+
+def test_encode_heartbeat_is_onboard_controller(mav):
+    msg = _roundtrip(encode_heartbeat(mav))
+    assert msg.get_type() == "HEARTBEAT"
+    assert msg.type == mavutil.mavlink.MAV_TYPE_ONBOARD_CONTROLLER
