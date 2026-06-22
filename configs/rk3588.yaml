@@ -52,7 +52,7 @@ tracker:
   # `backend: auto` prefers rknn then onnx; force `mock` for a no-NPU dry run.
   import: quadguide.perception.edgecv_adapter:EdgeCVTracker
   params:
-    tracker: kalman_track           # mosse | nanotrack | siamfc | yolo | acquire_track | verified_acquire_track
+    tracker: nanotrack           # mosse | nanotrack | siamfc | yolo | acquire_track | verified_acquire_track
     backend: rknn                 # auto | onnx | rknn | mock
     model_dir: /home/radxa/EdgeCV/models   # resolves *.rknn artifacts (EDGECV_MODEL_DIR)
     color: bgr                    # QuadGuide camera frames are BGR; adapter swaps to RGB
@@ -72,7 +72,7 @@ tracker:
     # verify_miss_frames: 5      # consecutive unsupported YOLO checks before declaring drift
 
 guidance:
-  method: pronav              # "pronav" | "pure_pursuit"
+  method: pure_pursuit              # "pronav" | "pure_pursuit"
   fov_horizontal_rad: 0.972   # Logitech C920 @ 640x480 (4:3, sides cropped from 16:9 sensor) ≈ 55.7°
   throttle_hold: 0.6         # constant throttle during tracking (0–1)
   pronav:
@@ -91,7 +91,7 @@ watchdog:
   guidance_accel_ms: 100
 
 link:
-  tx_rate_hz: 50          # SET_ATTITUDE_TARGET stream rate (Hz) — keep constant to hold GUIDED setpoints
+  tx_rate_hz: 100          # SET_ATTITUDE_TARGET stream rate (Hz) — keep constant to hold GUIDED setpoints
   stream_rate_hz: 50      # requested ATTITUDE + RAW_IMU telemetry rate (Hz)
   system_id: 1            # quadguide MAVLink source system id
   component_id: 191       # MAV_COMP_ID_ONBOARD_COMPUTER
@@ -101,7 +101,7 @@ link:
   heartbeat_wait_s: 5.0   # max wait for the first FC HEARTBEAT before requesting streams
 
 mission:
-  mode: bench_hil             # "flight" | "bench_hil" | "swil"
+  mode: flight             # "flight" | "bench_hil" | "swil"
   hil:
     target_model: constant_velocity
     initial_offset_m: [2.0, 0.0, 0.0]
