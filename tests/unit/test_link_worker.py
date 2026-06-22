@@ -1,93 +1,82 @@
-import asyncio
-import logging
-import math
-import struct
-
 import pytest
+from pymavlink import mavutil
 
-from quadguide.link.crsf import (
-    build_frame, CRSFParser,
-    CRSF_ATTITUDE, CRSF_FLIGHT_MODE, CRSF_IMU_RAW, CRSF_RC_CHANNELS,
-)
-from quadguide.link.worker import _LinkState, _rx_loop
-from quadguide.core.messages import AttitudeState, IMUFrame
+from quadguide.link.worker import _ArmController, _LinkState, latch_yaw
 
 
-class _FakeSerial:
-    """Async-generator serial stub that yields a fixed byte sequence once."""
-    def __init__(self, data: bytes):
-        self._data = data
+# ── _ArmController ───────────────────────────────────────────────────────────
 
-    async def read_stream(self):
-        for b in self._data:
-            yield b
+def test_arm_controller_silent_when_steady_disarmed():
+    arm = _ArmController(retry_count=3, resend_every_ticks=2)
+    assert arm.on_arm_state(False) is None
+    assert arm.on_arm_state(False) is None
 
 
-class _FakeBus:
-    def __init__(self):
-        self.published: list[tuple[str, object]] = []
-
-    def publish(self, topic: str, msg) -> None:
-        self.published.append((topic, msg))
-
-    def latest(self, topic: str):
-        return None
+def test_arm_controller_emits_arm_on_rising_edge():
+    arm = _ArmController(retry_count=3, resend_every_ticks=2)
+    assert arm.on_arm_state(True) is True
 
 
-def _run_rx(data: bytes) -> _FakeBus:
-    serial = _FakeSerial(data)
-    bus    = _FakeBus()
-    state  = _LinkState()
-    log    = logging.getLogger("test")
-    asyncio.run(_rx_loop(serial, CRSFParser(), state, bus, log))
-    return bus
+def test_arm_controller_emits_disarm_on_falling_edge():
+    arm = _ArmController(retry_count=3, resend_every_ticks=2)
+    arm.on_arm_state(True)
+    arm.on_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+               mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert arm.on_arm_state(False) is False
 
 
-def test_rx_loop_publishes_attitude():
-    payload = struct.pack(">hhh", 1000, 500, -200)  # pitch, roll, yaw
-    bus = _run_rx(build_frame(CRSF_ATTITUDE, payload))
-
-    att_msgs = [m for t, m in bus.published if t == "fc/attitude"]
-    assert len(att_msgs) == 1
-    assert isinstance(att_msgs[0], AttitudeState)
-    assert att_msgs[0].pitch_rad == pytest.approx(0.1,   rel=1e-4)
-    assert att_msgs[0].roll_rad  == pytest.approx(0.05,  rel=1e-4)
-    assert att_msgs[0].yaw_rad   == pytest.approx(-0.02, rel=1e-4)
-
-
-def test_rx_loop_publishes_imu():
-    payload = struct.pack(">hhhhhh", 0, 0, 1000, 1800, 0, 0)
-    bus = _run_rx(build_frame(CRSF_IMU_RAW, payload))
-
-    imu_msgs = [m for t, m in bus.published if t == "fc/imu"]
-    assert len(imu_msgs) == 1
-    assert isinstance(imu_msgs[0], IMUFrame)
-    assert imu_msgs[0].az == pytest.approx(9.80665, rel=1e-5)
-    assert imu_msgs[0].gx == pytest.approx(math.pi, rel=1e-5)
+def test_arm_controller_resends_until_retries_exhausted():
+    arm = _ArmController(retry_count=2, resend_every_ticks=2)
+    assert arm.on_arm_state(True) is True   # edge
+    assert arm.on_arm_state(True) is None   # tick 1
+    assert arm.on_arm_state(True) is True   # tick 2 → resend (retries 2→1)
+    assert arm.on_arm_state(True) is None   # tick 1
+    assert arm.on_arm_state(True) is True   # tick 2 → resend (retries 1→0)
+    assert arm.on_arm_state(True) is None   # exhausted
+    assert arm.on_arm_state(True) is None
 
 
-def test_rx_loop_imu_then_attitude_uses_gyro_for_rates():
-    imu_payload = struct.pack(">hhhhhh", 0, 0, 0, 1800, 0, 0)  # gx = π rad/s
-    att_payload = struct.pack(">hhh", 0, 0, 0)
-    data = build_frame(CRSF_IMU_RAW, imu_payload) + build_frame(CRSF_ATTITUDE, att_payload)
-
-    bus = _run_rx(data)
-
-    att_msgs = [m for t, m in bus.published if t == "fc/attitude"]
-    assert len(att_msgs) == 1
-    assert att_msgs[0].roll_rate_rps == pytest.approx(math.pi, rel=1e-5)
+def test_arm_controller_stops_after_ack():
+    arm = _ArmController(retry_count=5, resend_every_ticks=2)
+    assert arm.on_arm_state(True) is True
+    arm.on_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+               mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert arm.on_arm_state(True) is None
+    assert arm.on_arm_state(True) is None
 
 
-def test_rx_loop_decodes_flight_mode_into_state():
-    serial = _FakeSerial(build_frame(CRSF_FLIGHT_MODE, b"ANGLE\x00"))
-    bus    = _FakeBus()
-    state  = _LinkState()
-    log    = logging.getLogger("test")
-    asyncio.run(_rx_loop(serial, CRSFParser(), state, bus, log))
-    assert state.flight_mode == "ANGLE"
+def test_arm_controller_ignores_unrelated_ack():
+    arm = _ArmController(retry_count=5, resend_every_ticks=1)
+    arm.on_arm_state(True)
+    arm.on_ack(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+               mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert arm.on_arm_state(True) is True   # still pending → resends
 
 
-def test_rx_loop_ignores_unknown_frames():
-    bus = _run_rx(build_frame(CRSF_RC_CHANNELS, bytes(22)))
-    assert not any(t == "fc/attitude" for t, _ in bus.published)
-    assert not any(t == "fc/imu" for t, _ in bus.published)
+# ── latch_yaw ────────────────────────────────────────────────────────────────
+
+def test_latch_yaw_latches_on_arm_edge():
+    assert latch_yaw(armed=True, prev_armed=False, last_yaw=0.7, held=0.0) == pytest.approx(0.7)
+
+
+def test_latch_yaw_holds_between_ticks():
+    assert latch_yaw(True, True, 1.2, 0.7) == pytest.approx(0.7)
+
+
+def test_latch_yaw_zero_when_no_attitude_yet():
+    assert latch_yaw(True, False, None, 0.0) == 0.0
+
+
+def test_latch_yaw_keeps_held_while_disarmed():
+    assert latch_yaw(False, True, 0.9, 0.7) == pytest.approx(0.7)
+
+
+# ── _LinkState ───────────────────────────────────────────────────────────────
+
+def test_link_state_defaults():
+    s = _LinkState()
+    assert s.have_heartbeat is False
+    assert s.have_raw_imu is False
+    assert s.last_yaw is None
+    assert s.target_system == 0
+    assert s.target_component == 0

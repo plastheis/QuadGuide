@@ -1,170 +1,64 @@
 from __future__ import annotations
-import asyncio
-import logging
-import signal
 
-from quadguide.core.clock import monotonic_ns
-from quadguide.core.logging import setup_logging
-from quadguide.core.messages import HealthReport, ProcessState
-from quadguide.link.crsf import (
-    CRSF_ATTITUDE, CRSF_FLIGHT_MODE, CRSF_IMU_RAW, CRSFParser,
-)
-from quadguide.link.fc import (
-    ChannelConfig, channel_config_from_cfg,
-    decode_attitude, decode_flight_mode, decode_imu, encode_rc,
-)
-from quadguide.link.serial_port import SerialPort
-from quadguide.link.tcp_serial import TCPSerialPort
+from pymavlink import mavutil
 
 
 class _LinkState:
-    """Per-connection mutable state shared between RX handlers."""
+    """Per-connection mutable state shared between the RX/TX loops."""
 
     def __init__(self) -> None:
-        self.have_imu_frame: bool = False
-        self.last_gyro: tuple[float, float, float] | None = None
-        self.flight_mode: str = ""
+        self.target_system: int = 0
+        self.target_component: int = 0
+        self.have_heartbeat: bool = False
+        self.have_raw_imu: bool = False
+        self.last_yaw: float | None = None
+        self.fc_armed: bool = False
+        self.fc_mode: int = -1
 
 
-async def _rx_loop(serial, parser: CRSFParser, state: _LinkState,
-                   bus, log: logging.Logger) -> None:
-    async for byte in serial.read_stream():
-        frame = parser.feed(byte)
-        if frame is None:
-            continue
+class _ArmController:
+    """Edge-triggered MAVLink arm/disarm with bounded retransmits until ACK.
 
-        if frame.type == CRSF_IMU_RAW:
-            imu = decode_imu(frame)
-            state.last_gyro = (imu.gx, imu.gy, imu.gz)
-            if not state.have_imu_frame:
-                state.have_imu_frame = True
-                log.info("0x80 IMU RAW frame detected — using gyro for body rates")
-            bus.publish("fc/imu", imu)
-
-        elif frame.type == CRSF_ATTITUDE:
-            att = decode_attitude(frame, state.have_imu_frame, state.last_gyro)
-            bus.publish("fc/attitude", att)
-
-        elif frame.type == CRSF_FLIGHT_MODE:
-            mode = decode_flight_mode(frame)
-            if mode != state.flight_mode:
-                log.info("FC flight mode → %s", mode)
-                state.flight_mode = mode
-
-
-async def _tx_loop(serial, bus, tx_rate_hz: float,
-                   ch_cfg: ChannelConfig, log: logging.Logger, trace) -> None:
-    interval = 1.0 / tx_rate_hz
-    prev_armed = None
-    i = 0
-    while True:
-        cmd     = bus.latest("control/cmd")
-        arm_cmd = bus.latest("arm/cmd")
-        armed   = arm_cmd.armed if arm_cmd else False
-        if armed != prev_armed:
-            log.info("arm state → %s", "ARMED" if armed else "DISARMED")
-            prev_armed = armed
-        await serial.write(encode_rc(cmd, armed, ch_cfg))
-        # Actuation point: glass→TX latency for the command just sent to the FC.
-        now = monotonic_ns()
-        if cmd is not None and cmd.origin_ns > 0:
-            trace.latency(now, cmd.timestamp_ns, cmd.origin_ns)
-        i += 1
-        if i % 25 == 0:  # ~2 Hz at 50 Hz TX
-            trace.state(now, armed=armed)
-        await asyncio.sleep(interval)
-
-
-async def _health_loop(bus, state: _LinkState, log: logging.Logger, trace) -> None:
-    while True:
-        bus.publish(
-            "system/health",
-            HealthReport(monotonic_ns(), "link", ProcessState.OK, state.flight_mode),
-        )
-        trace.health(monotonic_ns(), "ok", state.flight_mode)
-        await asyncio.sleep(0.2)
-
-
-def _serial_factory(config: dict, log: logging.Logger):
-    """Pick the link transport from platform.serial.mode.
-
-    Returns ``(make_serial, label)`` where ``make_serial()`` builds a fresh
-    port each reconnect. "uart" → real CRSF over UART; "tcp" → CRSF over a TCP
-    socket to the dev machine's HIL bridge. Both satisfy the same async port
-    interface, so the RX/TX loops below are transport-agnostic.
+    Call `on_arm_state(desired)` once per TX tick with the latest arm/cmd state.
+    It returns the arm value (True/False) to transmit this tick, or None to send
+    nothing. On a new edge it emits immediately, then re-emits every
+    `resend_every_ticks` ticks up to `retry_count` times until `on_ack` confirms.
     """
-    scfg = config["platform"]["serial"]
-    mode = scfg.get("mode", "uart")
-    if mode == "tcp":
-        host = scfg["tcp_host"]
-        port = scfg["tcp_port"]
-        log.info(f"HIL: CRSF over TCP → {host}:{port}")
-        return (lambda: TCPSerialPort(host, port), f"tcp {host}:{port}")
-    if mode != "uart":
-        raise ValueError(f"Unknown serial mode {mode!r}. Valid values: 'uart', 'tcp'")
-    dev  = scfg["port"]
-    baud = scfg["baud"]
-    return (lambda: SerialPort(dev, baud), f"uart {dev} @ {baud}")
+
+    def __init__(self, retry_count: int, resend_every_ticks: int) -> None:
+        self._desired: bool = False          # assume disarmed at startup; no spurious cmd
+        self._acked: bool = True
+        self._retries_left: int = 0
+        self._ticks: int = 0
+        self._retry_count = retry_count
+        self._resend_every = resend_every_ticks
+
+    def on_arm_state(self, desired: bool) -> bool | None:
+        if desired != self._desired:
+            self._desired = desired
+            self._acked = False
+            self._retries_left = self._retry_count
+            self._ticks = 0
+            return desired
+        if self._acked or self._retries_left <= 0:
+            return None
+        self._ticks += 1
+        if self._ticks >= self._resend_every:
+            self._ticks = 0
+            self._retries_left -= 1
+            return self._desired
+        return None
+
+    def on_ack(self, command: int, result: int) -> None:
+        if (command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
+                and result == mavutil.mavlink.MAV_RESULT_ACCEPTED):
+            self._acked = True
 
 
-async def _run_async(config: dict, bus) -> None:
-    from quadguide.core.config import cfg_diag
-    from quadguide.core.diagtrace import DiagTrace
-
-    log        = setup_logging("link", config)
-    tx_rate_hz = config["link"]["tx_rate_hz"]
-    ch_cfg     = channel_config_from_cfg(config)
-    make_serial, transport = _serial_factory(config, log)
-
-    dcfg = cfg_diag(config)
-    trace = DiagTrace("link", enabled=dcfg.trace,
-                      dir=dcfg.trace_dir, max_rows=dcfg.trace_max_rows)
-
-    loop = asyncio.get_running_loop()
-
-    def _on_sigterm(*_):
-        for task in asyncio.all_tasks(loop):
-            task.cancel()
-
-    signal.signal(signal.SIGTERM, _on_sigterm)
-
-    while True:
-        serial = make_serial()
-        tasks: list[asyncio.Task] = []
-        state = _LinkState()
-        try:
-            await serial.open()
-            log.info(f"Link opened ({transport})")
-
-            tasks = [
-                asyncio.create_task(_rx_loop(serial, CRSFParser(), state, bus, log)),
-                asyncio.create_task(_tx_loop(serial, bus, tx_rate_hz, ch_cfg, log, trace)),
-                asyncio.create_task(_health_loop(bus, state, log, trace)),
-            ]
-            await asyncio.gather(*tasks)
-
-        except ConnectionError as exc:
-            log.error(f"Serial error: {exc}")
-            bus.publish("system/health",
-                        HealthReport(monotonic_ns(), "link", ProcessState.DEGRADED, ""))
-
-        except asyncio.CancelledError:
-            break
-
-        finally:
-            for t in tasks:
-                t.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            serial.close()
-
-        log.info("Reconnecting in 500 ms...")
-        await asyncio.sleep(0.5)
-
-    trace.flush()
-    bus.detach()
-    log.info("Link worker stopped.")
-
-
-def run(config: dict, bus) -> None:
-    asyncio.run(_run_async(config, bus))
+def latch_yaw(
+    armed: bool, prev_armed: bool, last_yaw: float | None, held: float
+) -> float:
+    """Hold-heading: latch the current yaw on the disarmed->armed edge; else keep."""
+    if armed and not prev_armed:
+        return last_yaw if last_yaw is not None else 0.0
+    return held
