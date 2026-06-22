@@ -5,10 +5,15 @@ Decoders take a parsed pymavlink message plus the monotonic receive timestamp
 codec `mav` object and return packed MAVLink2 bytes.
 """
 from __future__ import annotations
+import math
 
 from pymavlink import mavutil
 
-from quadguide.core.messages import AttitudeState, IMUFrame
+from quadguide.core.messages import AttitudeState, ControlCmd, IMUFrame
+from quadguide.link.mavlink_codec import (
+    ATT_TARGET_IGNORE_RATES, MAV_AUTOPILOT_NONE, MAV_TYPE_COMPANION,
+    euler_to_quaternion,
+)
 
 _G_MPS2 = 9.80665
 
@@ -47,15 +52,6 @@ def decode_heartbeat(msg) -> tuple[bool, int]:
     """HEARTBEAT → (armed, custom_mode)."""
     armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
     return armed, msg.custom_mode
-
-
-import math
-
-from quadguide.core.messages import ControlCmd
-from quadguide.link.mavlink_codec import (
-    ATT_TARGET_IGNORE_RATES, MAV_AUTOPILOT_NONE, MAV_TYPE_COMPANION,
-    euler_to_quaternion,
-)
 
 
 def encode_attitude_target(

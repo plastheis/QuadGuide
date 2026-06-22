@@ -2,9 +2,15 @@ import math
 import pytest
 from pymavlink import mavutil
 
-from quadguide.link.mavlink_codec import make_mav
-from quadguide.link.fc import decode_attitude, decode_heartbeat, decode_imu
-from quadguide.core.messages import AttitudeState, IMUFrame
+from quadguide.link.mavlink_codec import (
+    ATT_TARGET_IGNORE_RATES, MSG_ID_ATTITUDE, euler_to_quaternion, make_mav,
+)
+from quadguide.link.fc import (
+    decode_attitude, decode_heartbeat, decode_imu,
+    encode_arm, encode_attitude_target, encode_heartbeat,
+    encode_set_message_interval,
+)
+from quadguide.core.messages import AttitudeState, ControlCmd, IMUFrame
 
 _G = 9.80665
 
@@ -80,17 +86,6 @@ def test_decode_heartbeat_disarmed(mav):
     assert mode == 0
 
 
-import math as _math
-from quadguide.link.mavlink_codec import (
-    ATT_TARGET_IGNORE_RATES, MSG_ID_ATTITUDE, euler_to_quaternion,
-)
-from quadguide.link.fc import (
-    encode_arm, encode_attitude_target, encode_heartbeat,
-    encode_set_message_interval,
-)
-from quadguide.core.messages import ControlCmd
-
-
 def _roundtrip(data: bytes):
     """Parse packed MAVLink2 bytes back into a message via a fresh codec."""
     rx = make_mav(1, 1)
@@ -119,7 +114,7 @@ def test_encode_attitude_target_clamps_roll_to_limit(mav):
     cmd = ControlCmd(0, roll_deg=90.0, pitch_deg=0.0, yaw_rate_dps=0.0, throttle_norm=0.0)
     msg = _roundtrip(encode_attitude_target(
         mav, cmd, 0.0, 1, 1, max_roll_deg=35.0, max_pitch_deg=35.0, now_ms=0))
-    expected = euler_to_quaternion(_math.radians(35.0), 0.0, 0.0)
+    expected = euler_to_quaternion(math.radians(35.0), 0.0, 0.0)
     assert list(msg.q) == pytest.approx(list(expected), abs=1e-5)
 
 
@@ -138,10 +133,10 @@ def test_encode_attitude_target_none_is_level_zero_thrust(mav):
 def test_encode_attitude_target_bakes_yaw_hold(mav):
     cmd = ControlCmd(0, 0.0, 0.0, 0.0, 0.0)
     msg = _roundtrip(encode_attitude_target(
-        mav, cmd, yaw_hold=_math.pi / 2, target_sys=1, target_comp=1,
+        mav, cmd, yaw_hold=math.pi / 2, target_sys=1, target_comp=1,
         max_roll_deg=35.0, max_pitch_deg=35.0, now_ms=0))
     assert list(msg.q) == pytest.approx(
-        [_math.sqrt(0.5), 0.0, 0.0, _math.sqrt(0.5)], abs=1e-6)
+        [math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)], abs=1e-6)
 
 
 # ── encode_arm ───────────────────────────────────────────────────────────────
