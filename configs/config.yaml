@@ -10,11 +10,13 @@ platform:
     fps: 60
     url: "http://192.168.1.100:8090/camera"   # used when backend=network — dev-machine MJPEG stream
   serial:
-    mode: uart            # "uart" (real FC) | "tcp" (HIL — CRSF over TCP)
+    # MAVLink2 link to the ArduPilot FC. HIL: set mode=tcp (+ camera backend) to
+    # drive the stack from ArduPilot SITL instead of real hardware.
+    mode: uart            # "uart" (real FC) | "tcp" (HIL — MAVLink2 over TCP to SITL)
     port: /dev/ttyAMA0    # used when mode=uart — UART device path, change per SBC
-    baud: 420000          # CRSF standard — do not change without matching FC config
-    tcp_host: "192.168.1.100"   # used when mode=tcp — dev-machine CRSF bridge host
-    tcp_port: 42000             # used when mode=tcp — dev-machine CRSF bridge port
+    baud: 115200          # H743 MAVLink2 baud — TODO confirm SERIALn_BAUD (115200 vs 921600)
+    tcp_host: "127.0.0.1" # used when mode=tcp — ArduPilot SITL host
+    tcp_port: 5760        # used when mode=tcp — SITL MAVLink TCP port
     rx_pin: "GPIO15"      # wiring reference only — not used by driver
     tx_pin: "GPIO14"      # wiring reference only — not used by driver
   realtime:
@@ -57,21 +59,14 @@ watchdog:
   guidance_accel_ms: 100
 
 link:
-  tx_rate_hz: 50          # RC channels uplink rate to FC (Hz) — must stay constant to keep FC out of failsafe
-  diff_lowpass_alpha: 0.3 # LP filter alpha for attitude-derived body rates (0=heavy smooth, 1=raw)
-  channels:
-    # madflight channel calibration (µs). Used by encode_rc to map ControlCmd to CRSF ticks.
-    roll:        {min_us: 1100, mid_us: 1500, max_us: 1900}
-    pitch:       {min_us: 1100, mid_us: 1500, max_us: 1900}
-    throttle:    {min_us: 1100, max_us: 1900}
-    yaw:         {min_us: 1100, mid_us: 1500, max_us: 1900}
-    arm:         {disarmed_us: 988, armed_us: 2012}
-    flight_mode: {mode_index: 4, positions_us: [1165, 1295, 1425, 1555, 1685, 1815]}
-    # Full-stick scale — must match madflight constants exactly.
-    # Rate mode (mode_index 0-3): roll_pitch_scale = maxRollRate = 60 dps, yaw_rate_scale = maxYawRate = 160 dps
-    # Angle mode (mode_index 4-5): roll_pitch_scale = maxRoll = 30 deg, yaw_rate_scale = maxYawRate = 160 dps
-    roll_pitch_scale: 30.0
-    yaw_rate_scale: 160.0
+  tx_rate_hz: 50          # SET_ATTITUDE_TARGET stream rate (Hz) — keep constant to hold GUIDED setpoints
+  stream_rate_hz: 50      # requested ATTITUDE + RAW_IMU telemetry rate (Hz)
+  system_id: 1            # quadguide MAVLink source system id
+  component_id: 191       # MAV_COMP_ID_ONBOARD_COMPUTER
+  target_system: 1        # FC system id (corrected at runtime from the first HEARTBEAT)
+  target_component: 1     # MAV_COMP_ID_AUTOPILOT1
+  arm_retry_count: 5      # arm/disarm COMMAND_LONG retransmits before giving up
+  heartbeat_wait_s: 5.0   # max wait for the first FC HEARTBEAT before requesting streams
 
 mission:
   mode: bench_hil             # "flight" | "bench_hil" | "swil"
