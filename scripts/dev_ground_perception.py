@@ -29,11 +29,16 @@ def main() -> None:
     parser.add_argument("--config", default="configs/config.yaml")
     parser.add_argument("--log", action="store_true",
                         help="Write a post-run latency/state trace for offline analysis")
+    parser.add_argument("--minimal", action="store_true",
+                        help="Serve the minimal kiosk UI (ground.ui_mode=minimal)")
     args = parser.parse_args()
 
     config = load_config(args.config, {})
     config["platform"]["camera"]["backend"] = "v4l2"
-    config["ground"] = {"port": args.port}
+    config.setdefault("ground", {})
+    config["ground"]["port"] = args.port
+    if args.minimal:
+        config["ground"]["ui_mode"] = "minimal"
 
     if args.log:
         from quadguide.core.diagtrace import resolve_trace_dir

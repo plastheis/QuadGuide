@@ -88,3 +88,7 @@ logging:
 
 bus:
   ring_depth: 8
+
+ground:
+  port: 8080
+  ui_mode: verbose      # "verbose" (full HUD) | "minimal" (800x480 kiosk)
