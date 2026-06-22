@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CRSF RC uplink transmitter test (bus-based).
+"""MAVLink2 uplink transmitter test (bus-based).
 
 Starts the link worker and publishes ControlCmd/ArmCmd through the bus at a
 fixed rate. The link worker handles the µs→ticks conversion and serial writes.
@@ -37,7 +37,7 @@ def main():
     cfg        = load_config(_CONFIG_PATH, {})
     serial_cfg = cfg["platform"]["serial"]
 
-    parser = argparse.ArgumentParser(description="CRSF RC uplink test (via bus)")
+    parser = argparse.ArgumentParser(description="MAVLink2 uplink test (via bus)")
     parser.add_argument("--rate",          type=float, default=50.0,
                         help="Publish rate in Hz (default: 50)")
     parser.add_argument("--arm",           action="store_true",

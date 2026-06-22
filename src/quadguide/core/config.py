@@ -105,8 +105,8 @@ class SerialConfig:
     port: str
     baud: int
     mode: str = "uart"          # "uart" | "tcp" (HIL); selects the link transport
-    tcp_host: str = ""          # used when mode=tcp — dev-machine CRSF bridge host
-    tcp_port: int = 0           # used when mode=tcp — dev-machine CRSF bridge port
+    tcp_host: str = ""          # used when mode=tcp — dev-machine ArduPilot SITL host
+    tcp_port: int = 0           # used when mode=tcp — dev-machine ArduPilot SITL port
 
 
 @dataclass(frozen=True)

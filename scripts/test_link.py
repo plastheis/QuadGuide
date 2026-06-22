@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Combined CRSF link test — single link worker, RX and TX together.
+"""Combined MAVLink2 link test — single link worker, RX and TX together.
 
 Starts one link worker process that owns the serial port. The main process
 publishes ControlCmd/ArmCmd through the bus and prints incoming fc/attitude
@@ -60,7 +60,7 @@ def main():
     serial_cfg = cfg["platform"]["serial"]
 
     parser = argparse.ArgumentParser(
-        description="CRSF link test — single link worker, combined RX+TX"
+        description="MAVLink2 link test — single link worker, combined RX+TX"
     )
     parser.add_argument("--rate",          type=float, default=50.0,
                         help="TX publish rate in Hz (default: 50)")
@@ -117,7 +117,7 @@ def main():
 
     # ── header ─────────────────────────────────────────────────────────────
     _sep("═")
-    print(f"  CRSF link test  |  {serial_cfg['port']} @ {serial_cfg['baud']} baud"
+    print(f"  MAVLink2 link test  |  {serial_cfg['port']} @ {serial_cfg['baud']} baud"
           f"  |  TX {args.rate:.0f} Hz  |  press Ctrl+C to stop")
     if args.arm:
         print(f"  Arming: {args.pre_arm_secs:.0f}s uplink → {args.arm_secs:.0f}s armed/thr=0"

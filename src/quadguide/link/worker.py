@@ -266,7 +266,10 @@ async def _run_async(config: dict, bus) -> None:
             ]
             await asyncio.gather(*tasks)
 
-        except ConnectionError as exc:
+        # Catch both TCP connection errors (ConnectionError) and serial/UART
+        # errors (SerialException -> OSError) so the reconnect loop recovers
+        # from any transport I/O failure.
+        except (ConnectionError, OSError) as exc:
             log.error(f"Serial error: {exc}")
             bus.publish("system/health",
                         HealthReport(monotonic_ns(), "link", ProcessState.DEGRADED, ""))

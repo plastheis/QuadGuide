@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Live CRSF telemetry monitor (bus-based).
+"""Live MAVLink2 telemetry monitor (bus-based).
 
 Starts the link worker and reads fc/attitude and fc/imu from the bus, printing
 all 9 telemetry values: 3 attitude angles, 3 accelerometer values, 3 body rates.
-Use this to verify CRSF telemetry is reaching the companion computer before
+Use this to verify MAVLink2 telemetry is reaching the companion computer before
 starting the full stack. The FC must be receiving an uplink (e.g. from
 test_link_tx.py) to send telemetry back.
 
@@ -32,7 +32,7 @@ def main():
     cfg        = load_config(_CONFIG_PATH, {})
     serial_cfg = cfg["platform"]["serial"]
 
-    parser = argparse.ArgumentParser(description="CRSF telemetry monitor (via bus)")
+    parser = argparse.ArgumentParser(description="MAVLink2 telemetry monitor (via bus)")
     parser.add_argument("--duration", type=float, default=None,
                         help="Stop after N seconds (default: run forever)")
     args = parser.parse_args()

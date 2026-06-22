@@ -202,9 +202,9 @@
       </div>
     </div>
 
-    <!-- FC / ATTITUDE (CRSF telemetry) -->
+    <!-- FC / ATTITUDE (MAVLink2 telemetry) -->
     <div class="section">
-      <div class="sec-title">FC / ATTITUDE  <span style="color:#2a2a2a; font-size:9px">— CRSF LINK</span></div>
+      <div class="sec-title">FC / ATTITUDE  <span style="color:#2a2a2a; font-size:9px">— MAVLink2 LINK</span></div>
       <div id="att-grid">
         <div class="row"><span class="lbl">roll</span><span class="val dim" id="h-roll">—</span></div>
         <div class="row"><span class="lbl">pitch</span><span class="val dim" id="h-pitch">—</span></div>
@@ -422,7 +422,7 @@ sse.onmessage = (ev) => {
   set('h-bbox-xy',  d.bbox_x     != null ? f(d.bbox_x, 3)     + ' / ' + f(d.bbox_y, 3)     : null);
   set('h-bbox-wh',  d.bbox_w     != null ? f(d.bbox_w, 3)     + ' / ' + f(d.bbox_h, 3)     : null);
 
-  // attitude (CRSF link telemetry)
+  // attitude (MAVLink2 link telemetry)
   set('h-roll',       f(d.roll_deg,       1, '°'));
   set('h-pitch',      f(d.pitch_deg,      1, '°'));
   set('h-yaw',        f(d.yaw_deg,        1, '°'));

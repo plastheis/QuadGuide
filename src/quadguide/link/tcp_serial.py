@@ -3,8 +3,8 @@
 Drop-in replacement for link/serial_port.py:SerialPort. Implements the same
 async interface (open / read_stream / write / close / is_connected) so the link
 worker only chooses between the two by config (platform.serial.mode), with no
-change to the RX/TX loops. Raw CRSF bytes flow over the socket exactly as they
-would over the wire; the dev machine's CRSF bridge is the peer.
+change to the RX/TX loops. MAVLink2 bytes flow over the socket exactly as they
+would over the wire; the dev machine's ArduPilot SITL is the peer.
 
 Disconnect handling mirrors SerialPort: read_stream raises ConnectionError, so
 the worker reports DEGRADED health and runs its reconnect loop identically for

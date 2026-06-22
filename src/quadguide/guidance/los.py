@@ -21,8 +21,8 @@ def _body_rate_correction(
 class LOSRateEstimator:
     """Line-of-sight rate estimator with lock-on seq reset and body-rate derotation.
 
-    Body rates come directly from the FC's 0x80 IMU gyro (NED body axes),
-    NOT from differentiated Euler angles.
+    Body rates come directly from the FC's MAVLink ATTITUDE message (#30)
+    which contains rotation rates natively (NED body axes).
     """
 
     def __init__(self, fov_horizontal_rad: float, aspect: float) -> None:
