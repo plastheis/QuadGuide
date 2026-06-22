@@ -3,7 +3,7 @@
 SBC-resident flight guidance stack for a manual lock-on target-tracking
 quadcopter. Runs on a companion computer (RK3588 target) on the airframe:
 camera → object tracker → proportional-navigation / pure-pursuit guidance →
-roll/pitch setpoints to a madflight FC over UART (CRSF). See
+roll/pitch attitude setpoints to an ArduPilot FC (H743) over UART (MAVLink2). See
 [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design.
 
 ## Running
