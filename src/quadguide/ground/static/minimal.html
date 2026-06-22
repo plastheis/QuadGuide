@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>quadguide kiosk</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 800px; height: 480px; overflow: hidden;
+    background: #000; color: #e0e0e0; font-family: monospace;
+  }
+  #app { display: flex; width: 800px; height: 480px; }
+
+  /* Left strip: 5 health boxes (fill height) + latency block */
+  #left { width: 160px; height: 480px; display: flex; flex-direction: column;
+          gap: 4px; padding: 4px; }
+  #health { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+  .mod { flex: 1; border-radius: 3px; display: flex; align-items: center;
+         justify-content: center; font-size: 14px; letter-spacing: 2px;
+         text-transform: uppercase; color: #000; font-weight: bold;
+         background: #444; transition: background-color 120ms linear;
+         user-select: none; }
+  .mod.uninit   { background: #444; color: #888; }
+  .mod.ok       { background: #2ecc40; color: #000; }
+  .mod.degraded { background: #ffdc00; color: #000; }
+  .mod.failsafe,
+  .mod.dead     { background: #ff4136; color: #000; }
+
+  #latency { flex-shrink: 0; background: #181818; border: 1px solid #2a2a2a;
+             padding: 6px; text-align: center; }
+  #latency .lbl { color: #888; font-size: 10px; letter-spacing: 1px; }
+  #lat-avg { font-size: 24px; color: #0f0; line-height: 1.1; }
+  #lat-avg.warn   { color: #fa0; }
+  #lat-avg.danger { color: #f44; }
+  #lat-latest { font-size: 11px; color: #888; }
+
+  /* Main feed: native 640x480, flush right */
+  #feed { position: relative; width: 640px; height: 480px; }
+  #stream  { position: absolute; top: 0; left: 0; width: 640px; height: 480px; }
+  #overlay { position: absolute; top: 0; left: 0; width: 640px; height: 480px;
+             pointer-events: none; }
+  #pip { position: absolute; top: 0; right: 0; width: 160px; height: 160px;
+         border: 1px solid #2a2a2a; background: #000; }
+
+  /* On-screen status text */
+  .status { position: absolute; left: 0; width: 640px; text-align: center;
+            font-weight: bold; letter-spacing: 3px; pointer-events: none;
+            text-shadow: 0 0 4px #000, 0 0 4px #000; }
+  #armed { top: 10px; font-size: 26px; color: #ff4136; display: none; }
+  #lock  { bottom: 10px; font-size: 24px; display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="left">
+    <div id="health">
+      <div class="mod uninit" data-mod="camera">CAM</div>
+      <div class="mod uninit" data-mod="tracker">TRK</div>
+      <div class="mod uninit" data-mod="link">LINK</div>
+      <div class="mod uninit" data-mod="guidance">GUID</div>
+      <div class="mod uninit" data-mod="control">CTRL</div>
+    </div>
+    <div id="latency">
+      <div class="lbl">LATENCY ms</div>
+      <div id="lat-avg">&mdash;</div>
+      <div id="lat-latest">&mdash;</div>
+    </div>
+  </div>
+
+  <div id="feed">
+    <img id="stream" src="/stream" alt="stream">
+    <canvas id="overlay" width="640" height="480"></canvas>
+    <canvas id="pip" width="160" height="160"></canvas>
+    <div id="armed" class="status">ARMED</div>
+    <div id="lock" class="status"></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+const W = 640, H = 480;
+const streamImg = document.getElementById('stream');
+const overlay = document.getElementById('overlay');
+const octx = overlay.getContext('2d');
+const pip = document.getElementById('pip');
+const pctx = pip.getContext('2d');
+pctx.imageSmoothingEnabled = false;
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// ── Crosshair (same model as the verbose UI) ───────────────────────────────
+let crosshairSize = 160;
+const STEP = 20, MIN_SIZE = 40, MAX_SIZE = Math.min(W, H) - 20;
+
+function drawCrosshair() {
+  octx.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2, half = crosshairSize / 2;
+  octx.strokeStyle = '#00ff00';
+  octx.lineWidth = 2;
+  octx.beginPath();
+  octx.moveTo(0, cy);          octx.lineTo(cx - half, cy);
+  octx.moveTo(cx + half, cy);  octx.lineTo(W, cy);
+  octx.moveTo(cx, 0);          octx.lineTo(cx, cy - half);
+  octx.moveTo(cx, cy + half);  octx.lineTo(cx, H);
+  octx.stroke();
+  const arm = crosshairSize * 0.25;
+  const corners = [
+    [cx - half, cy - half,  arm, 0, 0,  arm],
+    [cx + half, cy - half, -arm, 0, 0,  arm],
+    [cx - half, cy + half,  arm, 0, 0, -arm],
+    [cx + half, cy + half, -arm, 0, 0, -arm],
+  ];
+  octx.beginPath();
+  for (const [ox, oy, dx1, dy1, dx2, dy2] of corners) {
+    octx.moveTo(ox + dx1, oy + dy1);
+    octx.lineTo(ox, oy);
+    octx.lineTo(ox + dx2, oy + dy2);
+  }
+  octx.stroke();
+}
+drawCrosshair();
+
+// ── PIP magnifier (client-side crop of the streamed frame) ─────────────────
+const PAD = 0.20, MIN_PIP = 48, MAX_PIP = 480;
+let trackState = { health: null, bx: 0, by: 0, bw: 0, bh: 0 };
+
+function pipCropRect() {
+  const h = trackState.health;
+  const locked = (h === 'nominal' || h === 'uncertain') && trackState.bh > 0;
+  if (locked) {
+    const cx = (trackState.bx + trackState.bw / 2) * W;
+    const cy = (trackState.by + trackState.bh / 2) * H;
+    const side = clamp(trackState.bh * H * (1 + 2 * PAD), MIN_PIP, MAX_PIP);
+    const sx = clamp(cx - side / 2, 0, W - side);
+    const sy = clamp(cy - side / 2, 0, H - side);
+    return [sx, sy, side];
+  }
+  const side = crosshairSize;
+  return [(W - side) / 2, (H - side) / 2, side];
+}
+
+function drawPip() {
+  if (!streamImg.complete || streamImg.naturalWidth === 0) return;
+  const [sx, sy, side] = pipCropRect();
+  pctx.clearRect(0, 0, 160, 160);
+  try {
+    pctx.drawImage(streamImg, sx, sy, side, side, 0, 0, 160, 160);
+  } catch (e) { /* frame not ready this tick */ }
+}
+// Cap PIP redraw at the MJPEG rate (~15 Hz); also redrawn on crosshair/SSE change.
+setInterval(drawPip, 1000 / 15);
+
+// ── On-screen status text ──────────────────────────────────────────────────
+let armState = false;
+const elArmed = document.getElementById('armed');
+const elLock  = document.getElementById('lock');
+
+function updateArmedText() { elArmed.style.display = armState ? 'block' : 'none'; }
+
+function updateLockText(health) {
+  let txt = '', color = '';
+  if (health === 'nominal' || health === 'uncertain') { txt = 'LOCK'; color = '#2ecc40'; }
+  else if (health === 'lost')      { txt = 'LOST'; color = '#ffdc00'; }
+  else if (health === 'acquiring') { txt = 'ACQ';  color = '#00ffff'; }
+  if (txt) { elLock.textContent = txt; elLock.style.color = color; elLock.style.display = 'block'; }
+  else     { elLock.style.display = 'none'; }
+}
+
+// ── Health column ──────────────────────────────────────────────────────────
+const MODULE_KEYS = ['camera', 'tracker', 'link', 'guidance', 'control'];
+function modStateClass(state) {
+  if (state === 'ok')       return 'ok';
+  if (state === 'degraded') return 'degraded';
+  if (state === 'failsafe' || state === 'dead') return 'failsafe';
+  return 'uninit';
+}
+function updateModuleHealth(health) {
+  for (const key of MODULE_KEYS) {
+    let state = null;
+    if (health) {
+      if (key === 'tracker') {
+        const k = Object.keys(health).find(k => k === 'tracker' || k.startsWith('tracker_'));
+        if (k) state = health[k];
+      } else if (key in health) {
+        state = health[key];
+      }
+    }
+    const el = document.querySelector(`.mod[data-mod="${key}"]`);
+    if (el) el.className = 'mod ' + modStateClass(state);
+  }
+}
+
+// ── Latency block ──────────────────────────────────────────────────────────
+const elLatAvg    = document.getElementById('lat-avg');
+const elLatLatest = document.getElementById('lat-latest');
+function updateLatency(latest, avg) {
+  elLatAvg.textContent = avg != null ? avg.toFixed(1) : '—';
+  elLatAvg.className = avg == null ? '' : avg > 100 ? 'danger' : avg > 50 ? 'warn' : '';
+  elLatLatest.textContent = latest != null ? 'now ' + latest.toFixed(1) : '—';
+}
+
+// ── SSE telemetry ──────────────────────────────────────────────────────────
+let lastHealth = null;
+const sse = new EventSource('/telemetry');
+sse.onmessage = (ev) => {
+  let d;
+  try { d = JSON.parse(ev.data); } catch { return; }
+  lastHealth = d.tracker_health;
+  trackState = {
+    health: d.tracker_health,
+    bx: d.bbox_x != null ? d.bbox_x : 0,
+    by: d.bbox_y != null ? d.bbox_y : 0,
+    bw: d.bbox_w != null ? d.bbox_w : 0,
+    bh: d.bbox_h != null ? d.bbox_h : 0,
+  };
+  updateLockText(d.tracker_health);
+  updateModuleHealth(d.health);
+  updateLatency(d.latency_ms, d.latency_avg_ms);
+  drawPip();
+};
+sse.onerror = () => { updateModuleHealth(null); };
+
+// ── Commands ───────────────────────────────────────────────────────────────
+function postJson(url, body) {
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  }).catch(() => {});
+}
+function sendLockon() {
+  const half = crosshairSize / 2;
+  postJson('/lockon', {
+    x: (W / 2 - half) / W,
+    y: (H / 2 - half) / H,
+    w: crosshairSize / W,
+    h: crosshairSize / H,
+  });
+}
+function toggleLock() {
+  // Direction derived from live tracker health so it self-heals across reload.
+  const active = lastHealth === 'nominal' || lastHealth === 'uncertain' || lastHealth === 'lost';
+  if (active) postJson('/reset_lockon', null);
+  else        sendLockon();
+}
+function sendArm(armed) {
+  armState = armed;
+  updateArmedText();
+  postJson('/arm', { armed });
+}
+
+// ── Keys (physical buttons / arm switch mapped to keys on the kiosk Pi) ─────
+document.addEventListener('keydown', (e) => {
+  if (e.key === '+' || e.key === '=') {
+    crosshairSize = clamp(crosshairSize + STEP, MIN_SIZE, MAX_SIZE);
+    drawCrosshair(); drawPip();
+  } else if (e.key === '-' || e.key === '_') {
+    crosshairSize = clamp(crosshairSize - STEP, MIN_SIZE, MAX_SIZE);
+    drawCrosshair(); drawPip();
+  } else if (e.key === 'Enter') {
+    toggleLock();
+  } else if (e.key === 'a') {
+    sendArm(true);
+  } else if (e.key === 'd') {
+    sendArm(false);
+  }
+});
+</script>
+</body>
+</html>
