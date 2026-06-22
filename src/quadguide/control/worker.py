@@ -17,7 +17,6 @@ __all__ = ["run"]
 
 _HEALTH_EVERY = 20   # iterations; 100 Hz / 20 = 5 Hz health rate
 _DT = 1.0 / 100      # nominal loop period (s); fixed, not measured per-loop
-_ARM_DWELL_NS = 2 * 1_000_000_000   # hold throttle=0 for this long after arming so the FC can latch
 
 
 def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
@@ -51,16 +50,13 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     signal.signal(signal.SIGTERM, _on_sigterm)
 
     armed = False
-    armed_since_ns: int | None = None
-    dwell_done = False
     in_failsafe = False
     i = 0
     log.info(
-        "control: started (100 Hz, core=%d, sched_fifo=%s, throttle_hold=%.2f, arm_dwell=%.1fs)",
+        "control: started (100 Hz, core=%d, sched_fifo=%s, throttle_hold=%.2f)",
         pcfg.realtime.control_cpu_core,
         pcfg.realtime.control_sched_fifo,
         gcfg.throttle_hold,
-        _ARM_DWELL_NS / 1e9,
     )
 
     while not stop:
@@ -74,18 +70,13 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
         if now_armed != armed:
             armed = now_armed
             if armed:
-                armed_since_ns = now_ns
-                dwell_done = False
-                log.info("control: ARMED — holding throttle=0 for %.1fs before commands", _ARM_DWELL_NS / 1e9)
+                log.info("control: ARMED — throttle gated by fire button")
             else:
-                armed_since_ns = None
-                dwell_done = False
                 log.info("control: DISARMED — throttle=0, commands suppressed")
 
-        if armed and not dwell_done and armed_since_ns is not None \
-                and (now_ns - armed_since_ns) >= _ARM_DWELL_NS:
-            dwell_done = True
-            log.info("control: arm dwell complete — throttle=%.2f, guidance commands live", gcfg.throttle_hold)
+        # Track fire state from ground station
+        fire_cmd = bus.latest("fire/cmd")
+        fire_active = bool(fire_cmd and fire_cmd.active)
 
         # Watchdog
         try:
@@ -104,11 +95,11 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
 
         accel = bus.latest("guidance/accel")
 
-        # Choose throttle: 0 while disarmed or within arm dwell; else throttle_hold
-        thr = gcfg.throttle_hold if (armed and dwell_done) else 0.0
+        # Choose throttle: armed + fire active → throttle_hold; else 0
+        thr = gcfg.throttle_hold if (armed and fire_active) else 0.0
 
-        # Choose attitude: only apply guidance when armed, dwell done, no failsafe, and accel present
-        if armed and dwell_done and fault is None and accel is not None:
+        # Choose attitude: only apply guidance when armed, no failsafe, and accel present
+        if armed and fault is None and accel is not None:
             roll, pitch = attitude_cmd_compute(accel)
             roll, pitch = saturate(roll, pitch, acfg.control_limits)
             roll, pitch = slew_rate(roll, pitch, prev_cmd, acfg.control_limits, _DT)
@@ -132,7 +123,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
                 "system/health",
                 HealthReport(monotonic_ns(), "control", proc_state, detail),
             )
-            trace.state(monotonic_ns(), armed=armed, dwell_done=dwell_done,
+            trace.state(monotonic_ns(), armed=armed, fire_active=fire_active,
                         in_failsafe=in_failsafe, fault=detail, throttle=thr)
 
     trace.flush()

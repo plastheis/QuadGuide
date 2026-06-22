@@ -7,10 +7,10 @@ __all__ = [
     "TrackerHealth", "ProcessState",
     "BoundingBox",
     "TrackerEstimate", "AttitudeState", "IMUFrame",
-    "AccelCmd", "ControlCmd", "LockOnCmd", "HealthReport", "ArmCmd",
+    "AccelCmd", "ControlCmd", "LockOnCmd", "HealthReport", "ArmCmd", "FireCmd",
     "FMT_TRACKER_ESTIMATE", "FMT_ATTITUDE_STATE",
     "FMT_IMU_FRAME", "FMT_ACCEL_CMD", "FMT_CONTROL_CMD",
-    "FMT_LOCKON_CMD", "FMT_HEALTH_REPORT", "FMT_ARM_CMD",
+    "FMT_LOCKON_CMD", "FMT_HEALTH_REPORT", "FMT_ARM_CMD", "FMT_FIRE_CMD",
 ]
 
 
@@ -77,6 +77,9 @@ FMT_HEALTH_REPORT = "!Q16sB"
 FMT_ARM_CMD = "!QB"
 # Q(8) + armed(B=1) = 9 bytes
 
+FMT_FIRE_CMD = "!QB"
+# Q(8) + active(B=1) = 9 bytes
+
 
 @dataclass(frozen=True)
 class BoundingBox:
@@ -94,6 +97,7 @@ _ST_CONTROL_CMD      = struct.Struct(FMT_CONTROL_CMD)
 _ST_LOCKON_CMD       = struct.Struct(FMT_LOCKON_CMD)
 _ST_HEALTH_REPORT    = struct.Struct(FMT_HEALTH_REPORT)
 _ST_ARM_CMD          = struct.Struct(FMT_ARM_CMD)
+_ST_FIRE_CMD         = struct.Struct(FMT_FIRE_CMD)
 
 
 @dataclass(frozen=True)
@@ -272,5 +276,19 @@ class ArmCmd:
     def unpack(cls, data: bytes) -> ArmCmd:
         ts, armed_b = _ST_ARM_CMD.unpack(data)
         return cls(timestamp_ns=ts, armed=bool(armed_b))
+
+
+@dataclass(frozen=True)
+class FireCmd:
+    timestamp_ns: int
+    active: bool
+
+    def pack(self) -> bytes:
+        return _ST_FIRE_CMD.pack(self.timestamp_ns, int(self.active))
+
+    @classmethod
+    def unpack(cls, data: bytes) -> FireCmd:
+        ts, active_b = _ST_FIRE_CMD.unpack(data)
+        return cls(timestamp_ns=ts, active=bool(active_b))
 
 

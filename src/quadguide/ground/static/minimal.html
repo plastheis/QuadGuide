@@ -47,6 +47,7 @@
             font-weight: bold; letter-spacing: 3px; pointer-events: none;
             text-shadow: 0 0 4px #000, 0 0 4px #000; }
   #armed { top: 10px; font-size: 26px; color: #ff4136; display: none; }
+  #fire  { top: 46px; font-size: 22px; color: #ff851b; display: none; }
   #lock  { bottom: 10px; font-size: 24px; display: none; }
 </style>
 </head>
@@ -72,6 +73,7 @@
     <canvas id="overlay" width="640" height="480"></canvas>
     <canvas id="pip" width="160" height="160"></canvas>
     <div id="armed" class="status">ARMED</div>
+    <div id="fire" class="status">FIRE</div>
     <div id="lock" class="status"></div>
   </div>
 </div>
@@ -153,10 +155,13 @@ setInterval(drawPip, 1000 / 15);
 
 // ── On-screen status text ──────────────────────────────────────────────────
 let armState = false;
+let fireActive = false;
 const elArmed = document.getElementById('armed');
+const elFire  = document.getElementById('fire');
 const elLock  = document.getElementById('lock');
 
 function updateArmedText() { elArmed.style.display = armState ? 'block' : 'none'; }
+function updateFireOverlay() { elFire.style.display = fireActive ? 'block' : 'none'; }
 
 function updateLockText(health) {
   let txt = '', color = '';
@@ -215,6 +220,10 @@ sse.onmessage = (ev) => {
     bh: d.bbox_h != null ? d.bbox_h : 0,
   };
   updateLockText(d.tracker_health);
+  if (d.fire_active != null && d.fire_active !== fireActive) {
+    fireActive = d.fire_active;
+    updateFireOverlay();
+  }
   updateModuleHealth(d.health);
   updateLatency(d.latency_ms, d.latency_avg_ms);
   drawPip();
@@ -248,6 +257,16 @@ function sendArm(armed) {
   armState = armed;
   updateArmedText();
   postJson('/arm', { armed });
+  // Auto-reset fire when disarming
+  if (!armed) sendFire(false);
+}
+function sendFire(active) {
+  fireActive = active;
+  updateFireOverlay();
+  postJson('/fire', { active });
+}
+function toggleFire() {
+  sendFire(!fireActive);
 }
 
 // ── Keys (physical buttons / arm switch mapped to keys on the kiosk Pi) ─────
@@ -264,6 +283,8 @@ document.addEventListener('keydown', (e) => {
     sendArm(true);
   } else if (e.key === 'd') {
     sendArm(false);
+  } else if (e.key === 'f' || e.key === 'F') {
+    toggleFire();
   }
 });
 </script>

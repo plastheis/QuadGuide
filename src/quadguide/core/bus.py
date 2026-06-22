@@ -16,6 +16,7 @@ from quadguide.core.messages import (
     LockOnCmd,        FMT_LOCKON_CMD,
     HealthReport,     FMT_HEALTH_REPORT,
     ArmCmd,           FMT_ARM_CMD,
+    FireCmd,          FMT_FIRE_CMD,
 )
 
 __all__ = ["Bus", "TOPICS"]
@@ -29,6 +30,7 @@ TOPICS: dict[str, tuple[type, str]] = {
     "lockon/cmd":           (LockOnCmd,       FMT_LOCKON_CMD),
     "system/health":        (HealthReport,    FMT_HEALTH_REPORT),
     "arm/cmd":              (ArmCmd,          FMT_ARM_CMD),
+    "fire/cmd":             (FireCmd,         FMT_FIRE_CMD),
 }
 
 

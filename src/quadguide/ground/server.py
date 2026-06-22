@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from quadguide.core.clock import monotonic_ns
-from quadguide.core.messages import ArmCmd, BoundingBox, HealthReport, LockOnCmd, ProcessState
+from quadguide.core.messages import ArmCmd, BoundingBox, FireCmd, HealthReport, LockOnCmd, ProcessState
 from quadguide.ground import overlay
 
 _STATIC      = Path(__file__).parent / "static"
@@ -98,6 +98,12 @@ def create_app(bus, frame_buffer, config: dict | None = None) -> FastAPI:
         request.app.state.bus.publish("arm/cmd", cmd)
         return {"ok": True}
 
+    @app.post("/fire")
+    async def fire(body: _FireBody, request: Request):
+        cmd = FireCmd(timestamp_ns=monotonic_ns(), active=body.active)
+        request.app.state.bus.publish("fire/cmd", cmd)
+        return {"ok": True}
+
     return app
 
 
@@ -110,6 +116,10 @@ class _LockOnBody(BaseModel):
 
 class _ArmBody(BaseModel):
     armed: bool
+
+
+class _FireBody(BaseModel):
+    active: bool
 
 
 async def _mjpeg(app: FastAPI):
@@ -139,6 +149,7 @@ async def _sse(app: FastAPI):
         imu      = app.state.bus.latest("fc/imu")
         accel    = app.state.bus.latest("guidance/accel")
         control  = app.state.bus.latest("control/cmd")
+        fire_cmd = app.state.bus.latest("fire/cmd")
         report   = app.state.bus.latest("system/health")
 
         # End-to-end glass→control latency from the propagated origin_ns.
@@ -189,6 +200,8 @@ async def _sse(app: FastAPI):
             "ctrl_pitch_deg":    control.pitch_deg      if control else None,
             "ctrl_yaw_rate_dps": control.yaw_rate_dps   if control else None,
             "ctrl_throttle":     control.throttle_norm   if control else None,
+            # fire/cmd
+            "fire_active":       bool(fire_cmd and fire_cmd.active),
             # system/health
             "health": dict(app.state.process_health),
             # latency

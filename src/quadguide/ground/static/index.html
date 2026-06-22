@@ -162,6 +162,7 @@
         <div class="kb"><span>[ r ]</span> reset lock-on</div>
         <div class="kb"><span>[ a ]</span> arm</div>
         <div class="kb"><span>[ d ]</span> disarm</div>
+        <div class="kb"><span>[ f ]</span> fire</div>
       </div>
     </div>
 
@@ -231,16 +232,18 @@
       </div>
     </div>
 
-    <!-- ARM CONTROL -->
+    <!-- ARM / FIRE CONTROL -->
     <div class="section">
-      <div class="sec-title">ARM CONTROL</div>
+      <div class="sec-title">ARM / FIRE CONTROL</div>
       <div style="display:flex; flex-direction:column; gap:6px;">
         <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
           <div class="row"><span class="lbl">arm&nbsp;</span><span class="val dim" id="h-arm-state">DISARMED</span></div>
+          <div class="row"><span class="lbl">fire&nbsp;</span><span class="val dim" id="h-fire-state">OFF</span></div>
         </div>
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
           <button class="btn" id="btn-arm">ARM</button>
           <button class="btn" id="btn-disarm">DISARM</button>
+          <button class="btn" id="btn-fire">FIRE OFF</button>
           <button class="btn" id="btn-reset" title="Reset lock-on and clear bounding box">RESET LOCK</button>
         </div>
       </div>
@@ -335,6 +338,8 @@ document.addEventListener('keydown', (e) => {
     sendArm(true);
   } else if (e.key === 'd') {
     sendArm(false);
+  } else if (e.key === 'f' || e.key === 'F') {
+    toggleFire();
   }
 });
 
@@ -449,6 +454,11 @@ sse.onmessage = (ev) => {
   const fpsClass = fps == null ? '' : fps < 10 ? 'warn' : '';
   set('h-video-fps', f(d.video_fps, 1, ' fps'), fpsClass);
 
+  // fire/cmd → fire state indicator (self-heals across reload)
+  if (d.fire_active != null) {
+    updateFireIndicator(d.fire_active);
+  }
+
   // system/health → module column
   updateModuleHealth(d.health);
 };
@@ -457,7 +467,7 @@ sse.onerror = () => {
   updateModuleHealth(null);
 };
 
-// ── Arm control ────────────────────────────────────────────────────────────
+// ── Arm / Fire control ──────────────────────────────────────────────────────
 
 function sendArm(armed) {
   fetch('/arm', {
@@ -469,11 +479,41 @@ function sendArm(armed) {
     el.textContent = armed ? 'ARMED' : 'DISARMED';
     el.className = 'val ' + (armed ? 'danger' : 'dim');
     document.getElementById('btn-arm').classList.toggle('armed', armed);
+    // Auto-reset fire when disarming
+    if (!armed) sendFire(false);
   }).catch(() => {});
+}
+
+let fireActive = false;
+
+function sendFire(active) {
+  fireActive = active;
+  fetch('/fire', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({active}),
+  }).then(r => r.json()).then(() => {
+    updateFireIndicator(active);
+  }).catch(() => {});
+}
+
+function toggleFire() {
+  sendFire(!fireActive);
+}
+
+function updateFireIndicator(active) {
+  fireActive = active;
+  const el = document.getElementById('h-fire-state');
+  el.textContent = active ? 'ON' : 'OFF';
+  el.className = 'val ' + (active ? 'danger' : 'dim');
+  const btn = document.getElementById('btn-fire');
+  btn.textContent = active ? 'FIRE ON' : 'FIRE OFF';
+  btn.classList.toggle('danger', active);
 }
 
 document.getElementById('btn-arm').addEventListener('click', () => sendArm(true));
 document.getElementById('btn-disarm').addEventListener('click', () => sendArm(false));
+document.getElementById('btn-fire').addEventListener('click', () => toggleFire());
 document.getElementById('btn-reset').addEventListener('click', () => sendReset());
 </script>
 </body>
