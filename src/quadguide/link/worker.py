@@ -1,6 +1,11 @@
 from __future__ import annotations
+import asyncio
+import logging
 
 from pymavlink import mavutil
+
+from quadguide.core.clock import monotonic_ns
+from quadguide.link.fc import decode_attitude, decode_heartbeat, decode_imu
 
 
 class _LinkState:
@@ -62,3 +67,42 @@ def latch_yaw(
     if armed and not prev_armed:
         return last_yaw if last_yaw is not None else 0.0
     return held
+
+
+def _on_heartbeat(msg, state: _LinkState, log: logging.Logger) -> None:
+    """Learn FC ids on the first heartbeat; log arm/mode transitions."""
+    if not state.have_heartbeat:
+        state.target_system = msg.get_srcSystem()
+        state.target_component = msg.get_srcComponent()
+        state.have_heartbeat = True
+        log.info("FC HEARTBEAT: sys=%d comp=%d", state.target_system, state.target_component)
+    armed, mode = decode_heartbeat(msg)
+    if armed != state.fc_armed:
+        log.info("FC arm state → %s", "ARMED" if armed else "DISARMED")
+        state.fc_armed = armed
+    if mode != state.fc_mode:
+        log.info("FC custom_mode → %d", mode)
+        state.fc_mode = mode
+
+
+async def _rx_loop(serial, mav, state: _LinkState, bus,
+                   arm_ctrl: _ArmController, log: logging.Logger) -> None:
+    async for byte in serial.read_stream():
+        msg = mav.parse_char(bytes([byte]))
+        if msg is None:
+            continue
+        t = msg.get_type()
+        if t == "ATTITUDE":
+            state.last_yaw = msg.yaw
+            bus.publish("fc/attitude", decode_attitude(msg, monotonic_ns()))
+        elif t == "RAW_IMU":
+            state.have_raw_imu = True
+            bus.publish("fc/imu", decode_imu(msg, monotonic_ns()))
+        elif t == "SCALED_IMU2":
+            if not state.have_raw_imu:          # fallback until RAW_IMU arrives
+                bus.publish("fc/imu", decode_imu(msg, monotonic_ns()))
+        elif t == "HEARTBEAT":
+            if msg.autopilot != mavutil.mavlink.MAV_AUTOPILOT_INVALID:  # ignore GCS
+                _on_heartbeat(msg, state, log)
+        elif t == "COMMAND_ACK":
+            arm_ctrl.on_ack(msg.command, msg.result)
