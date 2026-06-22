@@ -8,6 +8,7 @@ pyyaml>=6.0
 numpy>=2.0
 opencv-python>=4.10
 pyserial>=3.5
+pymavlink>=2.4        # MAVLink2 codec for the ArduPilot link (link/mavlink_codec.py)
 
 # Ground station (FastAPI + uvicorn)
 fastapi>=0.115
