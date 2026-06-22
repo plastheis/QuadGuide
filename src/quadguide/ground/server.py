@@ -29,6 +29,8 @@ _NO_SIGNAL_JPEG: bytes = cv2.imencode(
 
 def create_app(bus, frame_buffer, config: dict | None = None) -> FastAPI:
     acquire_crop = overlay.acquire_crop_from_config(config)
+    ui_mode = (config or {}).get("ground", {}).get("ui_mode", "verbose")
+    index_file = "minimal.html" if ui_mode == "minimal" else "index.html"
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
@@ -51,7 +53,7 @@ def create_app(bus, frame_buffer, config: dict | None = None) -> FastAPI:
 
     @app.get("/")
     async def index():
-        return FileResponse(_STATIC / "index.html")
+        return FileResponse(_STATIC / index_file)
 
     @app.get("/stream")
     async def stream(request: Request):

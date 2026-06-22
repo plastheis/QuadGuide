@@ -174,3 +174,17 @@ def test_arm_publishes_arm_cmd_false(bus_client):
 def test_arm_missing_field_returns_422(client):
     resp = client.post("/arm", json={})
     assert resp.status_code == 422
+
+
+def test_index_serves_verbose_by_default():
+    app = create_app(_MockBus(), _MockFrameBuffer())
+    with TestClient(app) as c:
+        body = c.get("/").text
+    assert 'id="right-col"' in body          # verbose-only marker
+
+
+def test_index_serves_minimal_when_configured():
+    app = create_app(_MockBus(), _MockFrameBuffer(), {"ground": {"ui_mode": "minimal"}})
+    with TestClient(app) as c:
+        body = c.get("/").text
+    assert 'id="pip"' in body                # minimal-only marker
