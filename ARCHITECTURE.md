@@ -12,9 +12,9 @@
 target tracking quadcopter. It runs on a companion computer (initially
 Raspberry Pi 4, target RK3576 / RK3588) mounted on the airframe. It receives
 camera frames, runs one configurable object tracker, computes proportional-
-navigation or pure-pursuit guidance commands, and sends roll/pitch setpoints
-to a madflight flight controller over UART using the CRSF protocol (420000
-baud, bidirectional).
+navigation or pure-pursuit guidance commands, and sends roll/pitch attitude setpoints
+to an ArduPilot flight controller (H743) over UART using MAVLink2
+(SET_ATTITUDE_TARGET, GUIDED_NOGPS).
 
 The perception layer is now a single generic process (`tracker_worker`) that
 loads its tracking algorithm at startup from `tracker.import` in config. Built
@@ -44,8 +44,8 @@ The camera is oriented along the drone's **+Z body axis and is not gimbalized.
 When the quad is level, +Z points up — the camera looks at the sky, not the
 ground.** The image centre is the projection of the +Z axis onto the image
 plane. The centroid error vector (image centre → target centroid), together
-with raw body-rate and acceleration data from the FC over the CRSF `0x80` IMU
-frame, are the primary guidance inputs.
+with body-rate and acceleration data from the FC's MAVLink ATTITUDE
+(#30) and RAW_IMU (#27) telemetry, are the primary guidance inputs.
 
 > **Orientation note.** Because the bore-sight points up, the engagement
 > geometry is the inverse of a conventional downward/forward-looking seeker.
@@ -114,8 +114,8 @@ in a separate repo with zero quadguide imports.
 Every loop that drives the FC has a deadline. If `target/estimate` goes stale
 (`watchdog.target_estimate_ms`), control commands level flight and holds
 throttle. If `fc/imu` or `fc/attitude` go stale, control commands neutral
-sticks. The link worker keeps the CRSF uplink at a constant 50 Hz regardless
-of upstream health so the FC never enters its own RX failsafe.
+sticks. The link worker streams SET_ATTITUDE_TARGET at a constant 50 Hz regardless of
+upstream health so the FC holds its GUIDED_NOGPS setpoint instead of timing out.
 
 ---
 
@@ -136,7 +136,7 @@ quadguide/
 │   ├── perception/             # camera worker + tracker worker
 │   │   ├── camera/
 │   │   └── tracker_worker.py   # generic tracker process (loader + adapter + loop)
-│   ├── link/                   # UART ↔ FC bridge (CRSF)
+│   ├── link/                   # MAVLink2 ↔ UART/TCP bridge
 │   ├── guidance/               # pronav, pure_pursuit, LOS, closing-vel
 │   ├── control/                # attitude command + real-time loop
 │   ├── hil/                    # hardware-in-the-loop harness
@@ -181,13 +181,14 @@ quadguide/
                                                       TrackerEstimate(...))
 
 [link worker]                           [guidance worker]
-  rx loop (CRSF):                         loop (50 Hz RateLimiter):
-    parse 0x1E → fc/attitude               est = bus.latest("target/estimate")
-    parse 0x80 → fc/imu                    imu = bus.latest("fc/imu")
+  rx loop:                                loop (50 Hz RateLimiter):
+    decode ATTITUDE → fc/attitude          est = bus.latest("target/estimate")
+    decode RAW_IMU → fc/imu               imu = bus.latest("fc/imu")
   tx loop (50 Hz):                         ax, ay = method.compute(est, imu, …)
-    ctrl = bus.latest("control/cmd")       bus.publish("guidance/accel", …)
-    arm  = bus.latest("arm/cmd")
-    write CRSF channels                  [control worker]  CPU core 3, SCHED_FIFO
+    encode SET_ATTITUDE_TARGET              bus.publish("guidance/accel", …)
+      quat from roll/pitch + yaw latch
+      thrust = throttle_norm
+    arm via MAV_CMD_ARM_DISARM           [control worker]  CPU core 3, SCHED_FIFO
                                            loop (100 Hz):
                                              watchdogs on target/estimate,
                                                           fc/attitude, fc/imu
@@ -355,12 +356,19 @@ YAML — no edits to perception/control code.
 
 ### 6.4 link/
 
-CRSF parser/serializer + UART worker. RX path decodes `0x1E` (ATTITUDE),
-`0x80` (custom IMU) into `fc/attitude` and `fc/imu`. TX path runs at a fixed
-50 Hz, reading `control/cmd` and `arm/cmd`, mapping to channel ticks via
-the configured `link.channels` table. The 50 Hz cadence is **constant**
-regardless of upstream health — drop it and the FC enters its own RX
-failsafe.
+MAVLink2 codec + UART worker for an ArduPilot FC. `mavlink_codec.py` builds a
+codec-mode pymavlink object (`file=None`) and holds `euler_to_quaternion` +
+message-id/mask constants; `fc.py` maps messages ⇄ bus dataclasses; `worker.py`
+runs the RX/TX/heartbeat/stream-setup/health loops over the transport-agnostic
+`SerialPort`/`TCPSerialPort`. RX decodes `ATTITUDE` (#30, native body rates) →
+`fc/attitude` and `RAW_IMU` (#27) → `fc/imu`, and tracks armed/mode from
+`HEARTBEAT`. TX streams `SET_ATTITUDE_TARGET` at a **constant** 50 Hz (roll/pitch
+from `control/cmd`, yaw held by a latched heading baked into the quaternion,
+thrust = `throttle_norm`); arming is edge-triggered via
+`MAV_CMD_COMPONENT_ARM_DISARM`. The pilot's RC switch owns the RC↔GUIDED_NOGPS
+toggle — quadguide never changes mode. Drop the 50 Hz stream and the FC abandons
+the GUIDED setpoint. Requires FC params `SERIALn_PROTOCOL=2` and `GUID_OPTIONS`
+bit 3 (direct thrust).
 
 ### 6.5 guidance/
 
@@ -552,8 +560,10 @@ EdgeCV spec `docs/superpowers/specs/2026-06-14-acquire-track-design.md`. The
 
 ## 12. Known Constraints and Limitations
 
-1. **CRSF TX cadence is fixed at 50 Hz.** Drop it and the FC enters its own
-   RX failsafe — independent of quadguide's watchdogs.
+1. **SET_ATTITUDE_TARGET cadence is fixed at 50 Hz.** Drop it and the FC
+   abandons its GUIDED_NOGPS setpoint — independent of quadguide's watchdogs.
+   ArduPilot also needs `GUID_OPTIONS` bit 3 set so `thrust` is direct (0–1),
+   not climb rate.
 
 ---
 

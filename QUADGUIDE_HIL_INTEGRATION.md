@@ -2,7 +2,7 @@
 
 **Goal**: run the full quadguide stack against a dev-machine simulator instead
 of flight hardware, toggled entirely from `configs/*.yaml`. The camera source
-becomes an HTTP MJPEG reader and the CRSF link becomes a TCP socket; every
+becomes an HTTP MJPEG reader and the MAVLink2 link becomes a TCP socket; every
 worker (tracker, guidance, control, link, ground, bus) is untouched.
 
 HIL is **toggled by two config fields**, flipped together:
@@ -20,23 +20,23 @@ two construction seams below.
 ## Overview
 
 ```
-┌─────────────────────────────────┐         ┌──────────────────────────┐
-│  SBC (quadguide)                │  HTTP   │  Dev Machine (hil-test)  │
-│                                 │←────────│                          │
-│  NetworkCamera                  │  MJPEG  │  FrameServer :8090       │
-│     ↓                           │         │     ↑                   │
-│  TrackerWorker → GuidanceWorker │  TCP    │  CRSF Bridge :42000      │
-│     ↓              ↓            │────────→│     ↓                   │
-│  ControlWorker → LinkWorker     │←────────│  Sim Engine              │
-│     ↓              ↓            │  CRSF   │                          │
-│  TCPSerialPort ←───┘            │         │                          │
-└─────────────────────────────────┘         └──────────────────────────┘
+┌─────────────────────────────────┐         ┌──────────────────────────────────┐
+│  SBC (quadguide)                │  HTTP   │  Dev Machine (ArduPilot SITL)    │
+│                                 │←────────│                                  │
+│  NetworkCamera                  │  MJPEG  │  FrameServer :8090               │
+│     ↓                           │         │     ↑                           │
+│  TrackerWorker → GuidanceWorker │  TCP    │  sim_vehicle.py (ArduCopter)     │
+│     ↓              ↓            │────────→│  tcp:127.0.0.1:5760             │
+│  ControlWorker → LinkWorker     │←────────│                                  │
+│     ↓              ↓            │MAVLink2 │                                  │
+│  TCPSerialPort ←───┘            │         │                                  │
+└─────────────────────────────────┘         └──────────────────────────────────┘
 ```
 
 | Real Hardware | HIL Replacement | Direction | Protocol |
 |---------------|----------------|-----------|----------|
 | USB/CSI camera | `NetworkCamera` → HTTP MJPEG | Dev → SBC | `GET /camera` → multipart JPEG |
-| UART to FC | `TCPSerialPort` → TCP socket | Bidirectional | Raw CRSF bytes, same as UART |
+| UART to FC | `TCPSerialPort` → TCP socket | Bidirectional | MAVLink2, same as UART |
 
 ---
 
@@ -66,7 +66,7 @@ that omit them still load (`mode` defaults to `uart`).
 | Action | File | What |
 |--------|------|------|
 | **Create** | `perception/camera/network_source.py` | `NetworkCamera` (HTTP MJPEG, buffersize=1) |
-| **Create** | `link/tcp_serial.py` | `TCPSerialPort` (CRSF over TCP) |
+| **Create** | `link/tcp_serial.py` | `TCPSerialPort` (MAVLink2 over TCP) |
 | **Modify** | `perception/camera/worker.py` | register `"network"` in `_SOURCES` |
 | **Modify** | `link/worker.py` | `_serial_factory()` picks transport by `serial.mode` |
 | **Modify** | `core/config.py` | `CameraConfig.url`; `SerialConfig.mode/tcp_host/tcp_port`; tolerant `cfg_platform` |
@@ -88,25 +88,25 @@ earlier "platform dispatch table" did not exist.
 - **`TCPSerialPort`** raises `ConnectionError` from `read_stream` on disconnect
   (peer close or socket error), matching `SerialPort` — so the link worker
   reports `DEGRADED` health and runs its 500 ms reconnect loop identically for
-  both transports. `TCP_NODELAY` is set so CRSF bytes aren't Nagle-buffered.
+  both transports. `TCP_NODELAY` is set so MAVLink2 bytes aren't Nagle-buffered.
 
 ---
 
 ## How to Run a HIL Session
 
-### 1. Start the dev machine simulator
+### 1. Start ArduPilot SITL
 
 ```bash
-cd hil-test
-source .venv/bin/activate
-python -m hil_test                                  # GUI dashboard
-# or: python -m hil_test --headless --scenario orbiting
+sim_vehicle.py -v ArduCopter -f quad --console --map
+# SITL exposes MAVLink2 on tcp:127.0.0.1:5760
 ```
 
-Wait for both servers:
+In the SITL console/MAVProxy, put the vehicle in GUIDED_NOGPS so it accepts
+quadguide's SET_ATTITUDE_TARGET (quadguide still arms + streams setpoints; it
+never changes mode):
+
 ```
-TCP CRSF bridge listening on 0.0.0.0:42000
-Frame server listening on 0.0.0.0:8090/camera
+mode GUIDED_NOGPS
 ```
 
 ### 2. Flip the config to HIL
@@ -121,7 +121,7 @@ platform:
   serial:
     mode: tcp
     tcp_host: "<dev-machine-ip>"
-    tcp_port: 42000
+    tcp_port: 5760
 ```
 
 Equivalently, toggle without editing the file:
@@ -139,8 +139,8 @@ python scripts/run.py --config configs/rk3588.yaml \
 - Open quadguide's ground UI at `http://<sbc-ip>:8080`, drag a lock-on bbox
   around the rendered target.
 - Arm via the ground UI.
-- The loop closes: quadguide tracks the synthetic target → CRSF RC over TCP →
-  hil-test simulates the airframe → rendered frames stream back over MJPEG.
+- The loop closes: quadguide tracks the synthetic target → MAVLink2 over TCP →
+  SITL simulates the airframe → rendered frames stream back over MJPEG.
 
 ---
 
@@ -148,9 +148,9 @@ python scripts/run.py --config configs/rk3588.yaml \
 
 - [ ] `cfg_platform` loads the HIL config without `KeyError` (port/baud absent OK)
 - [ ] `NetworkCamera` opens the MJPEG stream; frames arrive at ~30 Hz
-- [ ] `TCPSerialPort` connects to the hil-test TCP bridge (link logs `HIL: CRSF over TCP`)
-- [ ] CRSF uplink (RC channels) flows SBC → dev machine
-- [ ] CRSF downlink (attitude + IMU) flows dev machine → SBC
-- [ ] On bridge restart, link reports DEGRADED then reconnects
+- [ ] `TCPSerialPort` connects to SITL's TCP port (link logs `HIL: MAVLink2 over TCP`)
+- [ ] MAVLink2 SET_ATTITUDE_TARGET flows SBC → SITL
+- [ ] MAVLink2 ATTITUDE + RAW_IMU telemetry flows SITL → SBC
+- [ ] On SITL restart, link reports DEGRADED then reconnects
 - [ ] TrackerWorker initializes and tracks the target
 - [ ] Full engagement: lock → track → intercept (or scenario completion)
