@@ -129,6 +129,27 @@ def test_telemetry_includes_latency_keys(client):
     assert "latency_avg_ms" in data
 
 
+def test_telemetry_fc_armed_null_without_heartbeat(client):
+    data = _read_one_sse_event(client)
+    assert data["fc_armed"] is None
+    assert data["fc_mode"] is None
+
+
+def test_telemetry_fc_armed_reflects_fc_status():
+    from quadguide.core.messages import FCStatus
+
+    class _FCBus(_MockBus):
+        def latest(self, topic: str):
+            if topic == "fc/status":
+                return FCStatus(timestamp_ns=1_000_000, armed=True, custom_mode=4)
+            return None
+    app = create_app(_FCBus(), _MockFrameBuffer())
+    with TestClient(app) as c:
+        data = _read_one_sse_event(c)
+    assert data["fc_armed"] is True
+    assert data["fc_mode"] == 4
+
+
 def test_telemetry_latency_null_when_no_lineage(client):
     data = _read_one_sse_event(client)
     assert data["latency_ms"] is None

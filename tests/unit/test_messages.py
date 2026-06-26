@@ -4,10 +4,11 @@ from quadguide.core.messages import (
     TrackerHealth, ProcessState,
     BoundingBox, TrackerEstimate,
     AttitudeState, IMUFrame, AccelCmd, ControlCmd,
-    LockOnCmd, HealthReport, ArmCmd,
+    LockOnCmd, HealthReport, ArmCmd, FCStatus,
     FMT_TRACKER_ESTIMATE,
     FMT_ATTITUDE_STATE, FMT_IMU_FRAME, FMT_ACCEL_CMD,
     FMT_CONTROL_CMD, FMT_LOCKON_CMD, FMT_HEALTH_REPORT, FMT_ARM_CMD,
+    FMT_FC_STATUS,
 )
 
 
@@ -187,3 +188,21 @@ class TestArmCmd:
         msg = ArmCmd(timestamp_ns=2_000_000, armed=False)
         r = ArmCmd.unpack(msg.pack())
         assert r.armed is False
+
+
+class TestFCStatus:
+    def test_format_size(self):
+        assert struct.calcsize(FMT_FC_STATUS) == 13  # Q(8) + B(1) + I(4)
+
+    def test_round_trip_armed(self):
+        msg = FCStatus(timestamp_ns=7_000_000, armed=True, custom_mode=18)
+        r = FCStatus.unpack(msg.pack())
+        assert r.timestamp_ns == 7_000_000
+        assert r.armed is True
+        assert r.custom_mode == 18
+
+    def test_round_trip_disarmed(self):
+        msg = FCStatus(timestamp_ns=8_000_000, armed=False, custom_mode=0)
+        r = FCStatus.unpack(msg.pack())
+        assert r.armed is False
+        assert r.custom_mode == 0

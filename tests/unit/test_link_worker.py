@@ -4,7 +4,7 @@ import logging
 import pytest
 from pymavlink import mavutil
 
-from quadguide.core.messages import AttitudeState, IMUFrame
+from quadguide.core.messages import AttitudeState, FCStatus, IMUFrame
 from quadguide.link.mavlink_codec import make_mav
 from quadguide.link.worker import _ArmController, _LinkState, _rx_loop, latch_yaw
 
@@ -161,6 +161,28 @@ def test_rx_heartbeat_learns_fc_target_ids():
     assert state.have_heartbeat is True
     assert state.target_system == 1
     assert state.target_component == 1
+
+
+def test_rx_heartbeat_publishes_fc_status_armed():
+    data = _enc(lambda m: m.heartbeat_encode(
+        mavutil.mavlink.MAV_TYPE_QUADROTOR,
+        mavutil.mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
+        mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED, 4, 0).pack(m))
+    bus, state, _ = _run_rx(data)
+    statuses = [msg for t, msg in bus.published if t == "fc/status"]
+    assert len(statuses) == 1 and isinstance(statuses[0], FCStatus)
+    assert statuses[0].armed is True
+    assert statuses[0].custom_mode == 4
+    assert state.fc_armed is True
+
+
+def test_rx_gcs_heartbeat_publishes_no_fc_status():
+    data = _enc(lambda m: m.heartbeat_encode(
+        mavutil.mavlink.MAV_TYPE_GCS,
+        mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+        mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED, 0, 0).pack(m))
+    bus, _, _ = _run_rx(data)
+    assert [t for t, _ in bus.published if t == "fc/status"] == []
 
 
 def test_rx_ignores_gcs_heartbeat():

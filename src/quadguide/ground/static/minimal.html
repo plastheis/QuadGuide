@@ -46,8 +46,9 @@
   .status { position: absolute; left: 0; width: 640px; text-align: center;
             font-weight: bold; letter-spacing: 3px; pointer-events: none;
             text-shadow: 0 0 4px #000, 0 0 4px #000; }
-  #armed { top: 10px; font-size: 26px; color: #ff4136; display: none; }
-  #fire  { top: 46px; font-size: 22px; color: #ff851b; display: none; }
+  #armed  { top: 10px; font-size: 26px; color: #ff4136; display: none; }
+  #fcarmed{ top: 42px; font-size: 16px; display: none; }
+  #fire   { top: 70px; font-size: 22px; color: #ff851b; display: none; }
   #lock  { bottom: 10px; font-size: 24px; display: none; }
 </style>
 </head>
@@ -73,6 +74,7 @@
     <canvas id="overlay" width="640" height="480"></canvas>
     <canvas id="pip" width="160" height="160"></canvas>
     <div id="armed" class="status">ARMED</div>
+    <div id="fcarmed" class="status"></div>
     <div id="fire" class="status">FIRE</div>
     <div id="lock" class="status"></div>
   </div>
@@ -157,6 +159,17 @@ setInterval(drawPip, 1000 / 15);
 let armState = false;
 let fireActive = false;
 const elArmed = document.getElementById('armed');
+const elFcArmed = document.getElementById('fcarmed');
+// Ground-truth FC arm state from HEARTBEAT (d.fc_armed). Green when the FC
+// confirms armed; orange "FC DISARMED" when it doesn't — including a mismatch
+// where the kiosk commanded ARM but the autopilot hasn't armed. Hidden until
+// the first heartbeat (null).
+function updateFcArmed(fcArmed) {
+  if (fcArmed == null) { elFcArmed.style.display = 'none'; return; }
+  elFcArmed.textContent = fcArmed ? 'FC ARMED' : 'FC DISARMED';
+  elFcArmed.style.color = fcArmed ? '#2ecc40' : '#ff851b';
+  elFcArmed.style.display = 'block';
+}
 const elFire  = document.getElementById('fire');
 const elLock  = document.getElementById('lock');
 
@@ -224,6 +237,7 @@ sse.onmessage = (ev) => {
     fireActive = d.fire_active;
     updateFireOverlay();
   }
+  updateFcArmed(d.fc_armed);
   updateModuleHealth(d.health);
   updateLatency(d.latency_ms, d.latency_avg_ms);
   drawPip();

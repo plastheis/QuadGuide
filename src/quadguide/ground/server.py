@@ -150,6 +150,7 @@ async def _sse(app: FastAPI):
         accel    = app.state.bus.latest("guidance/accel")
         control  = app.state.bus.latest("control/cmd")
         fire_cmd = app.state.bus.latest("fire/cmd")
+        fc_status = app.state.bus.latest("fc/status")
         report   = app.state.bus.latest("system/health")
 
         # End-to-end glass→control latency from the propagated origin_ns.
@@ -202,6 +203,9 @@ async def _sse(app: FastAPI):
             "ctrl_throttle":     control.throttle_norm   if control else None,
             # fire/cmd
             "fire_active":       bool(fire_cmd and fire_cmd.active),
+            # fc/status — ground-truth arm/mode from HEARTBEAT (None until first beat)
+            "fc_armed":          (fc_status.armed       if fc_status else None),
+            "fc_mode":           (fc_status.custom_mode if fc_status else None),
             # system/health
             "health": dict(app.state.process_health),
             # latency

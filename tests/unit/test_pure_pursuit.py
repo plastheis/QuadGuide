@@ -38,11 +38,12 @@ def test_zero_centroid_gives_zero_accel():
     assert ay == pytest.approx(0.0)
 
 
-def test_positive_cx_drives_positive_ax():
-    pp = PurePursuitGuidance(PurePursuitConfig(K=6.0), FOV_H, ASPECT)
+def test_positive_cx_drives_positive_ay():
+    # Bore-up mount: horizontal image error (cx) is a lateral/roll offset → ay.
+    pp = PurePursuitGuidance(PurePursuitConfig(K=6.0, deadband=0.0), FOV_H, ASPECT)
     ax, ay = pp.compute(_est_for_centroid(1.0, 0.0), _imu(), None, time.monotonic_ns())
-    assert ax == pytest.approx(6.0 * FOV_H * 0.5)
-    assert ay == pytest.approx(0.0)
+    assert ay == pytest.approx(6.0 * FOV_H * 0.5)
+    assert ax == pytest.approx(0.0)
 
 
 def test_scales_with_K():
@@ -54,10 +55,32 @@ def test_scales_with_K():
 
 
 def test_vertical_scale_uses_vertical_fov():
-    pp = PurePursuitGuidance(PurePursuitConfig(K=6.0), FOV_H, ASPECT)
-    _, ay = pp.compute(_est_for_centroid(0.0, 1.0), _imu(), None, time.monotonic_ns())
+    # Bore-up mount: vertical image error (cy) is a fore/aft pitch offset → ax.
+    pp = PurePursuitGuidance(PurePursuitConfig(K=6.0, deadband=0.0), FOV_H, ASPECT)
+    ax, _ = pp.compute(_est_for_centroid(0.0, 1.0), _imu(), None, time.monotonic_ns())
     fov_v = FOV_H / ASPECT
-    assert ay == pytest.approx(6.0 * fov_v * 0.5)
+    assert ax == pytest.approx(6.0 * fov_v * 0.5)
+
+
+def test_deadband_zeroes_small_centroid():
+    pp = PurePursuitGuidance(PurePursuitConfig(K=6.0, deadband=0.05), FOV_H, ASPECT)
+    # centroid inside the band on both axes → no command.
+    ax, ay = pp.compute(_est_for_centroid(0.04, -0.03), _imu(), None, time.monotonic_ns())
+    assert ax == pytest.approx(0.0)
+    assert ay == pytest.approx(0.0)
+
+
+def test_deadband_is_shifted_not_clamped():
+    # Past the edge the response is continuous: output uses (|c| - db), so a soft
+    # deadband produces strictly less than the no-deadband command at the same c.
+    db = 0.1
+    c = 0.5
+    pp_db = PurePursuitGuidance(PurePursuitConfig(K=6.0, deadband=db), FOV_H, ASPECT)
+    pp_no = PurePursuitGuidance(PurePursuitConfig(K=6.0, deadband=0.0), FOV_H, ASPECT)
+    ay_db = pp_db.compute(_est_for_centroid(c, 0.0), _imu(), None, time.monotonic_ns())[1]
+    ay_no = pp_no.compute(_est_for_centroid(c, 0.0), _imu(), None, time.monotonic_ns())[1]
+    assert ay_db == pytest.approx(6.0 * (c - db) * FOV_H * 0.5)
+    assert ay_db < ay_no
 
 
 def test_name():

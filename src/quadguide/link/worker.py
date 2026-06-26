@@ -9,7 +9,7 @@ from quadguide.core.clock import monotonic_ns
 from quadguide.core.config import cfg_airframe, cfg_diag
 from quadguide.core.diagtrace import DiagTrace
 from quadguide.core.logging import setup_logging
-from quadguide.core.messages import HealthReport, ProcessState
+from quadguide.core.messages import FCStatus, HealthReport, ProcessState
 from quadguide.link.fc import (
     decode_attitude, decode_heartbeat, decode_imu,
     encode_arm, encode_attitude_target, encode_heartbeat,
@@ -83,8 +83,12 @@ def latch_yaw(
     return held
 
 
-def _on_heartbeat(msg, state: _LinkState, log: logging.Logger) -> None:
-    """Learn FC ids on the first heartbeat; log arm/mode transitions."""
+def _on_heartbeat(msg, state: _LinkState, bus, log: logging.Logger) -> None:
+    """Learn FC ids on the first heartbeat; log arm/mode transitions.
+
+    Publishes ground-truth FC arm/mode on ``fc/status`` so the HUD can show what
+    the autopilot actually reports — distinct from the commanded ``arm/cmd``.
+    """
     if not state.have_heartbeat:
         state.target_system = msg.get_srcSystem()
         state.target_component = msg.get_srcComponent()
@@ -97,6 +101,7 @@ def _on_heartbeat(msg, state: _LinkState, log: logging.Logger) -> None:
     if mode != state.fc_mode:
         log.info("FC custom_mode → %d", mode)
         state.fc_mode = mode
+    bus.publish("fc/status", FCStatus(monotonic_ns(), armed, int(mode)))
 
 
 async def _rx_loop(serial, mav, state: _LinkState, bus,
@@ -117,7 +122,7 @@ async def _rx_loop(serial, mav, state: _LinkState, bus,
                 bus.publish("fc/imu", decode_imu(msg, monotonic_ns()))
         elif t == "HEARTBEAT":
             if msg.autopilot != mavutil.mavlink.MAV_AUTOPILOT_INVALID:  # ignore GCS
-                _on_heartbeat(msg, state, log)
+                _on_heartbeat(msg, state, bus, log)
         elif t == "COMMAND_ACK":
             arm_ctrl.on_ack(msg.command, msg.result)
 

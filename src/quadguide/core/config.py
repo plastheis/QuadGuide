@@ -59,6 +59,7 @@ class PronavConfig:
 @dataclass(frozen=True)
 class PurePursuitConfig:
     K: float                # m/s² per radian of LOS angle
+    deadband: float = 0.03  # centroid half-width (frac of half-FoV) zeroed near boresight
 
 
 @dataclass(frozen=True)
@@ -235,6 +236,7 @@ def cfg_guidance(d: dict) -> GuidanceConfig:
         ) if pn_raw else None,
         pure_pursuit=PurePursuitConfig(
             K=pp_raw["K"],
+            deadband=pp_raw.get("deadband", 0.03),
         ) if pp_raw else None,
     )
 

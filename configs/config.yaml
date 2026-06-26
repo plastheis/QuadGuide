@@ -51,6 +51,7 @@ guidance:
     closing_vel_area_scale: 5.0      # area-rate (normalised/s) → m/s conversion
   pure_pursuit:
     K: 20                    # m/s² per radian of LOS angle
+    deadband: 0.03           # centroid half-width (frac of half-FoV) zeroed near boresight
 
 watchdog:
   target_estimate_ms: 200

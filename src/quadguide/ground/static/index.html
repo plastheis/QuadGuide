@@ -213,6 +213,7 @@
         <div class="row"><span class="lbl">roll rate</span><span class="val dim" id="h-roll-rate">—</span></div>
         <div class="row"><span class="lbl">pitch rate</span><span class="val dim" id="h-pitch-rate">—</span></div>
         <div class="row"><span class="lbl">yaw rate</span><span class="val dim" id="h-yaw-rate">—</span></div>
+        <div class="row"><span class="lbl">FC armed (HEARTBEAT)</span><span class="val dim" id="h-fc-armed">—</span></div>
       </div>
     </div>
 
@@ -432,6 +433,10 @@ sse.onmessage = (ev) => {
   set('h-pitch',      f(d.pitch_deg,      1, '°'));
   set('h-yaw',        f(d.yaw_deg,        1, '°'));
   set('h-roll-rate',  f(d.roll_rate_dps,  1, '°/s'));
+  // Ground-truth FC arm state (HEARTBEAT) — distinct from the commanded arm/cmd.
+  set('h-fc-armed',
+      d.fc_armed == null ? null : (d.fc_armed ? 'ARMED' : 'disarmed'),
+      d.fc_armed ? 'failsafe' : '');
   set('h-pitch-rate', f(d.pitch_rate_dps, 1, '°/s'));
   set('h-yaw-rate',   f(d.yaw_rate_dps,   1, '°/s'));
 

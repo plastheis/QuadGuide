@@ -8,9 +8,11 @@ __all__ = [
     "BoundingBox",
     "TrackerEstimate", "AttitudeState", "IMUFrame",
     "AccelCmd", "ControlCmd", "LockOnCmd", "HealthReport", "ArmCmd", "FireCmd",
+    "FCStatus",
     "FMT_TRACKER_ESTIMATE", "FMT_ATTITUDE_STATE",
     "FMT_IMU_FRAME", "FMT_ACCEL_CMD", "FMT_CONTROL_CMD",
     "FMT_LOCKON_CMD", "FMT_HEALTH_REPORT", "FMT_ARM_CMD", "FMT_FIRE_CMD",
+    "FMT_FC_STATUS",
 ]
 
 
@@ -80,6 +82,11 @@ FMT_ARM_CMD = "!QB"
 FMT_FIRE_CMD = "!QB"
 # Q(8) + active(B=1) = 9 bytes
 
+FMT_FC_STATUS = "!QBI"
+# Q(8) + armed(B=1) + custom_mode(I=4) = 13 bytes
+# Ground-truth FC arm/mode decoded from HEARTBEAT — distinct from the *commanded*
+# arm/cmd, so the HUD can show what the autopilot actually reports.
+
 
 @dataclass(frozen=True)
 class BoundingBox:
@@ -98,6 +105,7 @@ _ST_LOCKON_CMD       = struct.Struct(FMT_LOCKON_CMD)
 _ST_HEALTH_REPORT    = struct.Struct(FMT_HEALTH_REPORT)
 _ST_ARM_CMD          = struct.Struct(FMT_ARM_CMD)
 _ST_FIRE_CMD         = struct.Struct(FMT_FIRE_CMD)
+_ST_FC_STATUS        = struct.Struct(FMT_FC_STATUS)
 
 
 @dataclass(frozen=True)
@@ -290,5 +298,21 @@ class FireCmd:
     def unpack(cls, data: bytes) -> FireCmd:
         ts, active_b = _ST_FIRE_CMD.unpack(data)
         return cls(timestamp_ns=ts, active=bool(active_b))
+
+
+@dataclass(frozen=True)
+class FCStatus:
+    """Ground-truth FC arm/mode from HEARTBEAT (not the commanded arm/cmd)."""
+    timestamp_ns: int
+    armed: bool
+    custom_mode: int
+
+    def pack(self) -> bytes:
+        return _ST_FC_STATUS.pack(self.timestamp_ns, int(self.armed), self.custom_mode)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> FCStatus:
+        ts, armed_b, mode = _ST_FC_STATUS.unpack(data)
+        return cls(timestamp_ns=ts, armed=bool(armed_b), custom_mode=mode)
 
 
