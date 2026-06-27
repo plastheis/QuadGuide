@@ -1,0 +1,21 @@
+[Unit]
+Description=quadguide flight guidance stack
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=@REPO_DIR@
+ExecStartPre=/bin/mkdir -p @LOG_DIR@
+ExecStart=@PYTHON@ scripts/run.py --config @CONFIG@
+Restart=always
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=10
+LimitRTPRIO=99
+LimitMEMLOCK=infinity
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
