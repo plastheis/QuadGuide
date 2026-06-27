@@ -447,9 +447,17 @@ lossless log.
 
 ### Startup (systemd, production)
 
-`quadguide.target` Wants/After: `qg-camera`, `qg-tracker`, `qg-link`,
-`qg-guidance`, `qg-control`, `qg-ground`. Each unit is a thin invocation of
-the matching worker entry point. The tracker unit has `After=qg-camera`.
+A **single** unit, `quadguide.service`, runs `scripts/run.py` — the same
+orchestrator used in development. systemd keeps that one parent alive; the
+parent forks and supervises all six workers and owns `Bus`/`FrameBuffer`
+lifecycle. A per-worker unit split is **not** possible: the bus's
+`multiprocessing.Lock`/`Value` and anonymous `os.pipe()` wakeups are created
+once in the parent and inherited across `fork()` (`core/bus.py`), so the
+workers must share one parent process. Install with `scripts/install_sbc.sh`
+(which also sets up the WiFi AP). Unit policy: `Restart=always` (keep
+recovering in flight), `KillMode=mixed` (lets `run.py`'s ordered shutdown run),
+`LimitRTPRIO=99` (control worker SCHED_FIFO), runs as `root`. See the operator
+runbook `docs/sbc-setup.md`.
 
 ### Startup (development)
 
