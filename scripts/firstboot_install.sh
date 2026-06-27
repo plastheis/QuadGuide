@@ -108,6 +108,10 @@ PIP="$QG_DIR/.venv/bin/pip"
 run_user "$PIP" install --upgrade pip wheel
 # QuadGuide runtime deps not satisfied by the apt packages above:
 run_user "$PIP" install pyyaml pymavlink fastapi "uvicorn[standard]"
+# Install the quadguide package ITSELF (editable). Without this, `import quadguide`
+# fails — the code lives in src/ and is not on sys.path otherwise, so run.py dies
+# with ModuleNotFoundError before any worker starts.
+run_user "$PIP" install -e "$QG_DIR"
 # EdgeCV (editable) — pulls its own deps incl. onnxruntime; RKNN runtime is below.
 if [ -f "$EDGECV_DIR/pyproject.toml" ] || [ -f "$EDGECV_DIR/setup.py" ]; then
     run_user "$PIP" install -e "$EDGECV_DIR" || warn "EdgeCV pip install failed — see EdgeCV README"
