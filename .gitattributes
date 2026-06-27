@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings — they run on the Linux SBC. Without this,
+# a commit from the Windows dev box under core.autocrlf=true could rewrite a
+# script with CRLF, breaking its shebang on the target (bad interpreter: ...^M).
+*.sh text eol=lf
