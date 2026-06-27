@@ -21,7 +21,7 @@ set -euo pipefail
 # ── tunables (override via env: GIT_OWNER=foo sudo -E bash ...) ────────────────
 GIT_OWNER="${GIT_OWNER:-plastheis}"
 QG_REPO="${QG_REPO:-https://github.com/${GIT_OWNER}/QuadGuide.git}"
-EDGECV_REPO="${EDGECV_REPO:-https://github.com/${GIT_OWNER}/EdgeCV.git}"   # ← confirm this URL
+EDGECV_REPO="${EDGECV_REPO:-https://github.com/${GIT_OWNER}/EdgeCV.git}"   # ships its own .rknn models
 QG_BRANCH="${QG_BRANCH:-main}"
 
 say()  { printf '\n\033[1;36m== %s\033[0m\n' "$*"; }
@@ -36,6 +36,7 @@ HOME_DIR="$(getent passwd "$LOGIN_USER" | cut -d: -f6)"
 HOME_DIR="${HOME_DIR:-/home/$LOGIN_USER}"
 QG_DIR="$HOME_DIR/quadguide"
 EDGECV_DIR="$HOME_DIR/EdgeCV"
+n_models=0   # set in step 2; referenced in the summary even if EdgeCV clone fails
 run_user() { sudo -u "$LOGIN_USER" -H "$@"; }
 say "user=$LOGIN_USER home=$HOME_DIR  quadguide=$QG_DIR  edgecv=$EDGECV_DIR"
 
@@ -46,11 +47,14 @@ apt-get update
 # python3-opencv = OpenCV WITH GStreamer (the pip wheel has none → CSICamera fails).
 # numpy/pyserial from apt so the venv (system-site-packages) shares one ABI.
 apt-get install -y --no-install-recommends \
-    git python3 python3-venv python3-pip python3-dev \
+    git git-lfs python3 python3-venv python3-pip python3-dev \
     python3-opencv python3-numpy python3-serial \
     gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad v4l-utils \
     device-tree-compiler build-essential network-manager
+# Enable Git LFS smudge so `git clone` auto-downloads EdgeCV's *.rknn model files
+# (large binaries committed via LFS arrive as pointer stubs otherwise).
+git lfs install --system 2>/dev/null || run_user git lfs install 2>/dev/null || true
 
 # ── 2. clone/update repos ─────────────────────────────────────────────────────
 say "2/5 clone/update QuadGuide + EdgeCV (as $LOGIN_USER)"
@@ -60,9 +64,25 @@ clone_or_pull() {  # $1=url $2=dir $3=branch
     else
         run_user git clone --branch "$3" --depth 1 "$1" "$2"
     fi
+    # Fetch LFS objects (no-op if the repo doesn't use LFS).
+    run_user git -C "$2" lfs pull 2>/dev/null || true
 }
 clone_or_pull "$QG_REPO" "$QG_DIR" "$QG_BRANCH"
-if ! clone_or_pull "$EDGECV_REPO" "$EDGECV_DIR" main; then
+if clone_or_pull "$EDGECV_REPO" "$EDGECV_DIR" main; then
+    # Models ship in the EdgeCV repo at EdgeCV/models; configs/rk3588.yaml expects
+    # them at /home/radxa/EdgeCV/models (the canonical radxa-user path).
+    n_models=$(find "$EDGECV_DIR/models" -name '*.rknn' 2>/dev/null | wc -l)
+    if [ "$n_models" -gt 0 ]; then
+        echo "  EdgeCV models present: $n_models *.rknn under $EDGECV_DIR/models"
+    else
+        warn "no *.rknn found in $EDGECV_DIR/models — if EdgeCV uses Git LFS, run"
+        warn "  (cd $EDGECV_DIR && git lfs pull)   then check $EDGECV_DIR/models"
+    fi
+    if [ "$EDGECV_DIR" != "/home/radxa/EdgeCV" ]; then
+        warn "EdgeCV is at $EDGECV_DIR but configs/rk3588.yaml points model_dir at"
+        warn "/home/radxa/EdgeCV/models — run as the 'radxa' user, or edit model_dir."
+    fi
+else
     warn "EdgeCV clone failed — fix EDGECV_REPO and re-run, or set tracker.import to a"
     warn "cv2 tracker (e.g. cv2:TrackerKCF) in configs/rk3588.yaml to run without EdgeCV."
 fi
@@ -141,9 +161,9 @@ if [ "$OV9281_DRIVER" != yes ]; then cat <<'EOF'
 EOF
 fi
 cat <<EOF
-  B) EdgeCV MODELS — put the *.rknn artifacts in $EDGECV_DIR/models
-     (path configs/rk3588.yaml expects). Without them, set tracker.import to a cv2
-     tracker for a no-NPU bring-up.
+  B) EdgeCV MODELS — cloned with the EdgeCV repo into $EDGECV_DIR/models
+     ($n_models *.rknn found above). If that count is 0, the repo uses Git LFS and
+     the objects didn't smudge: run  (cd $EDGECV_DIR && git lfs pull).
 
 Verify:   systemctl status quadguide ; journalctl -u quadguide -f
 Web UI:   http://10.42.0.1:8080   (join WiFi 'drone' / pass 'drone123'), or over the HaLow bridge.
