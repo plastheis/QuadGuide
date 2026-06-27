@@ -44,14 +44,26 @@ say "user=$LOGIN_USER home=$HOME_DIR  quadguide=$QG_DIR  edgecv=$EDGECV_DIR"
 say "1/5 apt system dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-# python3-opencv = OpenCV WITH GStreamer (the pip wheel has none → CSICamera fails).
-# numpy/pyserial from apt so the venv (system-site-packages) shares one ABI.
+# Hard requirements. python3-opencv = OpenCV WITH GStreamer (the pip wheel has
+# none → CSICamera fails); Debian's build links the system GStreamer that the
+# Radxa image already ships. numpy/pyserial from apt so the venv
+# (--system-site-packages) shares one ABI. i2c-tools/v4l-utils for camera bring-up.
 apt-get install -y --no-install-recommends \
     git git-lfs python3 python3-venv python3-pip python3-dev \
     python3-opencv python3-numpy python3-serial \
-    gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-bad v4l-utils \
-    device-tree-compiler build-essential network-manager
+    i2c-tools v4l-utils \
+    device-tree-compiler build-essential
+# (network-manager is pre-installed on Radxa OS; install_sbc.sh validates it.
+#  We don't re-request it — that risks an apt downgrade like the gstreamer one.)
+# GStreamer plugins are best-effort and MUST NOT abort the install: the Radxa
+# image already ships GStreamer (with Rockchip-accelerated plugins), and forcing
+# these can demand a DOWNGRADE of the vendor gstreamer1.0-plugins-good, which apt
+# refuses under -y. We deliberately do NOT pass --allow-downgrades (that would
+# replace the hardware-accelerated plugins with vanilla Debian ones). If apt
+# declines, the already-installed plugins are kept and we continue.
+apt-get install -y --no-install-recommends \
+    gstreamer1.0-tools gstreamer1.0-plugins-base \
+    || warn "gstreamer plugins left as-is (already present, or apt declined a downgrade)"
 # Enable Git LFS smudge so `git clone` auto-downloads EdgeCV's *.rknn model files
 # (large binaries committed via LFS arrive as pointer stubs otherwise).
 git lfs install --system 2>/dev/null || run_user git lfs install 2>/dev/null || true
