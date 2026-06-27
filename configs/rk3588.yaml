@@ -3,11 +3,15 @@ platform:
   camera:
     # HIL toggle: set backend=raw_tcp (or network) + serial.mode=tcp below to
     # drive the stack from the dev-machine simulator instead of real hardware.
-    backend: v4l2       # "v4l2" | "gstreamer" | "virtual" | "network" | "raw_tcp" (HIL)
-    pipeline: "v4l2src device=/dev/video0 ! video/x-raw,width=640,height=480,framerate=30/1 ! appsink"
-    width: 640
-    height: 480
-    fps: 60             # C920 hardware max (no 60fps mode); see USBCamera._force_constant_framerate
+    backend: gstreamer       # CSI camera via GStreamer → CSICamera (was v4l2)
+    # OV9281 (mono global shutter, native 1280x800). Capture the FULL sensor to
+    # preserve the 79° FoV, then downscale for tracker latency. VERIFY node +
+    # format on the SBC (see docs/sbc-setup.md): node is typically /dev/video11;
+    # mono output may be NV12 (rkisp) or GRAY8 (rkcif raw) — adjust caps to match.
+    pipeline: "v4l2src device=/dev/video11 io-mode=4 ! video/x-raw,format=NV12,width=1280,height=800,framerate=60/1 ! videoscale ! video/x-raw,width=640,height=400 ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
+    width: 640               # downscaled frame the stack processes
+    height: 400              # 16:10 (OV9281 native aspect) — full FoV preserved
+    fps: 60
     url: "http://192.168.86.46:8090/camera"   # used when backend=network — dev-machine MJPEG stream
     # raw_tcp (HIL): low-latency uncompressed BGR frames from the dev-machine
     # RawFrameServer over TCP (no JPEG, no VideoCapture buffering). Preferred HIL
@@ -18,8 +22,8 @@ platform:
     # MAVLink2 link to the ArduPilot FC. This board exposes only /dev/ttyFIQ0 out
     # of the box; enable a UART overlay (e.g. uart3/uart5) so a /dev/ttyS* node
     # appears, then set it here. mode=tcp drives the stack from ArduPilot SITL.
-    mode: tcp            # "uart" (real FC) | "tcp" (HIL — MAVLink2 over TCP to SITL)
-    port: /dev/ttyS6      # used when mode=uart — set to your enabled UART node
+    mode: uart            # was tcp (HIL); real MAVLink2 over UART to the FC
+    port: /dev/ttyS6      # UART6-M1 (enable overlay "Enable UART6-M1"); see docs/sbc-setup.md
     baud: 115200          # H743 MAVLink2 baud — TODO confirm SERIALn_BAUD (115200 vs 921600)
     tcp_host: "192.168.86.46"   # used when mode=tcp — host running ArduPilot SITL
     tcp_port: 5760              # used when mode=tcp — SITL MAVLink TCP port
@@ -73,7 +77,8 @@ tracker:
 
 guidance:
   method: pure_pursuit              # "pronav" | "pure_pursuit"
-  fov_horizontal_rad: 0.972   # Logitech C920 @ 640x480 (4:3, sides cropped from 16:9 sensor) ≈ 55.7°
+  fov_horizontal_rad: 1.379   # 79° HORIZONTAL (OV9281 + lens). If 79° is the lens
+                              # DIAGONAL spec, horizontal at 16:10 ≈ 67° → use 1.17.
   throttle_hold: 0.6         # constant throttle during tracking (0–1)
   pronav:
     N: 1.5                    # PN navigation gain (typical 3–5)
