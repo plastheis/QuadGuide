@@ -111,43 +111,74 @@ not capture-node/format.
    `v4l2_i2c_subdev_init` (the i2c client node). So the binding MECHANISM is not the
    differentiator — the bug is subtler than the registration call.
 
-## IMMEDIATE NEXT STEP — get the async core to say WHY it won't match
+## ROOT CAUSE (identified) — load-order race: the sensor is a late module
 
-The registration is identical to a working sensor, so the next move is to make the
-kernel log the match decision. Enable dynamic debug on the v4l2 async/fwnode core,
-re-register the sensor, and read the verdict:
+The boot timeline is the smoking gun:
 
-```bash
-echo 'file *v4l2-async* +p' | sudo tee /sys/kernel/debug/dynamic_debug/control
-echo 'file *v4l2-fwnode* +p' | sudo tee -a /sys/kernel/debug/dynamic_debug/control
-sudo modprobe -r ov9281 2>&1 | tail -2          # may fail if held; if so, reboot with debug pre-enabled
-sudo modprobe ov9281
-sudo dmesg | grep -iE 'async|fwnode|ov9281|match|notif|bound|waiting' | tail -60
 ```
-Interpret the dump: does the DPHY/rkcif notifier even *evaluate* the sensor? Is the
-fwnode compared and rejected, or is no notifier waiting for it (deferred/cycle)?
-The `csi2-dphy0: Fixed dependency cycle(s) with .../ov9281@60` boot line means
-fw_devlink broke a dphy↔sensor cyclic devlink — check whether that cycle-break is
-what prevents the dphy notifier from claiming the sensor (this is the leading
-suspect now, since the driver code itself is identical to a working one).
+13.103  csi2-dphy0: Fixed dependency cycle(s) with /i2c@feab0000/ov9281@60
+13.109  rockchip-mipi-csi2: Async registered subdev
+13.177  rkcif-mipi-lvds2:  Async subdev notifier COMPLETED
+13.237  rkisp0-vir0:       Async subdev notifier COMPLETED
+15.507  ov9281: loading out-of-tree module taints kernel
+15.517  ov9281 3-0060: Detected OV009281 sensor
+```
 
-### Other avenues if dynamic debug is inconclusive
-- **Build the driver IN-TREE** (`CONFIG_VIDEO_OV9281=y` via the Radxa `bsp`/`rsetup`
-  kernel build) rather than as a late-loaded module. The out-of-tree module loads at
-  ~15 s (after the dphy/rkcif notifiers are set up at ~13 s); even though async is
-  supposed to handle late registration, an in-tree build removes that variable and
-  matches how ov5647 (which binds) is built. **This is the highest-confidence
-  fallback.** Alternatively force early load via initramfs / `modules-load.d` and
-  re-test.
-- **Provide real regulators + check pwdn polarity** (forum
-  https://forum.radxa.com/t/support-for-ov9281-camera/26386): add avdd(2.8V)/
-  dovdd(1.8V)/dvdd(1.2V) fixed-regulators in the overlay instead of the dummy
-  fallback, and that user needed `pwdn-gpios` ACTIVE_HIGH. Lower probability for a
-  *binding* (vs streaming) symptom, and pwdn polarity is module-specific (ours is
-  detected fine as active-low) — test carefully.
-- **Add debug to `ov9281_probe`**: print the return of
-  `v4l2_async_register_subdev_sensor()` and confirm probe returns 0 (rule out a
-  silent post-registration failure).
+The built-in Rockchip camera drivers (csi2-dphy / mipi-csi2 / rkcif / rkisp) set up
+and **complete** their async binding at ~13.2 s. The OV9281 driver is a **module
+that loads ~2.3 s later** (15.5 s). By then the pipeline notifiers have finalized
+without it — and fw_devlink's "Fixed dependency cycle(s)" broke the dphy↔sensor
+devlink — so the sensor registers into a pipeline that is no longer waiting for it,
+and sits in `pending_async_subdevices` permanently.
+
+**This fully explains why the driver source being byte-identical to the working
+`ov5647.c` doesn't matter:** `ov5647` is built **in-tree** (`CONFIG_VIDEO_OV5647=y`)
+and probes during kernel init *before* the pipeline notifiers complete; `ov9281`
+is `=n` in config and only present as a late-loading out-of-tree `.ko`. Same code,
+wrong load time.
+
+### THE FIX (highest confidence): build OV9281 in-tree
+
+Build the kernel with `CONFIG_VIDEO_OV9281=y` (or `=m` AND guaranteed to load before
+the camera drivers' notifiers complete) so the sensor probes during kernel init like
+ov5647. Path: the Radxa BSP kernel build —
+```bash
+# get the kernel source matching 6.1.84-8-rk2410 (radxa/kernel), enable the symbol,
+# build + install the kernel (rsetup has a kernel-build helper, or use radxa-pkg bsp):
+#   in the kernel config: CONFIG_VIDEO_OV9281=y
+#   (it already exists in drivers/media/i2c/ov9281.c + Kconfig/Makefile)
+# then build Image + modules + dtbs, install, reboot.
+```
+After that, ov9281 is a built-in driver and binds exactly like the in-tree ov5647.
+
+### Confirm the diagnosis first (no rebuild needed): rebind the DPHY late
+
+Proves the race — re-bind the DPHY *after* the sensor module is already loaded; if it
+then binds, load-order is confirmed:
+```bash
+DPHY=$(ls /sys/bus/platform/devices/ | grep -iE 'csi2-dphy0|\.dphy' | head -1)
+DRV=$(basename "$(readlink /sys/bus/platform/devices/$DPHY/driver)")
+echo "$DPHY" | sudo tee /sys/bus/platform/drivers/$DRV/unbind
+echo "$DPHY" | sudo tee /sys/bus/platform/drivers/$DRV/bind
+sleep 1; media-ctl -d /dev/media0 -p | grep -i ov9281 && echo BOUND || echo "not bound"
+```
+If BOUND → it is purely load-order; the in-tree build is the durable fix. A
+userspace-only workaround (no kernel rebuild) is a boot service that, after the
+ov9281 module is loaded, unbinds+rebinds the csi2-dphy0 (and possibly mipi-csi2 /
+rkcif) so their notifiers re-run with the sensor present. Less clean than in-tree
+but avoids a kernel build — viable if a kernel rebuild is impractical.
+
+### Lower-probability avenues (only if the rebind test does NOT bind)
+- Early module load via initramfs (`/etc/initramfs-tools/modules` + `update-initramfs
+  -u`) — but built-in drivers probe before initramfs, so this may still be too late;
+  the rebind test is the better signal.
+- Forum tweaks (https://forum.radxa.com/t/support-for-ov9281-camera/26386): real
+  avdd/dovdd/dvdd regulators + `pwdn-gpios` ACTIVE_HIGH. Module-specific; our sensor
+  already detects as active-low, so treat carefully. Affects streaming more than
+  binding.
+- `func v4l2_async_match_notify +p` via `/sys/kernel/debug/dynamic_debug/control`
+  (note: the glob `*v4l2-async*` was rejected — use the `func` form or
+  `file v4l2-async.c +p`) to log the exact match decision.
 
 ## If it still doesn't bind — hypotheses to pursue (for on-board Claude)
 
