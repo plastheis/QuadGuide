@@ -1,9 +1,38 @@
 from __future__ import annotations
 import abc
+import re
+import subprocess
+import threading
 import time
 import numpy as np
 
-__all__ = ["CameraSource", "USBCamera", "CSICamera", "VirtualCamera"]
+__all__ = [
+    "CameraSource", "USBCamera", "CSICamera", "CSIY10Camera", "VirtualCamera",
+    "unpack_raw10_to_gray8",
+]
+
+
+def unpack_raw10_to_gray8(buf, width: int, height: int, stride: int) -> np.ndarray:
+    """Unpack one MIPI RAW10-packed mono frame to an 8-bit greyscale image.
+
+    The ROCK 5C rkcif node delivers the OV9281's ``Y10`` as MIPI RAW10: four
+    pixels per five bytes (four high-8-bit bytes, then one byte packing the four
+    2-bit LSBs as ``p3 p2 p1 p0`` from the high bits down), with each row padded
+    to ``stride`` bytes. GStreamer has no Y10 mapping, so we read the raw V4L2
+    buffer and unpack here. Returns an ``(height, width)`` uint8 array (the 10-bit
+    value scaled down by ``>> 2``).
+    """
+    packed_per_row = width * 5 // 4
+    a = np.frombuffer(buf, dtype=np.uint8)[: stride * height]
+    a = a.reshape(height, stride)[:, :packed_per_row]
+    g = a.reshape(height, -1, 5).astype(np.uint16)
+    lo = g[..., 4]
+    p0 = (g[..., 0] << 2) | (lo & 0x3)
+    p1 = (g[..., 1] << 2) | ((lo >> 2) & 0x3)
+    p2 = (g[..., 2] << 2) | ((lo >> 4) & 0x3)
+    p3 = (g[..., 3] << 2) | ((lo >> 6) & 0x3)
+    px10 = np.stack((p0, p1, p2, p3), axis=-1).reshape(height, width)
+    return (px10 >> 2).astype(np.uint8)
 
 
 class CameraSource(abc.ABC):
@@ -101,6 +130,177 @@ class CSICamera(CameraSource):
         if self._cap is not None:
             self._cap.release()
             self._cap = None
+
+
+class CSIY10Camera(CameraSource):
+    """OV9281 global-shutter mono CSI camera (ROCK 5C / rkcif), via direct V4L2.
+
+    The OV9281 advertises only ``Y10`` (10-bit mono) and the rkcif node delivers it
+    as MIPI RAW10-packed multiplanar buffers. GStreamer's ``v4l2src`` has no Y10
+    mapping (``cv2.CAP_GSTREAMER`` returns not-negotiated), so the GStreamer
+    ``CSICamera`` path can't be used. Instead we stream raw frames from ``v4l2-ctl``
+    and unpack to BGR here. A background thread keeps only the newest raw frame
+    (latest-wins → minimal glass→track latency); ``read()`` unpacks on demand so
+    only consumed frames cost CPU. Selected via config: platform.camera.backend = "csi".
+    """
+
+    _SENSOR_W = 1280   # OV9281 native resolution
+    _SENSOR_H = 800
+    _SENSOR_NAME = "ov9281"   # substring used to find the sensor media entity
+
+    def __init__(self, config) -> None:
+        self._device = getattr(config, "device", "") or "/dev/video0"
+        self._media  = getattr(config, "media", "")  or "/dev/media0"
+        self._out_w  = getattr(config, "width",  640)
+        self._out_h  = getattr(config, "height", 400)
+
+        self._proc: subprocess.Popen | None = None
+        self._thread: threading.Thread | None = None
+        self._cond = threading.Condition()
+        self._latest = None        # (raw_bytes, ts_ns, seq)
+        self._last_seq = -1
+        self._seq = 0
+        self._running = False
+        self._sizeimage = 0
+        self._stride = 0
+
+    def open(self) -> None:
+        # Sensor is Y10-only; pin the pad format so the rkcif link validates, set the
+        # capture-node format, then learn the exact packed buffer geometry (stride is
+        # padded — 1792 B/row for 1280px, not 1280*1.25). Pad setup is best-effort: the
+        # pad is already Y10 after bind, but we set it so a fresh format negotiates.
+        self._set_sensor_pad()
+        self._v4l2(["--set-fmt-video=width=%d,height=%d,pixelformat=Y10"
+                    % (self._SENSOR_W, self._SENSOR_H)])
+        self._sizeimage, self._stride = self._query_geometry()
+        if self._sizeimage <= 0 or self._stride <= 0:
+            raise RuntimeError(
+                f"CSIY10Camera: could not determine frame geometry for {self._device}"
+            )
+
+        self._running = True
+        self._proc = subprocess.Popen(
+            ["v4l2-ctl", "-d", self._device,
+             "--set-fmt-video=width=%d,height=%d,pixelformat=Y10"
+             % (self._SENSOR_W, self._SENSOR_H),
+             "--stream-mmap", "--stream-to=-", "--stream-count=0"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
+        )
+        self._thread = threading.Thread(
+            target=self._run, name="csi-y10-camera", daemon=True
+        )
+        self._thread.start()
+        with self._cond:
+            if not self._cond.wait_for(lambda: self._latest is not None, timeout=5.0):
+                raise RuntimeError(
+                    f"CSIY10Camera: no frames from {self._device} "
+                    f"(streaming via v4l2-ctl failed?)"
+                )
+
+    def read(self) -> tuple[np.ndarray, int]:
+        # Block for a frame newer than the last returned, then unpack on demand:
+        # only frames perception actually consumes pay the RAW10→BGR cost.
+        with self._cond:
+            self._cond.wait_for(
+                lambda: not self._running
+                or (self._latest is not None and self._latest[2] != self._last_seq)
+            )
+            if not self._running or self._latest is None:
+                raise RuntimeError("CSIY10Camera: frame capture failed (stream ended?)")
+            raw, ts, seq = self._latest
+            self._last_seq = seq
+        gray = unpack_raw10_to_gray8(raw, self._SENSOR_W, self._SENSOR_H, self._stride)
+        import cv2
+        if (self._out_w, self._out_h) != (self._SENSOR_W, self._SENSOR_H):
+            gray = cv2.resize(gray, (self._out_w, self._out_h),
+                              interpolation=cv2.INTER_AREA)
+        frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)  # mono → 3-ch BGR for perception
+        return frame, ts
+
+    def close(self) -> None:
+        self._running = False
+        if self._proc is not None:
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            self._proc = None
+        with self._cond:
+            self._cond.notify_all()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+    # internals -------------------------------------------------------------
+    def _run(self) -> None:
+        n = self._sizeimage
+        stream = self._proc.stdout
+        while self._running:
+            raw = self._read_exact(stream, n)
+            if raw is None:
+                break  # v4l2-ctl exited / stream ended
+            ts = time.monotonic_ns()
+            with self._cond:
+                self._seq += 1
+                self._latest = (raw, ts, self._seq)
+                self._cond.notify_all()
+        with self._cond:           # wake any read() blocked on a dead stream
+            self._running = False
+            self._cond.notify_all()
+
+    @staticmethod
+    def _read_exact(stream, n: int) -> bytes | None:
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = stream.read(n - len(buf))
+            if not chunk:
+                return None
+            buf.extend(chunk)
+        return bytes(buf)
+
+    def _v4l2(self, args: list[str]) -> str:
+        try:
+            out = subprocess.run(
+                ["v4l2-ctl", "-d", self._device, *args],
+                capture_output=True, text=True, timeout=5,
+            )
+            return out.stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    def _query_geometry(self) -> tuple[int, int]:
+        """Return (sizeimage, bytesperline) from the node's current format."""
+        text = self._v4l2(["--get-fmt-video"])
+        size = re.search(r"Size Image\s*:\s*(\d+)", text)
+        line = re.search(r"Bytes per Line\s*:\s*(\d+)", text)
+        sizeimage = int(size.group(1)) if size else 0
+        stride = int(line.group(1)) if line else 0
+        if sizeimage and not stride:        # fall back if stride wasn't reported
+            stride = sizeimage // self._SENSOR_H
+        return sizeimage, stride
+
+    def _set_sensor_pad(self) -> None:
+        """Best-effort: set the OV9281 sensor pad to Y10 so the rkcif link validates."""
+        graph = self._media_ctl(["-p"])
+        m = re.search(r"entity \d+: (\S[^\n(]*%s[^\n(]*) \(" % self._SENSOR_NAME, graph)
+        if not m:
+            return
+        name = m.group(1).strip()
+        self._media_ctl([
+            "--set-v4l2",
+            '"%s":0[fmt:Y10_1X10/%dx%d]' % (name, self._SENSOR_W, self._SENSOR_H),
+        ])
+
+    def _media_ctl(self, args: list[str]) -> str:
+        try:
+            out = subprocess.run(
+                ["media-ctl", "-d", self._media, *args],
+                capture_output=True, text=True, timeout=5,
+            )
+            return out.stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
 
 
 class VirtualCamera(CameraSource):

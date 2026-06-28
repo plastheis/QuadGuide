@@ -3,12 +3,13 @@ platform:
   camera:
     # HIL toggle: set backend=raw_tcp (or network) + serial.mode=tcp below to
     # drive the stack from the dev-machine simulator instead of real hardware.
-    backend: gstreamer       # CSI camera via GStreamer → CSICamera (was v4l2)
-    # OV9281 (mono global shutter, native 1280x800). Capture the FULL sensor to
-    # preserve the 79° FoV, then downscale for tracker latency. VERIFY node +
-    # format on the SBC (see docs/sbc-setup.md): node is typically /dev/video11;
-    # mono output may be NV12 (rkisp) or GRAY8 (rkcif raw) — adjust caps to match.
-    pipeline: "v4l2src device=/dev/video11 io-mode=4 ! video/x-raw,format=NV12,width=1280,height=800,framerate=60/1 ! videoscale ! video/x-raw,width=640,height=400 ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
+    backend: csi        # "v4l2" | "gstreamer" | "csi" | "virtual" | "network" | "raw_tcp" (HIL)
+    # csi: OV9281 global-shutter mono via direct V4L2 (rkcif Y10/RAW10). The sensor
+    # is Y10-only and GStreamer has no Y10 mapping, so the "gstreamer"/video11 ISP
+    # path can't be used — CSIY10Camera streams the rkcif raw node and unpacks here.
+    # Captures the FULL sensor (1280x800, preserves the 79° FoV) and downscales to
+    # width x height for tracker latency.
+    device: /dev/video0   # used when backend=csi — rkcif raw node (NOT /dev/video11 ISP)
     width: 640               # downscaled frame the stack processes
     height: 400              # 16:10 (OV9281 native aspect) — full FoV preserved
     fps: 60
