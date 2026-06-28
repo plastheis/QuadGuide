@@ -147,6 +147,7 @@ class CSIY10Camera(CameraSource):
     _SENSOR_W = 1280   # OV9281 native resolution
     _SENSOR_H = 800
     _SENSOR_NAME = "ov9281"   # substring used to find the sensor media entity
+    _FOURCC = "Y10 "          # V4L2 'Y10 ' pixelformat — the trailing space IS significant
 
     def __init__(self, config) -> None:
         self._device = getattr(config, "device", "") or "/dev/video0"
@@ -170,8 +171,7 @@ class CSIY10Camera(CameraSource):
         # padded — 1792 B/row for 1280px, not 1280*1.25). Pad setup is best-effort: the
         # pad is already Y10 after bind, but we set it so a fresh format negotiates.
         self._set_sensor_pad()
-        self._v4l2(["--set-fmt-video=width=%d,height=%d,pixelformat=Y10"
-                    % (self._SENSOR_W, self._SENSOR_H)])
+        self._v4l2([self._fmt_arg()])
         self._sizeimage, self._stride = self._query_geometry()
         if self._sizeimage <= 0 or self._stride <= 0:
             raise RuntimeError(
@@ -179,10 +179,10 @@ class CSIY10Camera(CameraSource):
             )
 
         self._running = True
+        # stderr -> DEVNULL: v4l2-ctl prints a '<' per frame to stderr, which would
+        # fill and block a pipe; on failure we re-probe via _diagnose() instead.
         self._proc = subprocess.Popen(
-            ["v4l2-ctl", "-d", self._device,
-             "--set-fmt-video=width=%d,height=%d,pixelformat=Y10"
-             % (self._SENSOR_W, self._SENSOR_H),
+            ["v4l2-ctl", "-d", self._device, self._fmt_arg(),
              "--stream-mmap", "--stream-to=-", "--stream-count=0"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
         )
@@ -192,9 +192,10 @@ class CSIY10Camera(CameraSource):
         self._thread.start()
         with self._cond:
             if not self._cond.wait_for(lambda: self._latest is not None, timeout=5.0):
+                err = self._diagnose()
                 raise RuntimeError(
-                    f"CSIY10Camera: no frames from {self._device} "
-                    f"(streaming via v4l2-ctl failed?)"
+                    f"CSIY10Camera: no frames from {self._device}. "
+                    f"v4l2-ctl: {err or '(no diagnostic output)'}"
                 )
 
     def read(self) -> tuple[np.ndarray, int]:
@@ -258,6 +259,24 @@ class CSIY10Camera(CameraSource):
                 return None
             buf.extend(chunk)
         return bytes(buf)
+
+    def _fmt_arg(self) -> str:
+        # Note the trailing space in the fourcc — 'Y10' (3 chars) is rejected by
+        # v4l2-ctl ("pixelformat 'Y10' is invalid"); the V4L2 fourcc is 'Y10 '.
+        return ("--set-fmt-video=width=%d,height=%d,pixelformat=%s"
+                % (self._SENSOR_W, self._SENSOR_H, self._FOURCC))
+
+    def _diagnose(self) -> str:
+        """One-shot capture to surface why the stream produced no frames."""
+        try:
+            r = subprocess.run(
+                ["v4l2-ctl", "-d", self._device, self._fmt_arg(),
+                 "--stream-mmap", "--stream-count=1", "--stream-to=/dev/null"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return (r.stderr or r.stdout or "").strip().replace("\n", " ")[:300]
+        except (OSError, subprocess.SubprocessError) as exc:
+            return str(exc)
 
     def _v4l2(self, args: list[str]) -> str:
         try:
