@@ -151,22 +151,32 @@ ov5647. Path: the Radxa BSP kernel build —
 ```
 After that, ov9281 is a built-in driver and binds exactly like the in-tree ov5647.
 
-### Confirm the diagnosis first (no rebuild needed): rebind the DPHY late
+### Rebind experiments (running kernel)
 
-Proves the race — re-bind the DPHY *after* the sensor module is already loaded; if it
-then binds, load-order is confirmed:
-```bash
-DPHY=$(ls /sys/bus/platform/devices/ | grep -iE 'csi2-dphy0|\.dphy' | head -1)
-DRV=$(basename "$(readlink /sys/bus/platform/devices/$DPHY/driver)")
-echo "$DPHY" | sudo tee /sys/bus/platform/drivers/$DRV/unbind
-echo "$DPHY" | sudo tee /sys/bus/platform/drivers/$DRV/bind
-sleep 1; media-ctl -d /dev/media0 -p | grep -i ov9281 && echo BOUND || echo "not bound"
-```
-If BOUND → it is purely load-order; the in-tree build is the durable fix. A
-userspace-only workaround (no kernel rebuild) is a boot service that, after the
-ov9281 module is loaded, unbinds+rebinds the csi2-dphy0 (and possibly mipi-csi2 /
-rkcif) so their notifiers re-run with the sensor present. Less clean than in-tree
-but avoids a kernel build — viable if a kernel rebuild is impractical.
+- **Single-DPHY rebind** (`unbind`+`bind` csi2-dphy0 only, sensor already loaded):
+  **did NOT bind.** So either the DPHY's re-probe doesn't re-arm its sensor
+  notifier, or this is not purely load-order.
+- **Re-registering the sensor** (`modprobe -r ov9281; modprobe ov9281`, which makes
+  the v4l2-async core re-evaluate all notifiers): **did NOT bind** either — implying
+  no open notifier is currently waiting for the sensor's fwnode.
+- **NEXT: full-chain rebind in dependency order** — tear down sensor + dphy, bring
+  the DPHY up first (arms its notifier), then bind the sensor into it:
+  ```bash
+  echo 3-0060     | sudo tee /sys/bus/i2c/drivers/ov9281/unbind
+  echo csi2-dphy0 | sudo tee /sys/bus/platform/drivers/rockchip-csi2-dphy/unbind
+  echo csi2-dphy0 | sudo tee /sys/bus/platform/drivers/rockchip-csi2-dphy/bind
+  echo 3-0060     | sudo tee /sys/bus/i2c/drivers/ov9281/bind
+  sleep 1; media-ctl -d /dev/media0 -p | grep -i ov9281 && echo BOUND || echo "not bound"
+  ```
+  - **BOUND** → load-order confirmed; userspace workaround = boot service running
+    this sequence after `ov9281.ko` loads; durable fix = in-tree build.
+  - **not bound** → genuine async fwnode-match failure, independent of timing. Get
+    the match logs: `echo 'func v4l2_async_match_notify +p' | sudo tee
+    /sys/kernel/debug/dynamic_debug/control` then re-bind the sensor and read dmesg.
+    (The glob form `file *v4l2-async* +p` is rejected — use `func ...` or
+    `file v4l2-async.c +p`.) In this case the in-tree build is still the most likely
+    fix (it's how the working ov5647 is built), but confirm with the match logs and,
+    if needed, instrument `ov9281_probe` / compare async setup to ov5647 at runtime.
 
 ### Lower-probability avenues (only if the rebind test does NOT bind)
 - Early module load via initramfs (`/etc/initramfs-tools/modules` + `update-initramfs
