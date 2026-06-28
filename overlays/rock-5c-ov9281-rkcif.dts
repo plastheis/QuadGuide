@@ -1,0 +1,180 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+//
+// OV9281 (mono global-shutter, RAW10) on ROCK 5C — RKCIF-ONLY variant.
+//
+// WHY THIS EXISTS: the full overlay (rock-5c-ov9281.dts, copied from the OV5647
+// reference) routes the sensor through BOTH the rkcif raw path AND the rkisp ISP
+// path. On bind that triggers:
+//   "subdev descriptor already listed in this or other notifiers"
+//   "rockchip-csi2-dphy: probe of csi2-dphy0 failed with error -22"
+// because two notifier chains (rkcif + rkisp) both try to claim the one sensor.
+//
+// A MONO sensor must NOT go through the ISP (the ISP debayers Bayer data — wrong
+// for Y10). This overlay enables ONLY: sensor -> csi2_dphy0 -> mipi2_csi2 -> rkcif,
+// and DROPS every rkisp fragment (sditf, isp0_mmu, rkisp0, rkisp0_vir0). That
+// leaves a single notifier claiming the sensor, which should bind cleanly, and the
+// capture node is the rkcif raw node /dev/video0 (stream_cif_mipi_id0) — exactly
+// what we want for mono.
+//
+// Build / enable (disable the full overlay first so they don't both grab csi2_dphy0):
+//   cd ~/quadguide && git pull
+//   dtc -@ -I dts -O dtb -o /tmp/rock-5c-ov9281-rkcif.dtbo overlays/rock-5c-ov9281-rkcif.dts
+//   sudo cp /tmp/rock-5c-ov9281-rkcif.dtbo /boot/dtbo/
+//   # in /boot/uEnv.txt overlays= line: replace `rock-5c-ov9281` with `rock-5c-ov9281-rkcif`
+//   sudo sed -i 's/rock-5c-ov9281\b/rock-5c-ov9281-rkcif/' /boot/uEnv.txt ; grep overlays /boot/uEnv.txt
+//   sudo reboot
+// WIN CONDITION:
+//   media-ctl -d /dev/media0 -p | grep -i ov9281   # sensor is a bound ENTITY
+//   sudo cat /sys/kernel/debug/v4l2-async/pending_async_subdevices | grep ov9281  # gone
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	metadata {
+		title = "Enable OV9281 mono camera, RKCIF-only (ROCK 5C)";
+		compatible = "radxa,rock-5a", "radxa,rock-5c";
+		category = "camera";
+		exclusive = "csi2_dphy0";
+		description = "OV9281 mono GS camera via rkcif raw path (no ISP).";
+	};
+
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			clk_cam_24m: external-camera-clock-24m {
+				status = "okay";
+				compatible = "fixed-clock";
+				clock-frequency = <24000000>;
+				clock-output-names = "clk_cam_24m";
+				#clock-cells = <0>;
+			};
+		};
+	};
+
+	fragment@1 {
+		target = <&i2c3>;
+		__overlay__ {
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			ov9281: ov9281@60 {
+				status = "okay";
+				compatible = "ovti,ov9281";
+				reg = <0x60>;
+				clocks = <&clk_cam_24m>;
+				clock-names = "xvclk";
+				pwdn-gpios = <&gpio1 0x1b 1>;
+				rockchip,camera-module-index = <0>;
+				rockchip,camera-module-facing = "back";
+				rockchip,camera-module-name = "ov9281";
+				rockchip,camera-module-lens-name = "default";
+
+				port {
+					ov9281_out: endpoint {
+						remote-endpoint = <&mipidphy0_in_ucam1>;
+						data-lanes = <1 2>;
+					};
+				};
+			};
+		};
+	};
+
+	fragment@2 {
+		target = <&csi2_dphy0_hw>;
+		__overlay__ { status = "okay"; };
+	};
+
+	fragment@3 {
+		target = <&csi2_dphy0>;
+		__overlay__ {
+			status = "okay";
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				port@0 {
+					reg = <0>;
+					#address-cells = <1>;
+					#size-cells = <0>;
+					mipidphy0_in_ucam1: endpoint@2 {
+						reg = <2>;
+						remote-endpoint = <&ov9281_out>;
+						data-lanes = <1 2>;
+					};
+				};
+				port@1 {
+					reg = <1>;
+					#address-cells = <1>;
+					#size-cells = <0>;
+					csidphy0_out: endpoint@0 {
+						reg = <0>;
+						remote-endpoint = <&mipi2_csi2_input>;
+					};
+				};
+			};
+		};
+	};
+
+	fragment@4 {
+		target = <&mipi2_csi2>;
+		__overlay__ {
+			status = "okay";
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				port@0 {
+					reg = <0>;
+					#address-cells = <1>;
+					#size-cells = <0>;
+					mipi2_csi2_input: endpoint@1 {
+						reg = <1>;
+						remote-endpoint = <&csidphy0_out>;
+					};
+				};
+				port@1 {
+					reg = <1>;
+					#address-cells = <1>;
+					#size-cells = <0>;
+					mipi2_csi2_output: endpoint@0 {
+						reg = <0>;
+						remote-endpoint = <&cif_mipi2_in0>;
+					};
+				};
+			};
+		};
+	};
+
+	fragment@5 {
+		target = <&rkcif>;
+		__overlay__ { status = "okay"; };
+	};
+
+	fragment@6 {
+		target = <&rkcif_mipi_lvds2>;
+		__overlay__ {
+			status = "okay";
+			port {
+				cif_mipi2_in0: endpoint {
+					remote-endpoint = <&mipi2_csi2_output>;
+				};
+			};
+		};
+	};
+
+	fragment@7 {
+		target = <&rkcif_mmu>;
+		__overlay__ { status = "okay"; };
+	};
+
+	fragment@8 {
+		target = <&pinctrl>;
+		__overlay__ {
+			camera {
+				cam_pwdn_gpio: cam-pwdn-gpio {
+					rockchip,pins = <1 0x1b 0 &pcfg_pull_up>;
+				};
+			};
+		};
+	};
+};
