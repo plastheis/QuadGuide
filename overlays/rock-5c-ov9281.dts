@@ -3,106 +3,48 @@
 // Device-tree overlay: OmniVision OV9281 (1 MP mono global-shutter, RAW10) on
 // the Radxa ROCK 5C (RK3588S2) MIPI-CSI connector.
 //
-// PROVENANCE
-// ----------
-// This overlay was derived by reading the EXACT files off a ROCK 5C boot SD
-// card (Radxa OS, kernel 6.1.43-15-rk2312):
-//   * base DT  /usr/lib/.../rockchip/rk3588s-rock-5c.dtb
-//   * template /boot/dtbo/rock-5d-rpi-camera-v1p3.dtbo  (OV5647; the ROCK 5D is
-//              also RK3588S2 and wires its CSI connector identically)
-// Every base-DT label this overlay fixes up — i2c3, csi2_dphy0, csi2_dphy0_hw,
-// mipi2_csi2, rkcif, rkcif_mipi_lvds2, rkcif_mipi_lvds2_sditf, rkcif_mmu,
-// rkisp0, rkisp0_vir0, isp0_mmu, pinctrl, gpio1, pcfg_pull_up — was confirmed
-// present in the ROCK 5C base DT's __symbols__. The signal chain, the I2C bus
-// (i2c3, enabled here because it is `status=disabled` in the base), and the
-// power-down GPIO (gpio1 offset 0x1B = GPIO1_D3, active-low) are copied verbatim
-// from the working OV5647 overlay.
+// PROVENANCE — this is the rk2410 image's own OKDO-5MP/OV5647 camera overlay
+// (`/boot/dtbo/rock-5a-okdo-5mp-camera.dtbo`, whose metadata explicitly lists
+// `radxa,rock-5c`), reproduced fragment-for-fragment, with ONLY the sensor node
+// swapped to the OV9281. The OV9281 is a 2-lane MIPI sensor exactly like the
+// OV5647, so the dphy → csi2 → rkcif → isp wiring is identical and unchanged.
 //
-// ┌────────────────────────────────────────────────────────────────────────────┐
-// │ ⚠ THE OVERLAY IS NECESSARY BUT NOT SUFFICIENT — A DRIVER IS MISSING.         │
-// │ The shipped kernel config (/boot/config-6.1.43-15-rk2312) has               │
-// │     # CONFIG_VIDEO_OV9281 is not set        (CONFIG_VIDEO_OV5647=y)          │
-// │ so there is NO ov9281 driver compiled in or shipped as a module. Applying    │
-// │ this overlay creates an `ovti,ov9281` I2C node that nothing binds to. You    │
-// │ MUST also provide the driver — see §DRIVER below — before the camera         │
-// │ enumerates. The capture pipeline itself IS present:                          │
-// │     CONFIG_VIDEO_ROCKCHIP_CIF=y, CONFIG_VIDEO_ROCKCHIP_ISP=y.                 │
-// └────────────────────────────────────────────────────────────────────────────┘
+// Why not the earlier hand-built version: it carried two properties the OV9281
+// driver rejects, which made the chip detect over I2C but never register its
+// v4l2 subdev (so rkcif reported "get remote terminal sensor failed -19"):
+//   * link-frequencies on the sensor endpoint — the out-of-tree ov9281 driver
+//     validates this against its own table and aborts subdev registration if it
+//     doesn't match. The reference omits it; so do we (driver uses its default).
+//   * pinctrl-0 on the sensor node — caused "could not get default pinstate".
+// Confirmed on-target facts baked in: I2C bus i2c3, pwdn GPIO1_D3 (0x1b)
+// active-low, clock-names "xvclk" (the ov9281 driver requested this and bound).
 //
-// Things you still must confirm on YOUR hardware (cannot be read from the card):
-//   * The OV9281 module's input clock. The OV5647 module supplies its own 25 MHz
-//     from an on-module oscillator (the DT clock is a fixed-clock stub, not a SoC
-//     mclk). This overlay sets 24 MHz — the OV9281 nominal. If your module's
-//     crystal is 27 MHz (some are), change clock-frequency below to match it, or
-//     probe will mis-compute PLL timings.
-//   * Whether your module wires a RESET line in addition to PWDN. The OV5647
-//     reference uses PWDN only; add reset-gpios if your board needs it.
-//   * The OV9281 I2C address. 0x60 is the OV9281 default; if your module straps
-//     it to 0x10, change reg = <0x10> (and `ov9281@10`). Confirm with i2cdetect.
+// CLOCK FREQUENCY: the OKDO module declared 25 MHz; OV9281 nominal is 24 MHz and
+// the module supplies its own oscillator (the sensor was detected over I2C with
+// the fixed-clock at 24 MHz, so the value only informs the driver's timing math).
+// If streaming framerate/exposure looks wrong, try 25000000 here.
 //
-// ─────────────────────────────────────────────────────────────────────────────
-// §DRIVER — supply the OV9281 kernel driver (pick ONE)
-// ─────────────────────────────────────────────────────────────────────────────
-// The card already ships kernel headers at
-//     /usr/src/linux-headers-6.1.43-15-rk2312
-// so an out-of-tree module build is the least invasive path:
-//   1. Get the Rockchip BSP `ov9281.c` for this kernel line (it lives in the
-//      rockchip-linux/kernel rk-6.1 tree at drivers/media/i2c/ov9281.c — match
-//      the 6.1.43 / linux-6.1-stan-rkr* tag your image was built from).
-//   2. Build it against the shipped headers:
-//        make -C /usr/src/linux-headers-6.1.43-15-rk2312 M=$PWD modules
-//      (a 3-line Makefile: `obj-m += ov9281.o`)
-//   3. Install + load:
-//        sudo cp ov9281.ko /usr/lib/modules/6.1.43-15-rk2312/updates/
-//        sudo depmod -a && sudo modprobe ov9281
-//   4. Make it load at boot: `echo ov9281 | sudo tee /etc/modules-load.d/ov9281.conf`
-// Alternative: rebuild the kernel with CONFIG_VIDEO_OV9281=m and reinstall.
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// §BUILD + INSTALL the overlay (the proper Radxa way)
-// ─────────────────────────────────────────────────────────────────────────────
-// The card ships the overlay source package at /usr/src/radxa-overlays-0.1.12.
-// Easiest standalone build (no package rebuild):
-//     dtc -@ -I dts -O dtb -o rock-5c-ov9281.dtbo overlays/rock-5c-ov9281.dts
-//     sudo cp rock-5c-ov9281.dtbo /boot/dtbo/
-//     # enable it: append `rock-5c-ov9281` to the overlays line in
-//     # /boot/uEnv.txt  (this image uses U-Boot extlinux + uEnv.txt), or via
-//     # `rsetup` → Overlays. Then:
-//     sudo reboot
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// §BRING-UP CHECKS (after the driver is installed AND the overlay is enabled)
-// ─────────────────────────────────────────────────────────────────────────────
-//     dmesg | grep -iE 'ov9281|rkcif|csi2'        # probe / lane / link-freq
-//     i2cdetect -y 3                                # bus i2c3 → 0x60 ("UU" = bound)
-//     v4l2-ctl --list-devices                       # find rkcif "stream_cif_mipi_id0"
-//     media-ctl -p                                  # confirm ov9281→dphy0→csi2→cif
-//     media-ctl --set-v4l2 '"ov9281 3-0060":0[fmt:Y10_1X10/1280x800]'
-//     v4l2-ctl -d /dev/videoN --set-fmt-video=width=1280,height=800,pixelformat=Y10 \
-//              --stream-mmap --stream-count=1
-// Then point configs/rk3588.yaml at that CIF node with a MONO pipeline:
-//     pipeline: "v4l2src device=/dev/videoN io-mode=4 ! video/x-raw,format=GRAY8,width=1280,height=800,framerate=60/1 ! videoscale ! video/x-raw,width=640,height=400 ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
-// (If the CIF node reports GREY/Y10 instead of GRAY8, set the caps to match
-//  `v4l2-ctl -d /dev/videoN --list-formats-ext`.)
-//
-// NOTE on the ISP fragments: this overlay keeps the rkisp0 path enabled exactly
-// as the OV5647 reference does, so the overlay applies identically to a known-good
-// one. For a MONO sensor you capture from the rkcif (VICAP) node, not the ISP.
+// BUILD + INSTALL (on the board):
+//   cd ~/quadguide && git pull
+//   dtc -@ -I dts -O dtb -o /tmp/rock-5c-ov9281.dtbo overlays/rock-5c-ov9281.dts
+//   sudo cp /tmp/rock-5c-ov9281.dtbo /boot/dtbo/rock-5c-ov9281.dtbo
+//   sudo reboot          # (overlay already enabled in /boot/uEnv.txt)
+// VERIFY after reboot:
+//   media-ctl -d /dev/media0 -p | grep -i ov9281     # sensor now an ENTITY = fixed
+//   the capture node is /dev/video0 (stream_cif_mipi_id0), mono Y10/GREY.
 
 /dts-v1/;
 /plugin/;
 
 / {
 	metadata {
-		title = "Enable OV9281 mono global-shutter camera (ROCK 5C)";
-		compatible = "radxa,rock-5c";
+		title = "Enable OV9281 mono camera (ROCK 5C)";
+		compatible = "radxa,rock-5a", "radxa,rock-5c";
 		category = "camera";
 		exclusive = "csi2_dphy0";
-		description = "Enable OV9281 1MP mono GS camera on the ROCK 5C CSI connector.";
+		description = "Enable OV9281 1MP mono global-shutter camera.";
 	};
 
-	// fragment@0 — fixed-clock stub: the camera module supplies its own xvclk.
-	// OV9281 nominal is 24 MHz (OV5647 module used 25 MHz — see header note).
 	fragment@0 {
 		target-path = "/";
 		__overlay__ {
@@ -116,7 +58,6 @@
 		};
 	};
 
-	// fragment@1 — the OV9281 sensor on i2c3 (re-enables the bus; disabled in base)
 	fragment@1 {
 		target = <&i2c3>;
 		__overlay__ {
@@ -130,10 +71,7 @@
 				reg = <0x60>;
 				clocks = <&clk_cam_24m>;
 				clock-names = "xvclk";
-				// GPIO1_D3, active-low — verbatim from the OV5647 reference.
-				pwdn-gpios = <&gpio1 0x1B 1>;
-				pinctrl-names = "default";
-				pinctrl-0 = <&cam_pwdn_gpio>;
+				pwdn-gpios = <&gpio1 0x1b 1>;
 				rockchip,camera-module-index = <0>;
 				rockchip,camera-module-facing = "back";
 				rockchip,camera-module-name = "ov9281";
@@ -141,22 +79,19 @@
 
 				port {
 					ov9281_out: endpoint {
-						remote-endpoint = <&mipidphy0_in_ucam>;
+						remote-endpoint = <&mipidphy0_in_ucam1>;
 						data-lanes = <1 2>;
-						link-frequencies = /bits/ 64 <400000000>;
 					};
 				};
 			};
 		};
 	};
 
-	// fragment@2 — MIPI D-PHY0 hardware block
 	fragment@2 {
 		target = <&csi2_dphy0_hw>;
 		__overlay__ { status = "okay"; };
 	};
 
-	// fragment@3 — D-PHY0 RX: sensor in (port@0) → CSI2 host out (port@1)
 	fragment@3 {
 		target = <&csi2_dphy0>;
 		__overlay__ {
@@ -168,7 +103,7 @@
 					reg = <0>;
 					#address-cells = <1>;
 					#size-cells = <0>;
-					mipidphy0_in_ucam: endpoint@2 {
+					mipidphy0_in_ucam1: endpoint@2 {
 						reg = <2>;
 						remote-endpoint = <&ov9281_out>;
 						data-lanes = <1 2>;
@@ -187,7 +122,6 @@
 		};
 	};
 
-	// fragment@4 — CSI-2 host bridge: dphy in (port@0) → VICAP out (port@1)
 	fragment@4 {
 		target = <&mipi2_csi2>;
 		__overlay__ {
@@ -217,13 +151,11 @@
 		};
 	};
 
-	// fragment@5 — VICAP / rkcif top
 	fragment@5 {
 		target = <&rkcif>;
 		__overlay__ { status = "okay"; };
 	};
 
-	// fragment@6 — rkcif MIPI/LVDS2 capture input (the mono RAW node source)
 	fragment@6 {
 		target = <&rkcif_mipi_lvds2>;
 		__overlay__ {
@@ -236,7 +168,6 @@
 		};
 	};
 
-	// fragment@7 — rkcif sub-dev interface to the ISP scaler path
 	fragment@7 {
 		target = <&rkcif_mipi_lvds2_sditf>;
 		__overlay__ {
@@ -249,25 +180,21 @@
 		};
 	};
 
-	// fragment@8 — rkcif IOMMU
 	fragment@8 {
 		target = <&rkcif_mmu>;
 		__overlay__ { status = "okay"; };
 	};
 
-	// fragment@9 — ISP0 IOMMU
 	fragment@9 {
 		target = <&isp0_mmu>;
 		__overlay__ { status = "okay"; };
 	};
 
-	// fragment@10 — ISP0
 	fragment@10 {
 		target = <&rkisp0>;
 		__overlay__ { status = "okay"; };
 	};
 
-	// fragment@11 — ISP0 virtual device 0: input from the rkcif sditf
 	fragment@11 {
 		target = <&rkisp0_vir0>;
 		__overlay__ {
@@ -283,13 +210,12 @@
 		};
 	};
 
-	// fragment@12 — pinctrl group for the power-down GPIO (GPIO1_D3)
 	fragment@12 {
 		target = <&pinctrl>;
 		__overlay__ {
 			camera {
 				cam_pwdn_gpio: cam-pwdn-gpio {
-					rockchip,pins = <1 0x1B 0 &pcfg_pull_up>;
+					rockchip,pins = <1 0x1b 0 &pcfg_pull_up>;
 				};
 			};
 		};
