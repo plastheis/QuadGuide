@@ -9,17 +9,18 @@ from quadguide.perception.camera.sources import (
 def _pack_raw10(pixels10: np.ndarray, stride: int) -> bytes:
     """Pack a (H, W) 10-bit array into MIPI RAW10 with row padding to ``stride``.
 
-    Inverse of unpack_raw10_to_gray8's bit layout: 4 px / 5 bytes (4 high-8-bit
-    bytes + 1 LSB byte ``p3 p2 p1 p0`` high→low), each row padded to ``stride``.
+    Inverse of unpack_raw10_to_gray8's bit layout: 4 px / 5 bytes bit-packed
+    little-endian across 40 bits (p0 in the low bits), each row padded to
+    ``stride``.
     """
     h, w = pixels10.shape
     out = bytearray()
     for r in range(h):
         row = bytearray()
         for c in range(0, w, 4):
-            p = pixels10[r, c:c + 4]
-            lo = (p[0] & 3) | ((p[1] & 3) << 2) | ((p[2] & 3) << 4) | ((p[3] & 3) << 6)
-            row += bytes([p[0] >> 2, p[1] >> 2, p[2] >> 2, p[3] >> 2, lo])
+            p = [int(x) for x in pixels10[r, c:c + 4]]
+            bits = p[0] | (p[1] << 10) | (p[2] << 20) | (p[3] << 30)
+            row += bits.to_bytes(5, "little")
         row += bytes(stride - len(row))   # pad
         out += row
     return bytes(out)
