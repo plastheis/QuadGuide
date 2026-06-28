@@ -96,23 +96,58 @@ not capture-node/format.
    no link-frequencies, no pinctrl-0) — sensor detected AND registers, but pending
    (doesn't bind). Bidirectional DT link confirmed correct (above).
 3. **Rebuilt `ov9281.c` from `radxa/kernel` branch `linux-6.1-stan-rkr4.1`** against
-   the on-board headers — **compiles cleanly to `~/ov9281-rebuild/ov9281.ko`**
-   (only a benign "compiler differs" warning). **Not yet installed/tested** at the
-   time of writing — that is the immediate next step.
+   the on-board headers — compiled cleanly to `~/ov9281-rebuild/ov9281.ko`,
+   installed to `/lib/modules/6.1.84-8-rk2410/updates/ov9281.ko`, rebooted.
+   **RESULT: still NOT bound, still pending.** `modinfo` confirms the loaded
+   module is the rebuilt one (`filename: .../updates/ov9281.ko`,
+   `srcversion: 73219C0BBCA2D95A1A018C4`) but it still prints
+   `driver version: 00.01.05` — i.e. the `rkr4.1` source IS the same 00.01.05 that
+   was already there. **Rebuilding the same source is a dead end.**
+4. **Compared `ov9281.c` vs in-tree `ov5647.c` registration** (ov5647 binds on this
+   kernel; CONFIG_VIDEO_OV5647=y). They are **IDENTICAL** in the registration tail:
+   both set `pad.flags = MEDIA_PAD_FL_SOURCE`, `entity.function =
+   MEDIA_ENT_F_CAM_SENSOR`, `media_entity_pads_init(&sd->entity, 1, &pad)`, then
+   `v4l2_async_register_subdev_sensor(sd)`; fwnode is set implicitly by
+   `v4l2_i2c_subdev_init` (the i2c client node). So the binding MECHANISM is not the
+   differentiator — the bug is subtler than the registration call.
 
-## IMMEDIATE NEXT STEP (in progress)
+## IMMEDIATE NEXT STEP — get the async core to say WHY it won't match
 
-Install the freshly-built module (overrides the out-of-tree one via `updates/`),
-reboot, and check whether it binds:
+The registration is identical to a working sensor, so the next move is to make the
+kernel log the match decision. Enable dynamic debug on the v4l2 async/fwnode core,
+re-register the sensor, and read the verdict:
 
 ```bash
-find /usr/lib/modules/$(uname -r) /lib/modules/$(uname -r) -name 'ov9281.ko*' 2>/dev/null
-sudo cp ~/ov9281-rebuild/ov9281.ko /usr/lib/modules/$(uname -r)/updates/ov9281.ko
-sudo depmod -a && sudo reboot
-# WIN CONDITION after reboot:
-media-ctl -d /dev/media0 -p | grep -i ov9281   # sensor is now a media ENTITY = bound
-sudo cat /sys/kernel/debug/v4l2-async/pending_async_subdevices | grep -i ov9281  # should be GONE
+echo 'file *v4l2-async* +p' | sudo tee /sys/kernel/debug/dynamic_debug/control
+echo 'file *v4l2-fwnode* +p' | sudo tee -a /sys/kernel/debug/dynamic_debug/control
+sudo modprobe -r ov9281 2>&1 | tail -2          # may fail if held; if so, reboot with debug pre-enabled
+sudo modprobe ov9281
+sudo dmesg | grep -iE 'async|fwnode|ov9281|match|notif|bound|waiting' | tail -60
 ```
+Interpret the dump: does the DPHY/rkcif notifier even *evaluate* the sensor? Is the
+fwnode compared and rejected, or is no notifier waiting for it (deferred/cycle)?
+The `csi2-dphy0: Fixed dependency cycle(s) with .../ov9281@60` boot line means
+fw_devlink broke a dphy↔sensor cyclic devlink — check whether that cycle-break is
+what prevents the dphy notifier from claiming the sensor (this is the leading
+suspect now, since the driver code itself is identical to a working one).
+
+### Other avenues if dynamic debug is inconclusive
+- **Build the driver IN-TREE** (`CONFIG_VIDEO_OV9281=y` via the Radxa `bsp`/`rsetup`
+  kernel build) rather than as a late-loaded module. The out-of-tree module loads at
+  ~15 s (after the dphy/rkcif notifiers are set up at ~13 s); even though async is
+  supposed to handle late registration, an in-tree build removes that variable and
+  matches how ov5647 (which binds) is built. **This is the highest-confidence
+  fallback.** Alternatively force early load via initramfs / `modules-load.d` and
+  re-test.
+- **Provide real regulators + check pwdn polarity** (forum
+  https://forum.radxa.com/t/support-for-ov9281-camera/26386): add avdd(2.8V)/
+  dovdd(1.8V)/dvdd(1.2V) fixed-regulators in the overlay instead of the dummy
+  fallback, and that user needed `pwdn-gpios` ACTIVE_HIGH. Lower probability for a
+  *binding* (vs streaming) symptom, and pwdn polarity is module-specific (ours is
+  detected fine as active-low) — test carefully.
+- **Add debug to `ov9281_probe`**: print the return of
+  `v4l2_async_register_subdev_sensor()` and confirm probe returns 0 (rule out a
+  silent post-registration failure).
 
 ## If it still doesn't bind — hypotheses to pursue (for on-board Claude)
 
