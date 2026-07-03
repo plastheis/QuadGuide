@@ -3,15 +3,26 @@ platform:
   camera:
     # HIL toggle: set backend=raw_tcp (or network) + serial.mode=tcp below to
     # drive the stack from the dev-machine simulator instead of real hardware.
-    backend: gstreamer       # CSI camera via GStreamer → CSICamera (was v4l2)
-    # OV9281 (mono global shutter, native 1280x800). Capture the FULL sensor to
-    # preserve the 79° FoV, then downscale for tracker latency. VERIFY node +
-    # format on the SBC (see docs/sbc-setup.md): node is typically /dev/video11;
-    # mono output may be NV12 (rkisp) or GRAY8 (rkcif raw) — adjust caps to match.
-    pipeline: "v4l2src device=/dev/video11 io-mode=4 ! video/x-raw,format=NV12,width=1280,height=800,framerate=60/1 ! videoscale ! video/x-raw,width=640,height=400 ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
-    width: 640               # downscaled frame the stack processes
+    backend: csi        # "v4l2" | "gstreamer" | "csi" | "virtual" | "network" | "raw_tcp" (HIL)
+    # csi: OV9281 global-shutter mono via direct V4L2 (rkcif Y10/RAW10). The sensor
+    # is Y10-only and GStreamer has no Y10 mapping, so the "gstreamer"/video11 ISP
+    # path can't be used — CSIY10Camera streams the rkcif raw node and unpacks here.
+    # OV9281 mono Y10 on the raw rkcif node. Captures the FULL sensor (1280x800,
+    # full FoV) and downscales to width x height — asking the raw node for a smaller
+    # size returns a top-left CROP, not a binned frame, so it would lose ~75% of the
+    # FoV. No ISP on this path => no auto-exposure, so gain/exposure are fixed here.
+    device: /dev/video0   # used when backend=csi — rkcif raw node (NOT /dev/video11 ISP)
+    width: 640               # processed/output frame width (downscaled from 1280, 16:10)
     height: 400              # 16:10 (OV9281 native aspect) — full FoV preserved
     fps: 60
+    # Software auto-exposure (no ISP/AEC on the raw path). Meters the 95th-percentile
+    # brightness (≈ the flat sky) and holds it just below clipping, so a target
+    # silhouetted against the sky keeps headroom/contrast instead of the sky blowing
+    # out. gain/exposure below seed the loop; set auto_exposure: false to pin them.
+    auto_exposure: true      # csi: software AEC loop
+    ae_target: 210           # csi: AE setpoint (95th-pctl, 0..255) — lower = darker sky, more headroom
+    gain: 16                 # csi: OV9281 analogue_gain 16..248 (AE seed / fixed value)
+    exposure: 800            # csi: OV9281 exposure in lines 4..3652 (AE seed / fixed value)
     url: "http://192.168.86.46:8090/camera"   # used when backend=network — dev-machine MJPEG stream
     # raw_tcp (HIL): low-latency uncompressed BGR frames from the dev-machine
     # RawFrameServer over TCP (no JPEG, no VideoCapture buffering). Preferred HIL
@@ -60,9 +71,9 @@ tracker:
     backend: rknn                 # auto | onnx | rknn | mock
     model_dir: /home/radxa/EdgeCV/models   # resolves *.rknn artifacts (EDGECV_MODEL_DIR)
     color: bgr                    # QuadGuide camera frames are BGR; adapter swaps to RGB
-    acquire_crop: 0.7          # central crop side, fraction of shorter dim
-    lock_pad: 1.5              # padding on the YOLO box seeding NanoTrack
-    lock_min_score: 0.15       # min YOLO score to commit a lock / re-seed NanoTrack
+    #  acquire_crop: 0.7          # central crop side, fraction of shorter dim
+    # lock_pad: 1.5              # padding on the YOLO box seeding NanoTrack
+    # lock_min_score: 0.15       # min YOLO score to commit a lock / re-seed NanoTrack
     # drop_score: 0.85          # re-acquire confidence threshold: locked track below
                                # this for drop_frames frames triggers re-acquire
     # drop_frames: 1             # sub-threshold (< drop_score) frames before re-acquire
@@ -112,6 +123,10 @@ mission:
     target_model: constant_velocity
     initial_offset_m: [2.0, 0.0, 0.0]
     target_speed_mps: 1.5
+
+ground:
+  port: 8080
+  ui_mode: minimal           # "verbose" (full telemetry UI) | "minimal" (800x480 kiosk)
 
 logging:
   level: INFO

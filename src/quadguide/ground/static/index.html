@@ -58,9 +58,9 @@
     width: 640px;
   }
 
-  #view { position: relative; width: 640px; height: 480px; }
-  #stream  { position: absolute; top: 0; left: 0; width: 640px; height: 480px; }
-  #overlay { position: absolute; top: 0; left: 0; width: 640px; height: 480px; cursor: crosshair; }
+  #view { position: relative; width: 640px; height: 400px; }
+  #stream  { position: absolute; top: 0; left: 0; width: 640px; height: 400px; }
+  #overlay { position: absolute; top: 0; left: 0; width: 640px; height: 400px; cursor: crosshair; }
 
   /* Right column: all telemetry */
   #right-col {
@@ -149,7 +149,7 @@
     <!-- Video feed -->
     <div id="view">
       <img id="stream" src="/stream" alt="stream">
-      <canvas id="overlay" width="640" height="480"></canvas>
+      <canvas id="overlay" width="640" height="400"></canvas>
     </div>
 
     <!-- Keybindings -->
@@ -259,7 +259,7 @@
 
 const canvas = document.getElementById('overlay');
 const ctx    = canvas.getContext('2d');
-const W = 640, H = 480;
+const W = 640, H = 400;
 
 let crosshairSize = 160;
 const STEP = 20;

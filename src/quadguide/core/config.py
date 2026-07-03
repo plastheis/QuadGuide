@@ -120,6 +120,12 @@ class CameraConfig:
     url: str = ""               # used when backend=network (HIL) — MJPEG stream URL
     raw_tcp_host: str = ""      # used when backend=raw_tcp (HIL) — dev-machine frame server host
     raw_tcp_port: int = 8091    # used when backend=raw_tcp (HIL) — dev-machine frame server port
+    device: str = ""            # used when backend=csi — V4L2 capture node (default /dev/video0)
+    media: str = ""             # used when backend=csi — media device for pad setup (default /dev/media0)
+    gain: int = 0               # used when backend=csi — OV9281 analogue_gain (16..248); 0 = leave sensor default
+    exposure: int = 0           # used when backend=csi — OV9281 exposure in lines (4..3652); 0 = leave sensor default
+    auto_exposure: bool = True  # used when backend=csi — software AEC (no ISP on raw path); gain/exposure seed the loop
+    ae_target: int = 210        # used when backend=csi — AE setpoint: 95th-pctl brightness held just below clip
 
 
 @dataclass(frozen=True)
@@ -177,6 +183,12 @@ def cfg_platform(d: dict) -> PlatformConfig:
             url=cam.get("url", ""),
             raw_tcp_host=cam.get("raw_tcp_host", ""),
             raw_tcp_port=cam.get("raw_tcp_port", 8091),
+            device=cam.get("device", ""),
+            media=cam.get("media", ""),
+            gain=cam.get("gain", 0),
+            exposure=cam.get("exposure", 0),
+            auto_exposure=cam.get("auto_exposure", True),
+            ae_target=cam.get("ae_target", 210),
         ),
         serial=SerialConfig(
             # port/baud are irrelevant in tcp (HIL) mode — tolerate their absence.

@@ -7,7 +7,9 @@ from quadguide.core.clock import monotonic_ns
 from quadguide.core.frame_buffer import FrameBuffer
 from quadguide.core.logging import setup_logging
 from quadguide.core.messages import HealthReport, ProcessState
-from quadguide.perception.camera.sources import CameraSource, USBCamera, CSICamera, VirtualCamera
+from quadguide.perception.camera.sources import (
+    CameraSource, USBCamera, CSICamera, CSIY10Camera, VirtualCamera,
+)
 from quadguide.perception.camera.network_source import NetworkCamera
 from quadguide.perception.camera.raw_frame_source import RawFrameCamera
 
@@ -16,6 +18,7 @@ __all__ = ["run", "run_from_config"]
 _SOURCES = {
     "v4l2": USBCamera,
     "gstreamer": CSICamera,
+    "csi": CSIY10Camera,         # OV9281 mono Y10 via direct V4L2 (ROCK 5C / rkcif)
     "virtual": VirtualCamera,
     "network": NetworkCamera,    # HIL: HTTP MJPEG from the dev machine
     "raw_tcp": RawFrameCamera,   # HIL: raw BGR frames over TCP (low-latency)

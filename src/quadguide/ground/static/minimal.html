@@ -9,7 +9,7 @@
     width: 800px; height: 480px; overflow: hidden;
     background: #000; color: #e0e0e0; font-family: monospace;
   }
-  #app { display: flex; width: 800px; height: 480px; }
+  #app { display: flex; width: 800px; height: 480px; align-items: center; }
 
   /* Left strip: 5 health boxes (fill height) + latency block */
   #left { width: 160px; height: 480px; display: flex; flex-direction: column;
@@ -34,10 +34,10 @@
   #lat-avg.danger { color: #f44; }
   #lat-latest { font-size: 11px; color: #888; }
 
-  /* Main feed: native 640x480, flush right */
-  #feed { position: relative; width: 640px; height: 480px; }
-  #stream  { position: absolute; top: 0; left: 0; width: 640px; height: 480px; }
-  #overlay { position: absolute; top: 0; left: 0; width: 640px; height: 480px;
+  /* Main feed: native 640x400 (16:10), flush right, centred in the 480px height */
+  #feed { position: relative; width: 640px; height: 400px; }
+  #stream  { position: absolute; top: 0; left: 0; width: 640px; height: 400px; }
+  #overlay { position: absolute; top: 0; left: 0; width: 640px; height: 400px;
              pointer-events: none; }
   #pip { position: absolute; top: 0; right: 0; width: 160px; height: 160px;
          border: 1px solid #888; background: #000; }
@@ -71,7 +71,7 @@
 
   <div id="feed">
     <img id="stream" src="/stream" alt="stream">
-    <canvas id="overlay" width="640" height="480"></canvas>
+    <canvas id="overlay" width="640" height="400"></canvas>
     <canvas id="pip" width="160" height="160"></canvas>
     <div id="armed" class="status">ARMED</div>
     <div id="fcarmed" class="status"></div>
@@ -83,7 +83,7 @@
 <script>
 'use strict';
 
-const W = 640, H = 480;
+const W = 640, H = 400;
 const streamImg = document.getElementById('stream');
 const overlay = document.getElementById('overlay');
 const octx = overlay.getContext('2d');
@@ -126,7 +126,7 @@ function drawCrosshair() {
 drawCrosshair();
 
 // ── PIP magnifier (client-side crop of the streamed frame) ─────────────────
-const PAD = 0.20, MIN_PIP = 48, MAX_PIP = 480;
+const PAD = 0.20, MIN_PIP = 48, MAX_PIP = 400;
 let trackState = { health: null, bx: 0, by: 0, bw: 0, bh: 0 };
 
 function pipCropRect() {
