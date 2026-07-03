@@ -1,0 +1,119 @@
+platform:
+  name: rpi4b                # label only; camera backend comes from camera.backend
+  camera:
+    # USB UVC webcam via V4L2. backend=v4l2 → USBCamera opens /dev/video0 with
+    # cv2.VideoCapture(0) and applies width/height/fps below; the `pipeline` string
+    # is IGNORED in this mode (it is only used when backend=gstreamer). HIL toggle:
+    # set backend=network (+ serial.mode=tcp below) to drive the stack from the
+    # dev-machine simulator instead of real hardware.
+    backend: v4l2            # "v4l2" (USB UVC) | "gstreamer" | "network"/"raw_tcp" (HIL)
+    # Reference GStreamer pipeline — used ONLY if you switch backend to gstreamer.
+    # The installer does NOT install GStreamer plugins for the v4l2 path; add
+    # gstreamer1.0-plugins-{base,good} first if you switch to this.
+    pipeline: "v4l2src device=/dev/video0 io-mode=4 ! image/jpeg,width=1280,height=720,framerate=30/1 ! jpegdec ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
+    width: 1280             # generic UVC capture size — tune to your camera's modes
+    height: 720
+    fps: 30                 # most USB webcams cap at 30 @ 720p; raise if yours supports it
+    url: "http://192.168.86.46:8090/camera"   # used when backend=network — dev-machine MJPEG stream
+    raw_tcp_host: "192.168.86.46"   # used when backend=raw_tcp (HIL) — dev-machine frame server host
+    raw_tcp_port: 8091              # used when backend=raw_tcp (HIL) — dev-machine frame server port
+  serial:
+    # MAVLink2 to the ArduPilot FC over the RPi 4B's primary PL011 UART on GPIO14/15.
+    # scripts/firstboot_install_rpi.sh enables it (enable_uart=1 + dtoverlay=disable-bt,
+    # which routes /dev/serial0 → ttyAMA0 and drops the serial login console).
+    # mode=tcp drives the stack from ArduPilot SITL instead of the real FC.
+    mode: uart            # "uart" (real FC) | "tcp" (HIL — MAVLink2 over TCP to SITL)
+    port: /dev/serial0    # PL011 on GPIO14/15 (needs disable-bt; see installer)
+    baud: 921600          # H743 MAVLink2 baud — TODO confirm SERIALn_BAUD (115200 vs 921600)
+    tcp_host: "192.168.86.46"   # used when mode=tcp — host running ArduPilot SITL
+    tcp_port: 5760              # used when mode=tcp — SITL MAVLink TCP port
+    rx_pin: "GPIO15"      # wiring reference only — not used by driver
+    tx_pin: "GPIO14"      # wiring reference only — not used by driver
+  realtime:
+    # RPi 4B = 4× Cortex-A72 (cores 0–3). Pin the tracker and control loops to
+    # separate cores; leave 0–1 for the OS, camera capture, and other workers.
+    tracker_cpu_core: 2
+    control_cpu_core: 3
+    control_sched_fifo: true
+    control_fifo_prio: 80
+
+airframe:
+  name: flix_micro
+  mass_kg: 0.18
+  inertia: [0.0012, 0.0012, 0.0020]
+  control_limits:
+    max_roll_deg: 40
+    max_pitch_deg: 40
+    max_roll_rate_dps: 200
+    max_pitch_rate_dps: 200
+
+tracker:
+  # EdgeCV NanoTrack on the CPU via ONNX Runtime (the RPi 4B has no NPU). The
+  # operator's LOCK seeds NanoTrack on the current box and it tracks until reset.
+  # The .onnx weights are VENDORED in this repo under models/ (committed — see
+  # .gitignore) and resolved via EDGECV_MODEL_DIR (set from model_dir below); the
+  # RK3588 build uses .rknn from a separate EdgeCV checkout instead. `backend: onnx`
+  # forces the CPU runtime — slower than the NPU, see watchdog.target_estimate_ms
+  # if the tracker worker trips the watchdog. To use YOLO-acquire instead, set
+  # tracker: acquire_track and add acquire_crop / lock_pad / lock_min_score (see
+  # configs/rk3588.yaml for the full list).
+  import: quadguide.perception.edgecv_adapter:EdgeCVTracker
+  params:
+    tracker: nanotrack           # mosse | nanotrack | siamfc | yolo | acquire_track
+    backend: onnx                 # auto | onnx | rknn | mock  (RPi 4B = onnx, CPU)
+    model_dir: /home/pi/quadguide/models   # vendored *.onnx in this repo (EDGECV_MODEL_DIR)
+    color: bgr                    # QuadGuide camera frames are BGR; adapter swaps to RGB
+
+guidance:
+  method: pure_pursuit              # "pronav" | "pure_pursuit"
+  fov_horizontal_rad: 1.05    # TODO: set to YOUR USB lens's HORIZONTAL FoV. 1.05 ≈ 60°
+                              # is a placeholder for a typical ~70° diagonal webcam at
+                              # 16:9 — measure or read the spec and correct it.
+  throttle_hold: 0.6         # constant throttle during tracking (0–1)
+  pronav:
+    N: 1.5                    # PN navigation gain (typical 3–5)
+    closing_vel_fallback: 1.0
+    closing_vel_ema_alpha: 0.01       # EMA smoothing for bbox area rate (0=heavy, 1=raw)
+    closing_vel_min_area_rate: 0.001 # fallback if smoothed area rate is below this
+    closing_vel_area_scale: 0.01      # area-rate (normalised/s) → m/s conversion
+  pure_pursuit:
+    K: 15                    # m/s² per radian of LOS angle
+    deadband: 0.03           # centroid half-width (frac of half-FoV) zeroed near boresight
+
+watchdog:
+  target_estimate_ms: 300   # CPU (ONNX) inference is slower than the NPU — raise this
+                            # if the tracker worker trips the watchdog; lower once tuned.
+  fc_attitude_ms: 250
+  fc_imu_ms: 250
+  guidance_accel_ms: 100
+
+link:
+  tx_rate_hz: 100          # SET_ATTITUDE_TARGET stream rate (Hz) — keep constant to hold GUIDED setpoints
+  stream_rate_hz: 50      # requested ATTITUDE + RAW_IMU telemetry rate (Hz)
+  system_id: 1            # quadguide MAVLink source system id
+  component_id: 191       # MAV_COMP_ID_ONBOARD_COMPUTER
+  target_system: 1        # FC system id (corrected at runtime from the first HEARTBEAT)
+  target_component: 1     # MAV_COMP_ID_AUTOPILOT1
+  arm_retry_count: 5      # arm/disarm COMMAND_LONG retransmits before giving up
+  heartbeat_wait_s: 5.0   # max wait for the first FC HEARTBEAT before requesting streams
+
+mission:
+  mode: flight             # "flight" | "bench_hil" | "swil"
+  hil:
+    target_model: constant_velocity
+    initial_offset_m: [2.0, 0.0, 0.0]
+    target_speed_mps: 1.5
+
+logging:
+  level: INFO
+  dir: /var/log/quadguide
+  max_bytes: 10485760         # 10 MB per file
+  backup_count: 3
+
+bus:
+  ring_depth: 8
+
+diag:
+  trace: false        # post-run latency/state trace; enable per-run with `run.py --log`
+  trace_dir: null     # default: {logging.dir}/trace/<timestamp> (resolved by run.py)
+  trace_max_rows: 0   # per-process row cap; 0 = unbounded

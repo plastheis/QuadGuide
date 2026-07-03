@@ -118,8 +118,8 @@ def main() -> None:
     ui_mode = "verbose" if args.verbose else "minimal"
     config = {"ground": {"ui_mode": ui_mode}}
     app = create_app(_FakeBus(), _FakeFrameBuffer(), config)
-    print(f"preview ({ui_mode}) -> http://127.0.0.1:{args.port}/   (Ctrl+C to stop)")
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    print(f"preview ({ui_mode}) -> http://192.168.8.133:{args.port}/   (Ctrl+C to stop)")
+    uvicorn.run(app, host="192.168.8.133", port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":

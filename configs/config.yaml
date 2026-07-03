@@ -87,4 +87,4 @@ bus:
 
 ground:
   port: 8080
-  ui_mode: verbose      # "verbose" (full HUD) | "minimal" (800x480 kiosk)
+  ui_mode: minimal      # "verbose" (full HUD) | "minimal" (800x480 kiosk)

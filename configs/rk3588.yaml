@@ -24,7 +24,7 @@ platform:
     # appears, then set it here. mode=tcp drives the stack from ArduPilot SITL.
     mode: uart            # was tcp (HIL); real MAVLink2 over UART to the FC
     port: /dev/ttyS6      # UART6-M1 (enable overlay "Enable UART6-M1"); see docs/sbc-setup.md
-    baud: 115200          # H743 MAVLink2 baud — TODO confirm SERIALn_BAUD (115200 vs 921600)
+    baud: 921600          # H743 MAVLink2 baud — TODO confirm SERIALn_BAUD (115200 vs 921600)
     tcp_host: "192.168.86.46"   # used when mode=tcp — host running ArduPilot SITL
     tcp_port: 5760              # used when mode=tcp — SITL MAVLink TCP port
     rx_pin: "UART_RX"     # wiring reference only — not used by driver

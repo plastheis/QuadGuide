@@ -6,6 +6,10 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-models/
+# Model blobs are large — keep them out of git, EXCEPT .onnx weights, which the
+# RPi 4B (ONNX/CPU) tracker loads. .rknn and other blobs stay ignored.
+models/**
+!models/**/
+!models/**/*.onnx
 quadguide-trace/
 hil-test/
