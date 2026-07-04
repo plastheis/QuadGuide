@@ -57,11 +57,23 @@ tracker:
   # if the tracker worker trips the watchdog. To use YOLO-acquire instead, set
   # tracker: acquire_track and add acquire_crop / lock_pad / lock_min_score (see
   # configs/rk3588.yaml for the full list).
+  #
+  # `backend: onnx_quant` swaps in the INT8 backbone / FP16 head pair (also
+  # vendored under models/, nanotrack_backbone_int8.onnx + nanotrack_head_fp16.onnx)
+  # on the same CPU runtime. Live on-device A/B (locked, single-core-pinned,
+  # webcam target, 2026-07-04): per-frame latency p50 77ms / p95 84ms / max 119ms,
+  # vs onnx (fp32) p50 93ms / p95 142ms / max 229ms — a modest ~1.2x median
+  # speedup but a much tighter, more predictable tail (p95/max nearly match p50,
+  # unlike fp32's long right tail). Backbone feature correlation vs fp32 is ~0.90
+  # on generic content (lower than the ~0.97 measured on the antiuav domain the
+  # RKNN int8 blob was tuned for); the FP16 head is ~lossless either way. Not yet
+  # flown — swap in once the accuracy tradeoff is validated against real footage,
+  # not just the synthetic bench.
   import: quadguide.perception.edgecv_adapter:EdgeCVTracker
   params:
     tracker: nanotrack           # mosse | nanotrack | siamfc | yolo | acquire_track
-    backend: onnx                 # auto | onnx | rknn | mock  (RPi 4B = onnx, CPU)
-    model_dir: /home/pi/quadguide/models   # vendored *.onnx in this repo (EDGECV_MODEL_DIR)
+    backend: onnx                 # auto | onnx | onnx_quant | rknn | mock  (RPi 4B = onnx, CPU)
+    model_dir: /home/plas/quadguide/models   # vendored *.onnx in this repo (EDGECV_MODEL_DIR)
     color: bgr                    # QuadGuide camera frames are BGR; adapter swaps to RGB
 
 guidance:
