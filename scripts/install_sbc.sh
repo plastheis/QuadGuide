@@ -84,6 +84,10 @@ nmcli connection modify qg-ap \
     802-11-wireless.band bg \
     ipv4.method shared \
     wifi-sec.key-mgmt wpa-psk \
+    wifi-sec.proto rsn \
+    wifi-sec.pairwise ccmp \
+    wifi-sec.group ccmp \
+    wifi-sec.pmf disable \
     wifi-sec.psk "$AP_PSK"
 nmcli connection up qg-ap
 

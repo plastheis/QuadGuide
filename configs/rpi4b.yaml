@@ -6,13 +6,21 @@ platform:
     # is IGNORED in this mode (it is only used when backend=gstreamer). HIL toggle:
     # set backend=network (+ serial.mode=tcp below) to drive the stack from the
     # dev-machine simulator instead of real hardware.
-    backend: v4l2            # "v4l2" (USB UVC) | "gstreamer" | "network"/"raw_tcp" (HIL)
-    # Reference GStreamer pipeline — used ONLY if you switch backend to gstreamer.
-    # The installer does NOT install GStreamer plugins for the v4l2 path; add
-    # gstreamer1.0-plugins-{base,good} first if you switch to this.
-    pipeline: "v4l2src device=/dev/video0 io-mode=4 ! image/jpeg,width=1280,height=720,framerate=30/1 ! jpegdec ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
-    width: 1280             # generic UVC capture size — tune to your camera's modes
-    height: 720
+    backend: gstreamer            # "v4l2" (USB UVC) | "gstreamer" | "network"/"raw_tcp" (HIL)
+    # OV9281 mono global-shutter CSI camera via libcamera. On the Pi 4B the sensor
+    # comes up through unicam/libcamera (NOT the ROCK 5C rkcif path), so do NOT use
+    # backend=csi/CSIY10Camera here — its RAW10 unpacker decodes rkcif's bit-packing,
+    # which is a DIFFERENT layout from the Pi's MIPI CSI-2 Y10P and yields striping/
+    # moiré. libcamerasrc hands us an already-unpacked GRAY8 frame (no custom unpack),
+    # which we convert to BGR for perception. Prereqs: dtoverlay=ov9281 in
+    # /boot/firmware/config.txt (+ reboot) and apt install gstreamer1.0-libcamera
+    # gstreamer1.0-plugins-{base,good}. NB: do NOT pin a pixelformat here — this
+    # mono sensor exposes 'R8'/'R10_CSI2P' (not GRAY8), and forcing a format string
+    # makes libcamerasrc fail with "Internal data stream error". Pin width/height
+    # only (native 1280x800 = full FoV, no crop) and let videoconvert emit BGR.
+    pipeline: "libcamerasrc ! video/x-raw,width=1280,height=800 ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
+    width: 1280            # OV9281 native array (mono global shutter)
+    height: 800
     fps: 30                 # most USB webcams cap at 30 @ 720p; raise if yours supports it
     url: "http://192.168.86.46:8090/camera"   # used when backend=network — dev-machine MJPEG stream
     raw_tcp_host: "192.168.86.46"   # used when backend=raw_tcp (HIL) — dev-machine frame server host
@@ -57,11 +65,23 @@ tracker:
   # if the tracker worker trips the watchdog. To use YOLO-acquire instead, set
   # tracker: acquire_track and add acquire_crop / lock_pad / lock_min_score (see
   # configs/rk3588.yaml for the full list).
+  #
+  # `backend: onnx_quant` swaps in the INT8 backbone / FP16 head pair (also
+  # vendored under models/, nanotrack_backbone_int8.onnx + nanotrack_head_fp16.onnx)
+  # on the same CPU runtime. Live on-device A/B (locked, single-core-pinned,
+  # webcam target, 2026-07-04): per-frame latency p50 77ms / p95 84ms / max 119ms,
+  # vs onnx (fp32) p50 93ms / p95 142ms / max 229ms — a modest ~1.2x median
+  # speedup but a much tighter, more predictable tail (p95/max nearly match p50,
+  # unlike fp32's long right tail). Backbone feature correlation vs fp32 is ~0.90
+  # on generic content (lower than the ~0.97 measured on the antiuav domain the
+  # RKNN int8 blob was tuned for); the FP16 head is ~lossless either way. Not yet
+  # flown — swap in once the accuracy tradeoff is validated against real footage,
+  # not just the synthetic bench.
   import: quadguide.perception.edgecv_adapter:EdgeCVTracker
   params:
     tracker: nanotrack           # mosse | nanotrack | siamfc | yolo | acquire_track
-    backend: onnx                 # auto | onnx | rknn | mock  (RPi 4B = onnx, CPU)
-    model_dir: /home/pi/quadguide/models   # vendored *.onnx in this repo (EDGECV_MODEL_DIR)
+    backend: onnx                 # auto | onnx | onnx_quant | rknn | mock  (RPi 4B = onnx, CPU)
+    model_dir: /home/plas/quadguide/models   # vendored *.onnx in this repo (EDGECV_MODEL_DIR)
     color: bgr                    # QuadGuide camera frames are BGR; adapter swaps to RGB
 
 guidance:
@@ -103,6 +123,10 @@ mission:
     target_model: constant_velocity
     initial_offset_m: [2.0, 0.0, 0.0]
     target_speed_mps: 1.5
+
+ground:
+  port: 8080
+  ui_mode: minimal
 
 logging:
   level: INFO

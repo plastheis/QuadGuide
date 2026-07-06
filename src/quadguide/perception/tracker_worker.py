@@ -35,6 +35,22 @@ _TrackerOutput = namedtuple("_TrackerOutput", "bbox confidence health")
 _BBox          = namedtuple("_BBox",          "x y w h")
 
 
+def _pin_cpu(cpu_core: int | None) -> None:
+    """Pin the calling thread to cpu_core, if given. Must run before any
+    library that sizes a thread pool off the current affinity mask (e.g.
+    onnxruntime's intra-op pool, sized at InferenceSession construction) —
+    sched_setaffinity(0, ...) only affects the calling thread, not threads a
+    library has already spawned, so pinning after load_tracker() leaves those
+    pools sized for the pre-pin core count and free to roam off cpu_core.
+    """
+    if cpu_core is None:
+        return
+    try:
+        os.sched_setaffinity(0, {cpu_core})
+    except (AttributeError, OSError):
+        pass
+
+
 # ── OpenCV adapter ──────────────────────────────────────────────────────────
 
 def _resolve_cv2_factory(class_name: str):
@@ -149,11 +165,7 @@ class TrackerWorker:
         log = setup_logging(self._proc_name, self._config)
         signal.signal(signal.SIGTERM, self._handle_sigterm)
 
-        if self._cpu_core is not None:
-            try:
-                os.sched_setaffinity(0, {self._cpu_core})
-            except (AttributeError, OSError):
-                pass
+        _pin_cpu(self._cpu_core)
 
         dcfg = cfg_diag(self._config)
         trace = DiagTrace(self._proc_name, enabled=dcfg.trace,
@@ -240,6 +252,10 @@ def run_from_config(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     """Build the tracker selected by config.tracker.import and run it."""
     from quadguide.core.config import cfg_platform
     pcfg = cfg_platform(config)
+    # Pin BEFORE load_tracker(): trackers may construct a library (onnxruntime)
+    # that sizes an internal thread pool off the affinity mask at construction
+    # time, so pinning after the tracker is built is too late (see _pin_cpu).
+    _pin_cpu(pcfg.realtime.tracker_cpu_core)
     tracker = load_tracker(config)
     TrackerWorker(
         tracker, bus, frame_buffer,

@@ -83,7 +83,7 @@ clone_or_pull "$QG_REPO" "$QG_DIR" "$QG_BRANCH"
 if clone_or_pull "$EDGECV_REPO" "$EDGECV_DIR" main; then
     # Models ship in the EdgeCV repo at EdgeCV/models; configs/rk3588.yaml expects
     # them at /home/radxa/EdgeCV/models (the canonical radxa-user path).
-    n_models=$(find "$EDGECV_DIR/models" -name '*.rknn' 2>/dev/null | wc -l)
+    n_models=$(find "$EDGECV_DIR/models" -name '*.rknn' 2>/dev/null | wc -l) || true
     if [ "$n_models" -gt 0 ]; then
         echo "  EdgeCV models present: $n_models *.rknn under $EDGECV_DIR/models"
     else

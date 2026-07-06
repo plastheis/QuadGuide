@@ -78,7 +78,7 @@ clone_or_pull "$QG_REPO" "$QG_DIR" "$QG_BRANCH"
 # The ONNX tracker weights are VENDORED in QuadGuide at models/ (committed to the
 # repo, so the clone above brought them along). configs/rpi4b.yaml's model_dir
 # points here. This is independent of the EdgeCV *library* clone below.
-n_models=$(find "$QG_DIR/models" -name '*.onnx' 2>/dev/null | wc -l)
+n_models=$(find "$QG_DIR/models" -name '*.onnx' 2>/dev/null | wc -l) || true
 if [ "$n_models" -gt 0 ]; then
     echo "  vendored ONNX models present: $n_models *.onnx under $QG_DIR/models"
 else
