@@ -1,0 +1,30 @@
+# QuadGuide  ArduCopter (GUIDED_NOGPS + SET_ATTITUDE_TARGET) parameter set
+#
+# Load in Mission Planner:  CONFIG > Full Parameter List > Load from file,
+# then WRITE PARAMS, then reboot the FC.
+#
+# This file contains ONLY the changes that are correct for EVERY QuadGuide
+# setup. The wiring/failsafe/arming/RC parameters are intentionally NOT here
+# because their correct value depends on YOUR board wiring and which TELEM
+# port the Pi is on  set those by hand per docs/ardupilot-quadguide-flight-setup.md.
+#
+# Mission Planner .param format is  NAME,VALUE  one per line.
+
+# --- THE FIX -----------------------------------------------------------------
+# Interpret SET_ATTITUDE_TARGET.thrust as DIRECT thrust 0..1 (bit 3 = value 8).
+# QuadGuide sends guidance.throttle_hold straight into the thrust field. Without
+# this, ArduPilot (GUID_OPTIONS=0, the default) treats thrust as a CLIMB RATE
+# where 0.5 = hover, 0 = descend  so "fire off" (thrust 0) commands a descent
+# and the quad never leaves the ground, then DISARM_DELAY auto-disarms it.
+GUID_OPTIONS,8
+
+# --- BENCH CONVENIENCE -------------------------------------------------------
+# Seconds armed-and-idle before ArduPilot auto-disarms (default 10  this is
+# your "disarms after ~10 seconds"). Raised to 30 so there is time between ARM
+# and FIRE on the bench. Set to 0 to fully disable auto-disarm (bench only).
+DISARM_DELAY,30
+
+# Idle motor spin the instant you ARM, so "armed" is visible and the ESCs are
+# spooled before FIRE. 0.10 = 10% of the arm-to-full range (ArduPilot default).
+# Set to 0.0 only if you deliberately want dead-stop props while armed.
+MOT_SPIN_ARM,0.10
