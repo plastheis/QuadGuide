@@ -413,6 +413,17 @@ bit 3 (direct thrust).
 - **`static/index.html`** — HUD. Centroid for the crosshair is computed in
   JS from `bbox_x/y/w/h`.
 
+### 6.9 Target-loss disarm failsafe
+
+When `failsafe.disarm_on_lost` is set, the control worker debounces
+`target/estimate.tracker_health == LOST` for `failsafe.lost_hold_ms` and, while
+armed, publishes a latching `failsafe/disarm` (FailsafeCmd). The link worker
+computes `effective_armed = arm/cmd AND NOT failsafe/disarm` and commands the FC
+to DISARM via the existing arm path. The latch is sticky until the operator
+re-arms (cycle the ground arm switch off→on). `tracker_health` is already the
+NanoTrack confidence gate (`tracker.params.score_lock`/`score_lost`); this
+feature only debounces and disarms.
+
 ---
 
 ## 7. Inter-Process Communication Summary
@@ -427,6 +438,7 @@ bit 3 (direct thrust).
 | `guidance/accel`   | guidance        | control, ground                    | `AccelCmd`       | 24 B |
 | `control/cmd`      | control         | link, ground                       | `ControlCmd`     | 32 B |
 | `arm/cmd`          | ground          | link                               | `ArmCmd`         |  9 B |
+| `failsafe/disarm`  | control         | link                               | `FailsafeCmd`    |  9 B |
 | `system/health`    | all             | ground                             | `HealthReport`   | 25 B |
 
 **Latency lineage (`origin_ns`).** `target/estimate`, `guidance/accel` and
