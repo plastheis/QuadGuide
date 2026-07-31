@@ -422,7 +422,9 @@ computes `effective_armed = arm/cmd AND NOT failsafe/disarm` and commands the FC
 to DISARM via the existing arm path. The latch is sticky until the operator
 re-arms (cycle the ground arm switch off→on). `tracker_health` is already the
 NanoTrack confidence gate (`tracker.params.score_lock`/`score_lost`); this
-feature only debounces and disarms.
+feature only debounces and disarms. Note that re-arming while the target is
+still `LOST` restarts the debounce and re-disarms after `lost_hold_ms`; a clean
+re-arm requires the tracker to have re-acquired (health no longer `LOST`).
 
 ---
 

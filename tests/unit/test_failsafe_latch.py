@@ -42,7 +42,7 @@ def test_cleared_by_operator_disarm():
     latch.update(0, armed=True, health=TrackerHealth.LOST)
     assert latch.update(300 * MS, armed=True, health=TrackerHealth.LOST) is True
     assert latch.update(400 * MS, armed=False, health=TrackerHealth.LOST) is False   # disarm clears
-    assert latch.update(500 * MS, armed=True, health=TrackerHealth.NOMINAL) is False  # clean slate
+    assert latch.update(500 * MS, armed=True, health=TrackerHealth.LOST) is False  # debounce reset, not stale
 
 
 def test_disabled_never_trips():

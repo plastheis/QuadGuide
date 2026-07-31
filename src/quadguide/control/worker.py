@@ -109,7 +109,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
             log.warning("control: TARGET-LOSS DISARM latched — health LOST > %d ms",
                         fcfg.lost_hold_ms)
         elif latched_prev and not latched:
-            log.info("control: target-loss disarm cleared (operator re-arm)")
+            log.info("control: target-loss disarm cleared (operator disarm)")
         latched_prev = latched
         bus.publish("failsafe/disarm", FailsafeCmd(now_ns, latched))
 

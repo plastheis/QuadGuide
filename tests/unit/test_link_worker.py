@@ -206,3 +206,30 @@ def test_rx_command_ack_acks_pending_arm():
     mav = make_mav(1, 191)
     asyncio.run(_rx_loop(serial, mav, state, bus, arm, log))
     assert arm.on_arm_state(True) is None  # acked → nothing more to send
+
+
+# ── Failsafe arbitration (target-loss disarm) ────────────────────────────────
+# Ties _ArmController to the _tx_loop scenario where
+# `effective = arm/cmd.armed AND NOT failsafe/disarm` drives on_arm_state.
+
+def test_arm_controller_drives_failsafe_disarm_then_rearm_sequence():
+    arm = _ArmController(retry_count=3, resend_every_ticks=2)
+
+    # Operator arms: effective goes True → ARM, then FC ACKs it.
+    assert arm.on_arm_state(True) is True
+    arm.on_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+               mavutil.mavlink.MAV_RESULT_ACCEPTED)
+
+    # Target-loss failsafe engages while operator is still armed:
+    # effective falls to False on the failsafe/disarm edge → DISARM.
+    assert arm.on_arm_state(False) is False   # edge → DISARM
+    assert arm.on_arm_state(False) is None    # tick 1 → no resend yet
+    assert arm.on_arm_state(False) is False   # tick 2 → retransmit before ACK
+
+    # FC confirms the DISARM → retransmits stop.
+    arm.on_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+               mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert arm.on_arm_state(False) is None    # silence after ACK
+
+    # Operator re-arms: effective goes True again → ARM.
+    assert arm.on_arm_state(True) is True
