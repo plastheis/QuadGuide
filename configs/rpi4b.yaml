@@ -90,7 +90,7 @@ tracker:
     # These were previously implicit defaults (0.6 / 0.35). Raise score_lost to declare
     # loss sooner (twitchier); lower it to tolerate weaker tracks before calling it lost.
     # Bare NanoTrack has NO hysteresis — status flips on a single frame — so the disarm
-    # failsafe debounces on the QuadGuide side (see failsafe.lost_hold_ms, TBD).
+    # failsafe debounces on the QuadGuide side (see the failsafe: section below).
     score_lock: 0.6
     score_lost: 0.35
 
@@ -116,6 +116,14 @@ watchdog:
   fc_attitude_ms: 250
   fc_imu_ms: 250
   guidance_accel_ms: 100
+
+failsafe:
+  # Disarm the FC over MAVLink when the tracker reports LOST (bare NanoTrack conf <
+  # score_lost) continuously for lost_hold_ms. tracker_health is already the
+  # confidence gate (see tracker.params.score_lost); this only debounces + disarms.
+  # Latches until the operator re-arms — cycle the ground arm switch off→on.
+  disarm_on_lost: true
+  lost_hold_ms: 300         # continuous LOST required before disarm (debounce)
 
 link:
   tx_rate_hz: 100          # SET_ATTITUDE_TARGET stream rate (Hz) — keep constant to hold GUIDED setpoints

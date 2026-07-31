@@ -29,3 +29,13 @@ def test_rpi4b_is_usb_camera_flight_default():
 
     # Placeholder horizontal field of view (~60°) — set to the real lens spec.
     assert abs(config["guidance"]["fov_horizontal_rad"] - 1.05) < 1e-6
+
+
+def test_rpi4b_target_loss_disarm_enabled():
+    """rpi4b enables the target-loss disarm failsafe: LOST tracker_health disarms
+    the FC after lost_hold_ms (bare NanoTrack has no hysteresis → QuadGuide debounces)."""
+    from quadguide.core.config import cfg_failsafe
+    config = load_config(str(CONFIG), {})
+    f = cfg_failsafe(config)
+    assert f.disarm_on_lost is True
+    assert f.lost_hold_ms == 300

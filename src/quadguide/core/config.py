@@ -151,7 +151,7 @@ _REQUIRED_SECTIONS = frozenset(
 
 def load_config(path: str, overrides: dict[str, str]) -> dict:
     """Load YAML config, apply dot-notation overrides, validate required sections."""
-    with open(path) as f:
+    with open(path, encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
     for dotpath, str_value in overrides.items():
