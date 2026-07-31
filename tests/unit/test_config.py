@@ -6,8 +6,8 @@ from quadguide.core.config import (
     load_config,
     cfg_platform, cfg_airframe, cfg_tracker,
     cfg_guidance, cfg_watchdog, cfg_mission,
-    cfg_logging, cfg_bus, cfg_diag,
-    BusConfig, DiagConfig,
+    cfg_logging, cfg_bus, cfg_diag, cfg_failsafe,
+    BusConfig, DiagConfig, FailsafeConfig,
 )
 
 CONFIG_PATH = str(pathlib.Path(__file__).parents[2] / "configs" / "config.yaml")
@@ -138,3 +138,12 @@ class TestAccessors:
         assert d.trace is True
         assert d.trace_dir == "/tmp/t"
         assert d.trace_max_rows == 500
+
+    def test_cfg_failsafe_defaults_when_section_absent(self):
+        assert cfg_failsafe({}) == FailsafeConfig(disarm_on_lost=False, lost_hold_ms=300)
+
+    def test_cfg_failsafe_from_config(self):
+        d = {"failsafe": {"disarm_on_lost": True, "lost_hold_ms": 500}}
+        f = cfg_failsafe(d)
+        assert f.disarm_on_lost is True
+        assert f.lost_hold_ms == 500

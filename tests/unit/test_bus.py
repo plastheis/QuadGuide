@@ -20,14 +20,14 @@ class TestTopicRegistry:
                 "target/estimate",
                 "fc/attitude", "fc/imu", "guidance/accel",
                 "control/cmd", "lockon/cmd", "system/health", "arm/cmd",
-                "fire/cmd", "fc/status",
+                "fire/cmd", "fc/status", "failsafe/disarm",
             }
             assert set(b._topics.keys()) == expected
         finally:
             b.close()
 
     def test_topics_constant_entry_count(self):
-        assert len(TOPICS) == 10
+        assert len(TOPICS) == 11
 
 
 class TestLatest:

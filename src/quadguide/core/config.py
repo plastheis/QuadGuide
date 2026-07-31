@@ -48,6 +48,12 @@ class WatchdogConfig:
 
 
 @dataclass(frozen=True)
+class FailsafeConfig:
+    disarm_on_lost: bool = False   # disarm the FC when the tracker reports LOST
+    lost_hold_ms: int = 300        # continuous LOST required before disarm (debounce)
+
+
+@dataclass(frozen=True)
 class PronavConfig:
     N: float
     closing_vel_fallback: float
@@ -145,7 +151,7 @@ _REQUIRED_SECTIONS = frozenset(
 
 def load_config(path: str, overrides: dict[str, str]) -> dict:
     """Load YAML config, apply dot-notation overrides, validate required sections."""
-    with open(path) as f:
+    with open(path, encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
     for dotpath, str_value in overrides.items():
@@ -297,4 +303,13 @@ def cfg_diag(d: dict) -> DiagConfig:
         trace=diag_raw.get("trace", False),
         trace_dir=diag_raw.get("trace_dir"),
         trace_max_rows=diag_raw.get("trace_max_rows", 0),
+    )
+
+
+def cfg_failsafe(d: dict) -> FailsafeConfig:
+    """Optional target-loss disarm failsafe. Absent section → feature off."""
+    f = d.get("failsafe") or {}
+    return FailsafeConfig(
+        disarm_on_lost=f.get("disarm_on_lost", False),
+        lost_hold_ms=f.get("lost_hold_ms", 300),
     )

@@ -156,16 +156,20 @@ async def _tx_loop(serial, mav, bus, state: _LinkState, arm_ctrl: _ArmController
     while True:
         cmd = bus.latest("control/cmd")
         arm_cmd = bus.latest("arm/cmd")
+        fs = bus.latest("failsafe/disarm")
         armed = bool(arm_cmd and arm_cmd.armed)
+        latched = bool(fs and fs.disarm)
+        effective = armed and not latched
 
-        to_send = arm_ctrl.on_arm_state(armed)
+        to_send = arm_ctrl.on_arm_state(effective)
         if to_send is not None and state.have_heartbeat:
             await serial.write(encode_arm(mav, to_send,
                                           state.target_system, state.target_component))
-            log.info("arm command → %s", "ARM" if to_send else "DISARM")
+            reason = " (target-loss failsafe)" if (not to_send and latched) else ""
+            log.info("arm command → %s%s", "ARM" if to_send else "DISARM", reason)
 
-        yaw_hold = latch_yaw(armed, prev_armed, state.last_yaw, yaw_hold)
-        prev_armed = armed
+        yaw_hold = latch_yaw(effective, prev_armed, state.last_yaw, yaw_hold)
+        prev_armed = effective
 
         now = monotonic_ns()
         tsys = state.target_system or lc["target_system"]

@@ -18,6 +18,7 @@ from quadguide.core.messages import (
     ArmCmd,           FMT_ARM_CMD,
     FireCmd,          FMT_FIRE_CMD,
     FCStatus,         FMT_FC_STATUS,
+    FailsafeCmd,      FMT_FAILSAFE_CMD,
 )
 
 __all__ = ["Bus", "TOPICS"]
@@ -33,6 +34,7 @@ TOPICS: dict[str, tuple[type, str]] = {
     "arm/cmd":              (ArmCmd,          FMT_ARM_CMD),
     "fire/cmd":             (FireCmd,         FMT_FIRE_CMD),
     "fc/status":            (FCStatus,        FMT_FC_STATUS),
+    "failsafe/disarm":      (FailsafeCmd,     FMT_FAILSAFE_CMD),
 }
 
 
