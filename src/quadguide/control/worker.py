@@ -3,12 +3,13 @@ import signal
 
 from quadguide.core.bus import Bus
 from quadguide.core.clock import RateLimiter, monotonic_ns
-from quadguide.core.config import cfg_airframe, cfg_guidance, cfg_platform, cfg_watchdog
+from quadguide.core.config import cfg_airframe, cfg_guidance, cfg_platform, cfg_watchdog, cfg_failsafe
 from quadguide.core.frame_buffer import FrameBuffer
 from quadguide.core.health import FailsafeState, HealthFault
 from quadguide.core.logging import setup_logging
-from quadguide.core.messages import ControlCmd, HealthReport, ProcessState
+from quadguide.core.messages import ControlCmd, FailsafeCmd, HealthReport, ProcessState
 from quadguide.control.attitude_cmd import compute as attitude_cmd_compute
+from quadguide.control.failsafe import LostDisarmLatch
 from quadguide.control.limiter import saturate, slew_rate
 from quadguide.control.watchdog import build_watchdog
 from quadguide.platform.adapter import PlatformAdapter
@@ -25,6 +26,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
     acfg = cfg_airframe(config)
     pcfg = cfg_platform(config)
     wcfg = cfg_watchdog(config)
+    fcfg = cfg_failsafe(config)
 
     from quadguide.core.config import cfg_diag
     from quadguide.core.diagtrace import DiagTrace
@@ -34,6 +36,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
 
     watchdog = build_watchdog(wcfg, bus)
     rate = RateLimiter(hz=100)
+    latch = LostDisarmLatch(fcfg.disarm_on_lost, fcfg.lost_hold_ms * 1_000_000)
 
     dcfg = cfg_diag(config)
     trace = DiagTrace("control", enabled=dcfg.trace,
@@ -51,6 +54,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
 
     armed = False
     in_failsafe = False
+    latched_prev = False
     i = 0
     log.info(
         "control: started (100 Hz, core=%d, sched_fifo=%s, throttle_hold=%.2f)",
@@ -93,13 +97,29 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
                 log.warning("control: entering failsafe — %s", e)
                 in_failsafe = True
 
+        # Target-loss disarm latch: debounce tracker_health==LOST -> disarm.
+        # Independent of the staleness watchdog above; overrides state when engaged.
+        est = bus.latest("target/estimate")
+        health = est.tracker_health if est is not None else None
+        latched = latch.update(now_ns, armed, health)
+        effective_armed = armed and not latched
+        if latched:
+            state = FailsafeState.DISARMED
+        if latched and not latched_prev:
+            log.warning("control: TARGET-LOSS DISARM latched — health LOST > %d ms",
+                        fcfg.lost_hold_ms)
+        elif latched_prev and not latched:
+            log.info("control: target-loss disarm cleared (operator re-arm)")
+        latched_prev = latched
+        bus.publish("failsafe/disarm", FailsafeCmd(now_ns, latched))
+
         accel = bus.latest("guidance/accel")
 
-        # Choose throttle: armed + fire active → throttle_hold; else 0
-        thr = gcfg.throttle_hold if (armed and fire_active) else 0.0
+        # Choose throttle: effective-armed + fire active → throttle_hold; else 0
+        thr = gcfg.throttle_hold if (effective_armed and fire_active) else 0.0
 
-        # Choose attitude: only apply guidance when armed, no failsafe, and accel present
-        if armed and fault is None and accel is not None:
+        # Choose attitude: only when effective-armed, no failsafe, and accel present
+        if effective_armed and fault is None and accel is not None:
             roll, pitch = attitude_cmd_compute(accel)
             roll, pitch = saturate(roll, pitch, acfg.control_limits)
             roll, pitch = slew_rate(roll, pitch, prev_cmd, acfg.control_limits, _DT)
@@ -117,14 +137,16 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
             trace.latency(now_ns, accel.timestamp_ns, accel.origin_ns)
 
         if i % _HEALTH_EVERY == 0:
-            proc_state = ProcessState.FAILSAFE if in_failsafe else ProcessState.OK
-            detail = str(fault) if fault is not None else ""
+            proc_state = ProcessState.FAILSAFE if (in_failsafe or latched) else ProcessState.OK
+            detail = str(fault) if fault is not None else (
+                "target-loss disarm" if latched else "")
             bus.publish(
                 "system/health",
                 HealthReport(monotonic_ns(), "control", proc_state, detail),
             )
             trace.state(monotonic_ns(), armed=armed, fire_active=fire_active,
-                        in_failsafe=in_failsafe, fault=detail, throttle=thr)
+                        in_failsafe=in_failsafe, disarm_latched=latched,
+                        fault=detail, throttle=thr)
 
     trace.flush()
     bus.detach()
