@@ -94,7 +94,10 @@
       "Bash(gst-inspect-1.0 libcamerasrc *)",
       "Read(//boot/firmware/**)",
       "Read(//boot/**)",
-      "Bash(timeout 25 gst-launch-1.0 -v libcamerasrc num-buffers=30 ! 'video/x-raw,width=1280,height=800,format=GRAY8' ! videoconvert ! 'video/x-raw,format=BGR' ! fakesink silent=false)"
+      "Bash(timeout 25 gst-launch-1.0 -v libcamerasrc num-buffers=30 ! 'video/x-raw,width=1280,height=800,format=GRAY8' ! videoconvert ! 'video/x-raw,format=BGR' ! fakesink silent=false)",
+      "Bash(awk '{$1=\"\"; print}' /var/log/quadguide/control.log)",
+      "Bash(systemctl is-active *)",
+      "Bash(grep -n \"^class \\\\|^    [a-z_]*:.*$\" src/quadguide/core/messages.py)"
     ]
   }
 }

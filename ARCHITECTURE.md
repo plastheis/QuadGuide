@@ -337,6 +337,17 @@ YAML — no edits to perception/control code.
     at ~80 kHz, re-timestamping each frame thousands of times and producing a
     capture→track latency *sawtooth* that the 10 Hz HUD aliased into a rhythmic
     8–30 ms wobble (see §13). It also stamps `est.origin_ns = frame_ts`.
+    **Drop-lock-on-lost** (`tracker.drop_lock_on_lost`, default off): after
+    `tracker.drop_lock_frames` consecutive `lost` frames the worker calls
+    `tracker.reset()` once and then stops calling `update()` entirely,
+    publishing a zero-bbox `LOST` estimate every frame until the next
+    `lockon/cmd`. Continuing to update is precisely what lets a single-object
+    tracker re-lock onto background, so a dropped lock must go quiet, not keep
+    running. It keeps publishing (rather than going silent) so the
+    `target/estimate` watchdog stays fed, and it reports `LOST` rather than
+    `NO_LOCK` so the target-loss failsafe latch retains its trip condition
+    (§6.9). Leave off for `acquire_track` / `verified_acquire_track`, which own
+    their own re-acquire state machine and must keep updating through a loss.
   - `run_from_config(config, bus, frame_buffer)` — entry point used by
     `scripts/run.py`; constructs the tracker and the worker, sets the
     optional CPU affinity, and calls `worker.run()`.
@@ -431,13 +442,51 @@ Two conditions each latch to a **configurable terminal action** — `disarm`
    `tracker_health` is already the NanoTrack confidence gate
    (`tracker.params.score_lock`/`score_lost`); this condition only debounces
    and acts.
+
+   **A raw confidence threshold cannot detect target loss.** Measured on the
+   RPi 4B OV9281 rig (`scripts/diag_track_confidence.py`, 482 locked in-frame
+   vs 875 out-of-frame samples, `quadguide-trace/confidence-labeled-20260807.csv`):
+   the out-of-frame *median* confidence (0.979) **exceeds** the in-frame median
+   (0.967) — a bare single-object tracker that loses its target re-locks onto
+   background and reports near-perfect confidence on the wrong box. Best
+   balanced accuracy across every possible threshold is 57% (coin flip = 50%).
+   Tuning `score_lost` upward does not help: 0.95 produced 31% false-LOST on a
+   good track while still missing 65% of real losses.
+
+   The usable signal is therefore `tracker.drop_lock_on_lost` (§6.3): the first
+   `drop_lock_frames` consecutive sub-`score_lost` frames **release the lock
+   permanently** — the worker stops calling `update()` (so the tracker can never
+   drift back onto clutter) and publishes LOST until the operator re-locks. That
+   converts an unreliable per-frame classification into a latch that only has to
+   catch a loss once. Measured detection latency ~30–40 s from a *single* loss
+   event — one sample, not a characterised latency. For a fast, reliable signal
+   use `verified_acquire_track`, which verifies the locked box against a
+   concurrent YOLO detection instead of trusting confidence.
+
+   The dropped state publishes `LOST`, never `NO_LOCK` — `NO_LOCK` is not a trip
+   condition (it is also the pre-lock state), so reporting it would silently
+   disarm this failsafe.
 2. **Watchdog staleness** — any watched bus topic (`target/estimate`,
-   `fc/attitude`, `fc/imu`, `guidance/accel`) stale continuously for
+   `fc/attitude`, `fc/imu`) stale continuously for
    `failsafe.watchdog.hold_ms` while armed. This is layered on top of the
    soft-LEVEL behavior in §2.5: during the debounce window control levels
    roll/pitch (→ 0) but holds throttle (never banks attitude on stale data),
    and if the watchdog failsafe is disabled that soft-LEVEL path is the only
    response (backward compat).
+
+   `guidance/accel` is deliberately **not** a watchdog topic. Guidance stops
+   publishing it by design whenever the tracker is not driving (it skips
+   LOST/NO_LOCK/ACQUIRING — §6.4), so watching it made a normal target loss
+   indistinguishable from a fault: the watchdog latch (accel stale at
+   `guidance_accel_ms`, plus its own `hold_ms`) always tripped before the
+   target-loss latch, which capped `target_loss.hold_ms` at the watchdog's
+   effective deadline and misattributed every target-loss trip to the
+   watchdog. It also meant arming *before* the operator locked on latched the
+   failsafe immediately. `guidance_accel_ms` still gates the attitude command
+   — control levels roll/pitch when the last `guidance/accel` is older than
+   that — it just no longer counts as a failsafe condition. Verify with
+   `scripts/diag_failsafe_bench.py` (`--scenario armed` → `target_loss=True`;
+   `--scenario fcloss` → `watchdog=True`; `--scenario nolock` → no latch).
 
 A `mode:` action is restricted at config load to a GPS-denied-safe allowlist
 — **LAND, ALTHOLD, STABILIZE** (`custom_mode` 9/2/0) — resolved via
