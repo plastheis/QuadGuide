@@ -39,6 +39,10 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
 
     watchdog = build_watchdog(wcfg, bus)
     rate = RateLimiter(hz=100)
+    # guidance/accel is not a watchdog topic (see build_watchdog) — guidance stops
+    # publishing it by design on target loss. It is still a freshness gate on the
+    # attitude command so a stale accel levels roll/pitch instead of being flown.
+    accel_stale_ns = wcfg.guidance_accel_ms * 1_000_000
     tl_latch = FailsafeLatch(fcfg.target_loss.enabled,
                              fcfg.target_loss.hold_ms * 1_000_000)
     wd_latch = FailsafeLatch(fcfg.watchdog.enabled,
@@ -130,12 +134,18 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
         bus.publish("failsafe/action", FailsafeCmd(now_ns, action, custom_mode))
 
         accel = bus.latest("guidance/accel")
+        # Stale accel → level. Guidance stops publishing on target loss, so during
+        # the target_loss debounce the last accel would otherwise keep being flown.
+        # This is the local soft-LEVEL that used to come from the watchdog; it is
+        # NOT a failsafe condition (see build_watchdog).
+        accel_fresh = (accel is not None
+                       and now_ns - accel.timestamp_ns <= accel_stale_ns)
 
         # Choose throttle: effective-armed + fire active → throttle_hold; else 0
         thr = gcfg.throttle_hold if (effective_armed and fire_active) else 0.0
 
-        # Choose attitude: only when effective-armed, no failsafe, and accel present
-        if effective_armed and fault is None and accel is not None:
+        # Choose attitude: only when effective-armed, no failsafe, and accel fresh
+        if effective_armed and fault is None and accel_fresh:
             roll, pitch = attitude_cmd_compute(accel)
             roll, pitch = saturate(roll, pitch, acfg.control_limits)
             roll, pitch = slew_rate(roll, pitch, prev_cmd, acfg.control_limits, _DT)

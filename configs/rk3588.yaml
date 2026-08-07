@@ -105,7 +105,10 @@ watchdog:
   target_estimate_ms: 200
   fc_attitude_ms: 250
   fc_imu_ms: 250
-  guidance_accel_ms: 100
+  guidance_accel_ms: 100    # NOT a failsafe/watchdog topic — guidance stops
+                            # publishing accel by design on target loss. This is
+                            # only the freshness gate on the attitude command:
+                            # an accel older than this levels roll/pitch.
 
 failsafe:
   # Per-condition failsafe actions (see configs/rpi4b.yaml). Disabled on this
