@@ -34,7 +34,7 @@ TOPICS: dict[str, tuple[type, str]] = {
     "arm/cmd":              (ArmCmd,          FMT_ARM_CMD),
     "fire/cmd":             (FireCmd,         FMT_FIRE_CMD),
     "fc/status":            (FCStatus,        FMT_FC_STATUS),
-    "failsafe/disarm":      (FailsafeCmd,     FMT_FAILSAFE_CMD),
+    "failsafe/action":      (FailsafeCmd,     FMT_FAILSAFE_CMD),
 }
 
 
