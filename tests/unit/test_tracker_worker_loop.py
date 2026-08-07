@@ -205,3 +205,112 @@ class TestTrackerWorkerLifecycle:
         tracker = _StubTracker()
         worker = TrackerWorker(tracker, bus, fb, cpu_core=None, config={})
         assert worker._proc_name == "tracker_stub"
+
+
+class TestDropLockOnLost:
+    """drop_lock_on_lost: the first sustained LOST releases the lock for good.
+
+    Bare single-object trackers re-lock onto background and report high
+    confidence on the wrong box, so per-frame confidence cannot detect loss.
+    Latching the drop means a loss only has to be caught once.
+    """
+
+    _CFG = {"tracker": {"drop_lock_on_lost": True, "drop_lock_frames": 2}}
+
+    def _worker(self, health, cfg=None):
+        bus = _StubBus()
+        fb = _StubFrameBuffer(frame=_frame(), ts=time.monotonic_ns())
+        tracker = _StubTracker(_StubTrackerOutput(0.1, 0.2, 0.3, 0.4, 0.1, health))
+        w = TrackerWorker(tracker, bus, fb, cpu_core=None,
+                          config=cfg if cfg is not None else self._CFG)
+        return w, tracker, bus
+
+    def test_disabled_by_default(self):
+        w, _, _ = self._worker("lost", cfg={})
+        assert w._drop_on_lost is False
+
+    def test_drops_after_configured_consecutive_lost_frames(self):
+        w, tracker, _ = self._worker("lost")
+        # simulate the loop's drop logic over 2 LOST frames
+        for _ in range(2):
+            assert not w._dropped
+            out = tracker.update(None)
+            if str(out.health) == "lost":
+                w._lost_run += 1
+                if w._lost_run >= w._drop_after:
+                    tracker.reset()
+                    w._dropped = True
+        assert w._dropped is True
+        assert tracker.reset_calls == 1
+
+    def test_single_lost_frame_does_not_drop(self):
+        w, tracker, _ = self._worker("lost")
+        out = tracker.update(None)
+        if str(out.health) == "lost":
+            w._lost_run += 1
+            if w._lost_run >= w._drop_after:
+                w._dropped = True
+        assert w._dropped is False
+
+    def test_dropped_state_reports_lost_not_no_lock(self):
+        """The failsafe latch trips on LOST — reporting no_lock would disarm it."""
+        from quadguide.perception.tracker_worker import _DROPPED
+        assert _DROPPED.health == "lost"
+        assert TrackerHealth(_DROPPED.health) is TrackerHealth.LOST
+        assert (_DROPPED.bbox.w, _DROPPED.bbox.h) == (0.0, 0.0)
+
+    def test_relock_clears_the_drop_latch(self):
+        w, tracker, bus = self._worker("lost")
+        w._dropped = True
+        w._lost_run = 5
+        bus.latest_map["lockon/cmd"] = LockOnCmd(
+            timestamp_ns=time.monotonic_ns(), seq=42,
+            bbox=BoundingBox(0.1, 0.1, 0.2, 0.2),
+        )
+        w._check_lockon()
+        assert w._dropped is False
+        assert w._lost_run == 0
+        assert len(tracker.init_calls) == 1
+
+    def test_operator_reset_also_clears_the_drop_latch(self):
+        w, tracker, bus = self._worker("lost")
+        w._dropped = True
+        bus.latest_map["lockon/cmd"] = LockOnCmd(
+            timestamp_ns=time.monotonic_ns(), seq=9,
+            bbox=BoundingBox(0.0, 0.0, 0.0, 0.0),
+        )
+        w._check_lockon()
+        assert w._dropped is False
+        assert tracker.reset_calls == 1
+
+    def test_loop_stops_updating_tracker_once_dropped(self):
+        """The whole point: a dropped tracker must not keep running, because
+        updating is exactly what lets it re-lock onto background clutter."""
+        bus = _StubBus()
+        fb = _StubFrameBuffer(frame=_frame(), ts=1)
+        tracker = _StubTracker(_StubTrackerOutput(0.1, 0.2, 0.3, 0.4, 0.1, "lost"))
+        w = TrackerWorker(tracker, bus, fb, cpu_core=None, config=self._CFG)
+
+        # Advance the frame timestamp each publish so the new-frame gate passes,
+        # and stop after 6 estimates.
+        n = {"c": 0}
+        orig = bus.publish
+        def _pub(topic, msg):
+            orig(topic, msg)
+            if topic == "target/estimate":
+                n["c"] += 1
+                fb.ts += 1
+                if n["c"] >= 6:
+                    w._stop = True
+        bus.publish = _pub
+        w.run()
+
+        ests = [m for t, m in bus.published if t == "target/estimate"]
+        assert len(ests) == 6
+        # drop_lock_frames=2 → update() called twice, then never again
+        assert tracker.update_calls == 2, tracker.update_calls
+        assert tracker.reset_calls == 1
+        assert w._dropped is True
+        # every estimate reports LOST, so the failsafe latch keeps its trip
+        assert all(e.tracker_health is TrackerHealth.LOST for e in ests)
+        assert all(e.bbox.w == 0.0 for e in ests[2:])

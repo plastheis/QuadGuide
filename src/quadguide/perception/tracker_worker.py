@@ -34,6 +34,11 @@ _IDLE_POLL_S  = 0.001  # CPU yield when no new frame; caps new-frame detection d
 _TrackerOutput = namedtuple("_TrackerOutput", "bbox confidence health")
 _BBox          = namedtuple("_BBox",          "x y w h")
 
+# Published every frame after the lock has been dropped (see TrackerWorker).
+# health stays "lost" — NOT "no_lock" — so the target-loss failsafe latch keeps
+# seeing its trip condition and can engage after failsafe.target_loss.hold_ms.
+_DROPPED = _TrackerOutput(_BBox(0.0, 0.0, 0.0, 0.0), 0.0, "lost")
+
 
 def _pin_cpu(cpu_core: int | None) -> None:
     """Pin the calling thread to cpu_core, if given. Must run before any
@@ -158,6 +163,23 @@ class TrackerWorker:
         self._stop      = False
         self._proc_name = f"tracker_{tracker.name()}"
 
+        # Drop-lock-on-lost. A single-object tracker (NanoTrack/MOSSE/SiamFC) that
+        # loses its target does not go quiet — it re-locks onto background and
+        # reports high confidence on the wrong box, so per-frame confidence is a
+        # near-useless loss signal (measured: out-of-frame median confidence
+        # EXCEEDS in-frame median). Latching fixes the failure mode: the first
+        # sustained dip below score_lost releases the lock permanently, so a loss
+        # only has to be caught ONCE instead of on every frame, and the tracker
+        # can never drift back onto clutter. Requires an operator re-lock to clear.
+        #
+        # Leave OFF for acquire_track / verified_acquire_track: those own their
+        # own re-acquire state machine and must keep updating through a loss.
+        tcfg = (self._config.get("tracker") or {})
+        self._drop_on_lost = bool(tcfg.get("drop_lock_on_lost", False))
+        self._drop_after   = max(1, int(tcfg.get("drop_lock_frames", 2)))
+        self._lost_run     = 0
+        self._dropped      = False
+
     def run(self) -> None:
         from quadguide.core.config import cfg_diag
         from quadguide.core.diagtrace import DiagTrace
@@ -171,7 +193,11 @@ class TrackerWorker:
         trace = DiagTrace(self._proc_name, enabled=dcfg.trace,
                           dir=dcfg.trace_dir, max_rows=dcfg.trace_max_rows)
 
-        log.info(f"{self._proc_name}: started")
+        log.info(
+            "%s: started (drop_lock_on_lost=%s%s)", self._proc_name,
+            self._drop_on_lost,
+            f", drop_lock_frames={self._drop_after}" if self._drop_on_lost else "",
+        )
         i = 0
         last_ts = -1
         last_health: str | None = None
@@ -189,7 +215,28 @@ class TrackerWorker:
                     continue
                 last_ts = frame_ts
 
-                out     = self._tracker.update(frame)
+                if self._dropped:
+                    # Lock released: do NOT update the tracker — updating is
+                    # exactly what lets it re-lock onto background. Keep
+                    # publishing LOST so the failsafe latch can trip and the
+                    # target/estimate watchdog stays fed.
+                    out = _DROPPED
+                else:
+                    out = self._tracker.update(frame)
+                    if self._drop_on_lost:
+                        if str(out.health) == "lost":
+                            self._lost_run += 1
+                            if self._lost_run >= self._drop_after:
+                                self._tracker.reset()
+                                self._dropped = True
+                                self._lost_run = 0
+                                out = _DROPPED
+                                log.warning(
+                                    "%s: LOCK DROPPED after %d consecutive LOST "
+                                    "frames (conf < score_lost) — re-lock to resume",
+                                    self._proc_name, self._drop_after)
+                        else:
+                            self._lost_run = 0
                 now_ns  = monotonic_ns()
                 # origin_ns is the capture timestamp this estimate derives from.
                 # Async trackers (e.g. EdgeCV AcquireTrack) supply their own
@@ -237,6 +284,11 @@ class TrackerWorker:
         if cmd is None or cmd.seq == self._last_seq:
             return
         self._last_seq = cmd.seq
+        # Any new lockon/cmd — a fresh lock or an explicit reset — clears the
+        # drop latch. This is the operator's manual re-engage: without it a
+        # dropped lock would report LOST forever.
+        self._lost_run = 0
+        self._dropped = False
         if cmd.bbox.w == 0.0 and cmd.bbox.h == 0.0:
             self._tracker.reset()
             return

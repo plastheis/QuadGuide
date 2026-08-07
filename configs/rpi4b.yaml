@@ -87,16 +87,50 @@ tracker:
     #   conf ≥ score_lock  → LOCKED   → QuadGuide "nominal"
     #   conf ≥ score_lost  → COASTING → QuadGuide "uncertain"
     #   conf <  score_lost → LOST     → QuadGuide "lost"  ← drives the target-loss disarm
-    # These were previously implicit defaults (0.6 / 0.35). Raise score_lost to declare
-    # loss sooner (twitchier); lower it to tolerate weaker tracks before calling it lost.
-    # Bare NanoTrack has NO hysteresis — status flips on a single frame — so the disarm
-    # failsafe debounces on the QuadGuide side (see the failsafe: section below).
-    score_lock: 0.6
-    score_lost: 0.35
+    # MEASURED on this camera/lens 2026-08-07 (scripts/diag_track_confidence.py,
+    # quadguide-trace/confidence-labeled-20260807.csv), 482 locked in-frame vs 875
+    # out-of-frame samples:
+    #
+    #   in-frame   min=0.654 p05=0.868 p50=0.967 max=1.000
+    #   out-frame  min=0.326 p05=0.789 p50=0.979 max=0.999
+    #
+    # The out-of-frame MEDIAN (0.979) EXCEEDS the in-frame median (0.967) — bare
+    # NanoTrack re-locks onto background and reports near-perfect confidence on
+    # the wrong box. Best balanced accuracy over ALL thresholds is 57% (coin flip
+    # = 50%), so NO score_lost can classify loss per-frame. Do not attempt to tune
+    # this by raising the threshold: 0.95 gave 31% false-LOST while still missing
+    # 65% of real losses, and would have commanded LAND mid-track.
+    #
+    # Loss detection is therefore delegated to drop_lock_on_lost below, and these
+    # values only decide how eagerly the lock is released.
+    #
+    # ⚠ CURRENT SETTING IS AGGRESSIVE — measured false-drop rate at score_lost=0.90
+    # with drop_lock_frames=2, replayed over the captures above:
+    #   in-frame run1 (96 s):  5 false drops, first at 55.2 s
+    #   in-frame run2 (47 s): 20 false drops, first at 10.6 s   ← ~1 per 2.4 s
+    #   out-of-frame (86 s):  57 drops,       first at 28.7 s
+    # Each false drop latches LOST → target_loss failsafe → LAND after hold_ms.
+    # For reference, score_lost=0.60 gave ZERO false drops across both in-frame
+    # runs (143 s) and still detected the real loss at 40.5 s. Lower this to 0.60
+    # (score_lock 0.70) if you see spurious LOCK DROPPED entries in the tracker log
+    # or unexplained LAND commands — grep "LOCK DROPPED" in the tracker log.
+    score_lock: 0.94
+    score_lost: 0.90
+  # Latch the loss instead of classifying it per frame: the first drop_lock_frames
+  # consecutive frames below score_lost RELEASE the lock permanently — the tracker
+  # stops updating (so it can never drift back onto clutter) and reports LOST until
+  # the operator re-locks. This only has to catch a loss ONCE rather than on every
+  # frame, which is what makes an unreliable confidence signal usable at all.
+  # Measured detection latency on the capture above: ~30-40 s, from a SINGLE loss
+  # event — treat that as one sample, not a characterised latency.
+  # Leave false for acquire_track / verified_acquire_track: they own their own
+  # re-acquire state machine and must keep updating through a loss.
+  drop_lock_on_lost: true
+  drop_lock_frames: 2
 
 guidance:
   method: pure_pursuit              # "pronav" | "pure_pursuit"
-  fov_horizontal_rad: 1.05    # TODO: set to YOUR USB lens's HORIZONTAL FoV. 1.05 ≈ 60°
+  fov_horizontal_rad: 1.623    # TODO: set to YOUR USB lens's HORIZONTAL FoV. 1.05 ≈ 60°
                               # is a placeholder for a typical ~70° diagonal webcam at
                               # 16:9 — measure or read the spec and correct it.
   throttle_hold: 0.6         # constant throttle during tracking (0–1)
@@ -115,7 +149,10 @@ watchdog:
                             # if the tracker worker trips the watchdog; lower once tuned.
   fc_attitude_ms: 250
   fc_imu_ms: 250
-  guidance_accel_ms: 100
+  guidance_accel_ms: 100    # NOT a failsafe/watchdog topic — guidance stops
+                            # publishing accel by design on target loss. This is
+                            # only the freshness gate on the attitude command:
+                            # an accel older than this levels roll/pitch.
 
 failsafe:
   # Per-condition failsafe actions. Each condition selects a terminal action of
@@ -130,7 +167,12 @@ failsafe:
     enabled: true
     action: mode          # disarm | mode
     mode: LAND            # LAND | ALTHOLD | STABILIZE (GPS-denied-safe allowlist)
-    hold_ms: 300          # continuous LOST before the latch trips
+    hold_ms: 300          # continuous LOST before the latch trips. At the measured
+                          # ~10 fps (ONNX/CPU NanoTrack) this is only ~3 frames —
+                          # raise it if you see spurious trips. Once the lock is
+                          # dropped (tracker.drop_lock_on_lost) LOST is permanent
+                          # until re-lock, so this hold no longer has to ride out
+                          # long dips — it only debounces the drop itself.
   watchdog:
     # Any watched telemetry/guidance topic stale past its watchdog timeout,
     # sustained for hold_ms while armed → LAND. Brief blips only level (roll/
