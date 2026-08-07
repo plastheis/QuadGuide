@@ -8,7 +8,7 @@ from quadguide.link.mavlink_codec import (
 from quadguide.link.fc import (
     decode_attitude, decode_heartbeat, decode_imu,
     encode_arm, encode_attitude_target, encode_heartbeat,
-    encode_set_message_interval,
+    encode_set_message_interval, encode_set_mode,
 )
 from quadguide.core.messages import AttitudeState, ControlCmd, IMUFrame
 
@@ -151,6 +151,17 @@ def test_encode_arm_arms(mav):
 def test_encode_arm_disarms(mav):
     msg = _roundtrip(encode_arm(mav, False, 1, 1))
     assert msg.param1 == pytest.approx(0.0)
+
+
+# ── encode_set_mode ──────────────────────────────────────────────────────────
+
+def test_encode_set_mode_sets_custom_mode(mav):
+    msg = _roundtrip(encode_set_mode(mav, 9, 1, 1))  # 9 = ArduCopter LAND
+    assert msg.get_type() == "COMMAND_LONG"
+    assert msg.command == mavutil.mavlink.MAV_CMD_DO_SET_MODE
+    assert msg.param1 == pytest.approx(
+        float(mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED))
+    assert msg.param2 == pytest.approx(9.0)
 
 
 # ── encode_set_message_interval ──────────────────────────────────────────────

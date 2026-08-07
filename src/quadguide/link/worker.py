@@ -13,7 +13,7 @@ from quadguide.core.messages import FCStatus, HealthReport, ProcessState
 from quadguide.link.fc import (
     decode_attitude, decode_heartbeat, decode_imu,
     encode_arm, encode_attitude_target, encode_heartbeat,
-    encode_set_message_interval,
+    encode_set_message_interval, encode_set_mode,
 )
 from quadguide.link.mavlink_codec import (
     MSG_ID_ATTITUDE, MSG_ID_RAW_IMU, make_mav,

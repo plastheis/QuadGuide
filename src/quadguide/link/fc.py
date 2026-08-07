@@ -90,6 +90,21 @@ def encode_arm(mav, arm: bool, target_sys: int, target_comp: int) -> bytes:
     return msg.pack(mav)
 
 
+def encode_set_mode(mav, custom_mode: int, target_sys: int, target_comp: int) -> bytes:
+    """COMMAND_LONG / MAV_CMD_DO_SET_MODE.
+
+    param1 = MAV_MODE_FLAG_CUSTOM_MODE_ENABLED (interpret param2 as a custom
+    mode), param2 = the ArduCopter custom_mode number (e.g. 9 = LAND).
+    """
+    msg = mav.command_long_encode(
+        target_sys, target_comp,
+        mavutil.mavlink.MAV_CMD_DO_SET_MODE, 0,
+        float(mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED),
+        float(custom_mode), 0.0, 0.0, 0.0, 0.0, 0.0,
+    )
+    return msg.pack(mav)
+
+
 def encode_set_message_interval(
     mav, msg_id: int, rate_hz: float, target_sys: int, target_comp: int
 ) -> bytes:
