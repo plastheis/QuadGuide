@@ -169,9 +169,10 @@ def _run_rx(data: bytes):
     bus = _FakeBus()
     state = _LinkState()
     arm = _ArmController(retry_count=5, resend_every_ticks=25)
+    mode = _ModeController(retry_count=5, resend_every_ticks=25)
     log = logging.getLogger("test")
     mav = make_mav(1, 191)
-    asyncio.run(_rx_loop(serial, mav, state, bus, arm, log))
+    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log))
     return bus, state, arm
 
 
@@ -243,6 +244,7 @@ def test_rx_ignores_gcs_heartbeat():
 
 def test_rx_command_ack_acks_pending_arm():
     arm = _ArmController(retry_count=5, resend_every_ticks=25)
+    mode = _ModeController(retry_count=5, resend_every_ticks=25)
     arm.on_arm_state(True)  # rising edge → pending, not acked
     data = _enc(lambda m: m.command_ack_encode(
         mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
@@ -252,8 +254,24 @@ def test_rx_command_ack_acks_pending_arm():
     state = _LinkState()
     log = logging.getLogger("test")
     mav = make_mav(1, 191)
-    asyncio.run(_rx_loop(serial, mav, state, bus, arm, log))
+    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log))
     assert arm.on_arm_state(True) is None  # acked → nothing more to send
+
+
+def test_rx_command_ack_acks_pending_mode():
+    arm = _ArmController(retry_count=5, resend_every_ticks=25)
+    mode = _ModeController(retry_count=5, resend_every_ticks=25)
+    mode.on_mode_state(9)  # pending DO_SET_MODE(LAND)
+    data = _enc(lambda m: m.command_ack_encode(
+        mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+        mavutil.mavlink.MAV_RESULT_ACCEPTED).pack(m))
+    serial = _FakeSerial(data)
+    bus = _FakeBus()
+    state = _LinkState()
+    log = logging.getLogger("test")
+    mav = make_mav(1, 191)
+    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log))
+    assert mode.on_mode_state(9) is None  # acked → nothing more to send
 
 
 # ── Failsafe arbitration (target-loss disarm) ────────────────────────────────
