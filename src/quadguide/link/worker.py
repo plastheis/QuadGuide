@@ -9,11 +9,11 @@ from quadguide.core.clock import monotonic_ns
 from quadguide.core.config import cfg_airframe, cfg_diag
 from quadguide.core.diagtrace import DiagTrace
 from quadguide.core.logging import setup_logging
-from quadguide.core.messages import FCStatus, HealthReport, ProcessState
+from quadguide.core.messages import FCStatus, HealthReport, ProcessState, FailsafeActionWire
 from quadguide.link.fc import (
     decode_attitude, decode_heartbeat, decode_imu,
     encode_arm, encode_attitude_target, encode_heartbeat,
-    encode_set_message_interval,
+    encode_set_message_interval, encode_set_mode,
 )
 from quadguide.link.mavlink_codec import (
     MSG_ID_ATTITUDE, MSG_ID_RAW_IMU, make_mav,
@@ -74,6 +74,59 @@ class _ArmController:
             self._acked = True
 
 
+class _ModeController:
+    """Edge-triggered MAVLink DO_SET_MODE with bounded retransmits until ACK.
+
+    Call `on_mode_state(desired)` once per TX tick with the desired custom_mode,
+    or None when no mode failsafe is active. Returns the custom_mode to transmit
+    this tick, or None to send nothing. On a new/changed desired mode it emits
+    immediately, then re-emits every `resend_every_ticks` ticks up to
+    `retry_count` times until `on_ack` confirms a DO_SET_MODE.
+    """
+
+    def __init__(self, retry_count: int, resend_every_ticks: int) -> None:
+        self._desired: int | None = None
+        self._acked: bool = True
+        self._retries_left: int = 0
+        self._ticks: int = 0
+        self._retry_count = retry_count
+        self._resend_every = resend_every_ticks
+
+    def on_mode_state(self, desired: int | None) -> int | None:
+        if desired is None:                  # no mode failsafe active
+            self._desired = None
+            self._acked = True
+            return None
+        if desired != self._desired:         # new/changed target mode → emit now
+            self._desired = desired
+            self._acked = False
+            self._retries_left = self._retry_count
+            self._ticks = 0
+            return desired
+        if self._acked or self._retries_left <= 0:
+            return None
+        self._ticks += 1
+        if self._ticks >= self._resend_every:
+            self._ticks = 0
+            self._retries_left -= 1
+            return self._desired
+        return None
+
+    def on_ack(self, command: int, result: int) -> None:
+        if (command == mavutil.mavlink.MAV_CMD_DO_SET_MODE
+                and result == mavutil.mavlink.MAV_RESULT_ACCEPTED):
+            self._acked = True
+
+    def confirmed(self) -> bool:
+        """True once the current DO_SET_MODE has been ACKed by the FC.
+
+        False when no mode is desired or the ACK has not yet arrived — used to
+        gate attitude-stream suppression so the aircraft is never left armed
+        with neither GUIDED_NOGPS setpoints nor the commanded failsafe mode.
+        """
+        return self._desired is not None and self._acked
+
+
 def latch_yaw(
     armed: bool, prev_armed: bool, last_yaw: float | None, held: float
 ) -> float:
@@ -105,7 +158,8 @@ def _on_heartbeat(msg, state: _LinkState, bus, log: logging.Logger) -> None:
 
 
 async def _rx_loop(serial, mav, state: _LinkState, bus,
-                   arm_ctrl: _ArmController, log: logging.Logger) -> None:
+                   arm_ctrl: _ArmController, mode_ctrl: _ModeController,
+                   log: logging.Logger) -> None:
     async for byte in serial.read_stream():
         msg = mav.parse_char(bytes([byte]))
         if msg is None:
@@ -125,6 +179,7 @@ async def _rx_loop(serial, mav, state: _LinkState, bus,
                 _on_heartbeat(msg, state, bus, log)
         elif t == "COMMAND_ACK":
             arm_ctrl.on_ack(msg.command, msg.result)
+            mode_ctrl.on_ack(msg.command, msg.result)
 
 
 _NS_PER_MS = 1_000_000
@@ -149,37 +204,53 @@ def _link_cfg(config: dict) -> dict:
 
 
 async def _tx_loop(serial, mav, bus, state: _LinkState, arm_ctrl: _ArmController,
-                   lc: dict, log: logging.Logger, trace) -> None:
+                   mode_ctrl: _ModeController, lc: dict, log: logging.Logger, trace) -> None:
     interval = 1.0 / lc["tx_rate_hz"]
     prev_armed = False
     yaw_hold = 0.0
     while True:
         cmd = bus.latest("control/cmd")
         arm_cmd = bus.latest("arm/cmd")
-        fs = bus.latest("failsafe/disarm")
+        fs = bus.latest("failsafe/action")
         armed = bool(arm_cmd and arm_cmd.armed)
-        latched = bool(fs and fs.disarm)
-        effective = armed and not latched
-
-        to_send = arm_ctrl.on_arm_state(effective)
-        if to_send is not None and state.have_heartbeat:
-            await serial.write(encode_arm(mav, to_send,
-                                          state.target_system, state.target_component))
-            reason = " (target-loss failsafe)" if (not to_send and latched) else ""
-            log.info("arm command → %s%s", "ARM" if to_send else "DISARM", reason)
-
-        yaw_hold = latch_yaw(effective, prev_armed, state.last_yaw, yaw_hold)
-        prev_armed = effective
+        action = fs.action if fs else FailsafeActionWire.NONE
+        custom_mode = fs.custom_mode if fs else 0
+        disarm = action == FailsafeActionWire.DISARM
+        mode_active = action == FailsafeActionWire.SET_MODE
+        effective = armed and not disarm
 
         now = monotonic_ns()
         tsys = state.target_system or lc["target_system"]
         tcomp = state.target_component or lc["target_component"]
-        await serial.write(encode_attitude_target(
-            mav, cmd, yaw_hold, tsys, tcomp,
-            lc["max_roll_deg"], lc["max_pitch_deg"], now // _NS_PER_MS))
-        # Actuation point: glass→TX latency for the command just sent to the FC.
-        if cmd is not None and cmd.origin_ns > 0:
-            trace.latency(now, cmd.timestamp_ns, cmd.origin_ns)
+
+        # DISARM action: drive the arm controller False (existing path).
+        to_send = arm_ctrl.on_arm_state(effective)
+        if to_send is not None and state.have_heartbeat:
+            await serial.write(encode_arm(mav, to_send, tsys, tcomp))
+            reason = " (failsafe disarm)" if (not to_send and disarm) else ""
+            log.info("arm command → %s%s", "ARM" if to_send else "DISARM", reason)
+
+        # MODE action: command DO_SET_MODE and suppress the attitude stream.
+        mode_to_send = mode_ctrl.on_mode_state(custom_mode if mode_active else None)
+        if mode_to_send is not None and state.have_heartbeat:
+            await serial.write(encode_set_mode(mav, mode_to_send, tsys, tcomp))
+            log.info("mode command → custom_mode=%d (failsafe handoff)", mode_to_send)
+
+        # Suppress the attitude stream only once the FC has CONFIRMED the failsafe
+        # mode (DO_SET_MODE ACK). Until then keep streaming GUIDED_NOGPS setpoints so
+        # the aircraft is never left armed with neither setpoints nor the mode.
+        mode_confirmed = mode_active and mode_ctrl.confirmed()
+
+        yaw_hold = latch_yaw(effective, prev_armed, state.last_yaw, yaw_hold)
+        prev_armed = effective
+
+        # Stream SET_ATTITUDE_TARGET unless a mode failsafe has handed off to the FC.
+        if not mode_confirmed:
+            await serial.write(encode_attitude_target(
+                mav, cmd, yaw_hold, tsys, tcomp,
+                lc["max_roll_deg"], lc["max_pitch_deg"], now // _NS_PER_MS))
+            if cmd is not None and cmd.origin_ns > 0:
+                trace.latency(now, cmd.timestamp_ns, cmd.origin_ns)
         await asyncio.sleep(interval)
 
 
@@ -262,13 +333,15 @@ async def _run_async(config: dict, bus) -> None:
         state = _LinkState()
         arm_ctrl = _ArmController(
             lc["arm_retry_count"], max(1, int(lc["tx_rate_hz"] // 2)))
+        mode_ctrl = _ModeController(
+            lc["arm_retry_count"], max(1, int(lc["tx_rate_hz"] // 2)))
         tasks: list[asyncio.Task] = []
         try:
             await serial.open()
             log.info(f"Link opened ({transport})")
             tasks = [
-                asyncio.create_task(_rx_loop(serial, mav, state, bus, arm_ctrl, log)),
-                asyncio.create_task(_tx_loop(serial, mav, bus, state, arm_ctrl, lc, log, trace)),
+                asyncio.create_task(_rx_loop(serial, mav, state, bus, arm_ctrl, mode_ctrl, log)),
+                asyncio.create_task(_tx_loop(serial, mav, bus, state, arm_ctrl, mode_ctrl, lc, log, trace)),
                 asyncio.create_task(_heartbeat_loop(serial, mav)),
                 asyncio.create_task(_stream_setup_loop(serial, mav, state, lc, log)),
                 asyncio.create_task(_health_loop(bus, state, trace)),

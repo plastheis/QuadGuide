@@ -1,10 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, IntEnum
 import struct
 
 __all__ = [
-    "TrackerHealth", "ProcessState",
+    "TrackerHealth", "ProcessState", "FailsafeActionWire",
     "BoundingBox",
     "TrackerEstimate", "AttitudeState", "IMUFrame",
     "AccelCmd", "ControlCmd", "LockOnCmd", "HealthReport", "ArmCmd", "FireCmd",
@@ -44,6 +44,13 @@ class ProcessState(str, Enum):
     DEAD     = "dead"
 
 
+class FailsafeActionWire(IntEnum):
+    """Wire encoding for the arbitrated failsafe action (control → link)."""
+    NONE     = 0   # no failsafe active
+    DISARM   = 1   # disarm the FC
+    SET_MODE = 2   # DO_SET_MODE(custom_mode)
+
+
 # Format strings are the source of truth for wire layout.
 # Byte-count comments show the arithmetic; if a comment disagrees with
 # struct.calcsize(fmt), the format string wins.
@@ -65,7 +72,7 @@ FMT_ACCEL_CMD = "!QffQ"
 
 FMT_CONTROL_CMD = "!QffffQ"
 # Q(8) + roll_deg,pitch_deg,yaw_rate_dps,throttle_norm(4×f=16) + origin_ns(Q=8) = 32 bytes
-# origin_ns is copied from the consumed accel's origin_ns; 0 = no lineage (failsafe/disarmed).
+# origin_ns is copied from the consumed accel's origin_ns; 0 = no lineage (failsafe/action).
 
 FMT_LOCKON_CMD = "!QHffff"
 # Q(8) + seq(H=2) + bbox.x,y,w,h(4×f=16) = 26 bytes
@@ -87,10 +94,11 @@ FMT_FC_STATUS = "!QBI"
 # Ground-truth FC arm/mode decoded from HEARTBEAT — distinct from the *commanded*
 # arm/cmd, so the HUD can show what the autopilot actually reports.
 
-FMT_FAILSAFE_CMD = "!QB"
-# Q(8) + disarm(B=1) = 9 bytes
-# Latching target-loss disarm signal: control publishes, link arbitrates
-# (effective_armed = arm/cmd AND NOT failsafe/disarm). Single-writer (control).
+FMT_FAILSAFE_CMD = "!QBI"
+# Q(8) + action(B=1) + custom_mode(I=4) = 13 bytes
+# Arbitrated failsafe action: control publishes, link executes. custom_mode is
+# the ArduCopter mode number, meaningful only for SET_MODE (0 otherwise).
+# Single-writer (control).
 
 
 @dataclass(frozen=True)
@@ -324,16 +332,20 @@ class FCStatus:
 
 @dataclass(frozen=True)
 class FailsafeCmd:
-    """Latching target-loss disarm. control publishes; link arbitrates."""
+    """Arbitrated failsafe action. control publishes; link executes."""
     timestamp_ns: int
-    disarm: bool
+    action: FailsafeActionWire
+    custom_mode: int = 0
 
     def pack(self) -> bytes:
-        return _ST_FAILSAFE_CMD.pack(self.timestamp_ns, int(self.disarm))
+        return _ST_FAILSAFE_CMD.pack(
+            self.timestamp_ns, int(self.action), self.custom_mode)
 
     @classmethod
     def unpack(cls, data: bytes) -> FailsafeCmd:
-        ts, disarm_b = _ST_FAILSAFE_CMD.unpack(data)
-        return cls(timestamp_ns=ts, disarm=bool(disarm_b))
+        ts, action_b, custom_mode = _ST_FAILSAFE_CMD.unpack(data)
+        return cls(timestamp_ns=ts,
+                   action=FailsafeActionWire(action_b),
+                   custom_mode=custom_mode)
 
 

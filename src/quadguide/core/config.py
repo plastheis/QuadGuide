@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 import yaml
 
@@ -47,10 +48,35 @@ class WatchdogConfig:
     guidance_accel_ms: int
 
 
+class FailsafeAction(Enum):
+    DISARM = "disarm"
+    MODE   = "mode"
+
+
+# ArduCopter flight-mode custom_mode numbers (subset).
+ARDUCOPTER_MODES: dict[str, int] = {
+    "STABILIZE": 0, "ACRO": 1, "ALTHOLD": 2, "AUTO": 3, "GUIDED": 4,
+    "LOITER": 5, "RTL": 6, "CIRCLE": 7, "LAND": 9, "POSHOLD": 16,
+    "BRAKE": 17, "GUIDED_NOGPS": 20, "SMART_RTL": 21,
+}
+
+# GPS-denied-safe failsafe targets. Everything else is rejected at config load.
+FAILSAFE_MODE_ALLOWLIST: frozenset[str] = frozenset({"LAND", "ALTHOLD", "STABILIZE"})
+
+
+@dataclass(frozen=True)
+class ConditionFailsafe:
+    enabled: bool = False
+    action: FailsafeAction = FailsafeAction.DISARM
+    mode: str | None = None          # friendly name when action=MODE
+    custom_mode: int | None = None   # resolved ArduCopter number when action=MODE
+    hold_ms: int = 300               # continuous trip before the latch engages
+
+
 @dataclass(frozen=True)
 class FailsafeConfig:
-    disarm_on_lost: bool = False   # disarm the FC when the tracker reports LOST
-    lost_hold_ms: int = 300        # continuous LOST required before disarm (debounce)
+    target_loss: ConditionFailsafe
+    watchdog: ConditionFailsafe
 
 
 @dataclass(frozen=True)
@@ -306,10 +332,51 @@ def cfg_diag(d: dict) -> DiagConfig:
     )
 
 
+_LEGACY_FAILSAFE_KEYS = ("disarm_on_lost", "lost_hold_ms")
+
+
+def _condition_failsafe(raw: dict | None, default_hold_ms: int) -> ConditionFailsafe:
+    raw = raw or {}
+    action_str = str(raw.get("action", "disarm")).lower()
+    try:
+        action = FailsafeAction(action_str)
+    except ValueError:
+        raise ValueError(
+            f"failsafe: unknown action {action_str!r}; expected 'disarm' or 'mode'"
+        )
+    mode = None
+    custom_mode = None
+    if action is FailsafeAction.MODE:
+        raw_mode = raw.get("mode")
+        if not raw_mode:
+            raise ValueError("failsafe: action 'mode' requires a 'mode' name")
+        mode = str(raw_mode).upper()
+        if mode not in FAILSAFE_MODE_ALLOWLIST:
+            raise ValueError(
+                f"failsafe: mode {mode!r} is not a GPS-denied-safe failsafe mode "
+                f"(allowed: {sorted(FAILSAFE_MODE_ALLOWLIST)})"
+            )
+        custom_mode = ARDUCOPTER_MODES[mode]
+    return ConditionFailsafe(
+        enabled=bool(raw.get("enabled", False)),
+        action=action,
+        mode=mode,
+        custom_mode=custom_mode,
+        hold_ms=int(raw.get("hold_ms", default_hold_ms)),
+    )
+
+
 def cfg_failsafe(d: dict) -> FailsafeConfig:
-    """Optional target-loss disarm failsafe. Absent section → feature off."""
+    """Per-condition failsafe actions. Absent section → both conditions off."""
     f = d.get("failsafe") or {}
+    legacy = [k for k in _LEGACY_FAILSAFE_KEYS if k in f]
+    if legacy:
+        raise ValueError(
+            f"failsafe: legacy key(s) {legacy} are no longer supported; use the "
+            "per-condition structure (target_loss:/watchdog: each with enabled, "
+            "action, mode, hold_ms)."
+        )
     return FailsafeConfig(
-        disarm_on_lost=f.get("disarm_on_lost", False),
-        lost_hold_ms=f.get("lost_hold_ms", 300),
+        target_loss=_condition_failsafe(f.get("target_loss"), default_hold_ms=300),
+        watchdog=_condition_failsafe(f.get("watchdog"), default_hold_ms=200),
     )

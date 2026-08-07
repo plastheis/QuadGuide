@@ -6,7 +6,7 @@ from pymavlink import mavutil
 
 from quadguide.core.messages import AttitudeState, FCStatus, IMUFrame
 from quadguide.link.mavlink_codec import make_mav
-from quadguide.link.worker import _ArmController, _LinkState, _rx_loop, latch_yaw
+from quadguide.link.worker import _ArmController, _LinkState, _ModeController, _rx_loop, latch_yaw
 
 
 # ── _ArmController ───────────────────────────────────────────────────────────
@@ -56,6 +56,74 @@ def test_arm_controller_ignores_unrelated_ack():
     arm.on_ack(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
                mavutil.mavlink.MAV_RESULT_ACCEPTED)
     assert arm.on_arm_state(True) is True   # still pending → resends
+
+
+# ── _ModeController ──────────────────────────────────────────────────────────
+
+def test_mode_controller_silent_when_no_failsafe():
+    mode = _ModeController(retry_count=3, resend_every_ticks=2)
+    assert mode.on_mode_state(None) is None
+    assert mode.on_mode_state(None) is None
+
+
+def test_mode_controller_emits_on_new_desired_mode():
+    mode = _ModeController(retry_count=3, resend_every_ticks=2)
+    assert mode.on_mode_state(9) == 9
+
+
+def test_mode_controller_resends_until_retries_exhausted():
+    mode = _ModeController(retry_count=2, resend_every_ticks=2)
+    assert mode.on_mode_state(9) == 9     # edge
+    assert mode.on_mode_state(9) is None  # tick 1
+    assert mode.on_mode_state(9) == 9     # tick 2 → resend (retries 2→1)
+    assert mode.on_mode_state(9) is None  # tick 1
+    assert mode.on_mode_state(9) == 9     # tick 2 → resend (retries 1→0)
+    assert mode.on_mode_state(9) is None  # exhausted
+    assert mode.on_mode_state(9) is None
+
+
+def test_mode_controller_stops_after_ack():
+    mode = _ModeController(retry_count=5, resend_every_ticks=2)
+    assert mode.on_mode_state(9) == 9
+    mode.on_ack(mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+                mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert mode.on_mode_state(9) is None
+    assert mode.on_mode_state(9) is None
+
+
+def test_mode_controller_ignores_unrelated_ack():
+    mode = _ModeController(retry_count=5, resend_every_ticks=1)
+    mode.on_mode_state(9)
+    mode.on_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert mode.on_mode_state(9) == 9  # still pending → resends
+
+
+def test_mode_controller_clears_when_failsafe_releases():
+    mode = _ModeController(retry_count=5, resend_every_ticks=2)
+    assert mode.on_mode_state(9) == 9
+    assert mode.on_mode_state(None) is None   # failsafe released
+    assert mode.on_mode_state(9) == 9         # re-trip re-emits
+
+
+def test_mode_controller_not_confirmed_until_ack():
+    mode = _ModeController(retry_count=5, resend_every_ticks=2)
+    assert mode.confirmed() is False          # no mode desired
+    mode.on_mode_state(9)
+    assert mode.confirmed() is False          # pending, not acked
+    mode.on_ack(mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+                mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert mode.confirmed() is True           # acked
+
+
+def test_mode_controller_not_confirmed_after_release():
+    mode = _ModeController(retry_count=5, resend_every_ticks=2)
+    mode.on_mode_state(9)
+    mode.on_ack(mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+                mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert mode.confirmed() is True
+    mode.on_mode_state(None)                   # failsafe released
+    assert mode.confirmed() is False
 
 
 # ── latch_yaw ────────────────────────────────────────────────────────────────
@@ -121,9 +189,10 @@ def _run_rx(data: bytes):
     bus = _FakeBus()
     state = _LinkState()
     arm = _ArmController(retry_count=5, resend_every_ticks=25)
+    mode = _ModeController(retry_count=5, resend_every_ticks=25)
     log = logging.getLogger("test")
     mav = make_mav(1, 191)
-    asyncio.run(_rx_loop(serial, mav, state, bus, arm, log))
+    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log))
     return bus, state, arm
 
 
@@ -195,6 +264,7 @@ def test_rx_ignores_gcs_heartbeat():
 
 def test_rx_command_ack_acks_pending_arm():
     arm = _ArmController(retry_count=5, resend_every_ticks=25)
+    mode = _ModeController(retry_count=5, resend_every_ticks=25)
     arm.on_arm_state(True)  # rising edge → pending, not acked
     data = _enc(lambda m: m.command_ack_encode(
         mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
@@ -204,13 +274,29 @@ def test_rx_command_ack_acks_pending_arm():
     state = _LinkState()
     log = logging.getLogger("test")
     mav = make_mav(1, 191)
-    asyncio.run(_rx_loop(serial, mav, state, bus, arm, log))
+    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log))
     assert arm.on_arm_state(True) is None  # acked → nothing more to send
+
+
+def test_rx_command_ack_acks_pending_mode():
+    arm = _ArmController(retry_count=5, resend_every_ticks=25)
+    mode = _ModeController(retry_count=5, resend_every_ticks=25)
+    mode.on_mode_state(9)  # pending DO_SET_MODE(LAND)
+    data = _enc(lambda m: m.command_ack_encode(
+        mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+        mavutil.mavlink.MAV_RESULT_ACCEPTED).pack(m))
+    serial = _FakeSerial(data)
+    bus = _FakeBus()
+    state = _LinkState()
+    log = logging.getLogger("test")
+    mav = make_mav(1, 191)
+    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log))
+    assert mode.on_mode_state(9) is None  # acked → nothing more to send
 
 
 # ── Failsafe arbitration (target-loss disarm) ────────────────────────────────
 # Ties _ArmController to the _tx_loop scenario where
-# `effective = arm/cmd.armed AND NOT failsafe/disarm` drives on_arm_state.
+# `effective = arm/cmd.armed AND NOT failsafe/action` drives on_arm_state.
 
 def test_arm_controller_drives_failsafe_disarm_then_rearm_sequence():
     arm = _ArmController(retry_count=3, resend_every_ticks=2)
@@ -221,7 +307,7 @@ def test_arm_controller_drives_failsafe_disarm_then_rearm_sequence():
                mavutil.mavlink.MAV_RESULT_ACCEPTED)
 
     # Target-loss failsafe engages while operator is still armed:
-    # effective falls to False on the failsafe/disarm edge → DISARM.
+    # effective falls to False on the failsafe/action edge → DISARM.
     assert arm.on_arm_state(False) is False   # edge → DISARM
     assert arm.on_arm_state(False) is None    # tick 1 → no resend yet
     assert arm.on_arm_state(False) is False   # tick 2 → retransmit before ACK

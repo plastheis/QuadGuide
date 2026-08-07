@@ -13,6 +13,7 @@ class FailsafeState(Enum):
     NOMINAL  = "nominal"
     LEVEL    = "level"
     DISARMED = "disarmed"
+    MODE     = "mode"        # handed off to an FC flight mode (LAND/ALTHOLD/…)
 
 
 class Watchdog:

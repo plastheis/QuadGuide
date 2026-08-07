@@ -118,12 +118,27 @@ watchdog:
   guidance_accel_ms: 100
 
 failsafe:
-  # Disarm the FC over MAVLink when the tracker reports LOST (bare NanoTrack conf <
-  # score_lost) continuously for lost_hold_ms. tracker_health is already the
-  # confidence gate (see tracker.params.score_lost); this only debounces + disarms.
-  # Latches until the operator re-arms — cycle the ground arm switch off→on.
-  disarm_on_lost: true
-  lost_hold_ms: 300         # continuous LOST required before disarm (debounce)
+  # Per-condition failsafe actions. Each condition selects a terminal action of
+  # `disarm` (cut motors) or `mode` (command an ArduPilot flight mode and hand
+  # off). Both LATCH until the operator disarms — cycle the ground arm switch
+  # off→on to re-engage. QuadGuide does NOT auto-restore GUIDED_NOGPS; the
+  # operator restores guided mode on the FC before re-arming.
+  target_loss:
+    # Tracker reports LOST (bare NanoTrack conf < score_lost) continuously for
+    # hold_ms while armed → LAND. tracker_health is the confidence gate (see
+    # tracker.params.score_lost); this only debounces + acts.
+    enabled: true
+    action: mode          # disarm | mode
+    mode: LAND            # LAND | ALTHOLD | STABILIZE (GPS-denied-safe allowlist)
+    hold_ms: 300          # continuous LOST before the latch trips
+  watchdog:
+    # Any watched telemetry/guidance topic stale past its watchdog timeout,
+    # sustained for hold_ms while armed → LAND. Brief blips only level (roll/
+    # pitch → 0) during the debounce; the terminal action needs sustained loss.
+    enabled: true
+    action: mode
+    mode: LAND
+    hold_ms: 200
 
 link:
   tx_rate_hz: 100          # SET_ATTITUDE_TARGET stream rate (Hz) — keep constant to hold GUIDED setpoints

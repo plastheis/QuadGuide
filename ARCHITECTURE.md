@@ -116,6 +116,9 @@ Every loop that drives the FC has a deadline. If `target/estimate` goes stale
 throttle. If `fc/imu` or `fc/attitude` go stale, control commands neutral
 sticks. The link worker streams SET_ATTITUDE_TARGET at a constant 50 Hz regardless of
 upstream health so the FC holds its GUIDED_NOGPS setpoint instead of timing out.
+Two conditions escalate past this soft-LEVEL baseline — sustained target loss
+and sustained watchdog staleness — each latching a configurable terminal
+action (disarm, or hand off to an FC flight mode); see §6.9.
 
 ---
 
@@ -366,9 +369,13 @@ runs the RX/TX/heartbeat/stream-setup/health loops over the transport-agnostic
 from `control/cmd`, yaw held by a latched heading baked into the quaternion,
 thrust = `throttle_norm`); arming is edge-triggered via
 `MAV_CMD_COMPONENT_ARM_DISARM`. The pilot's RC switch owns the RC↔GUIDED_NOGPS
-toggle — quadguide never changes mode. Drop the 50 Hz stream and the FC abandons
-the GUIDED setpoint. Requires FC params `SERIALn_PROTOCOL=2` and `GUID_OPTIONS`
-bit 3 (direct thrust).
+toggle in normal flight — quadguide never restores or requests GUIDED_NOGPS.
+The one exception is the failsafe mode hand-off (§6.9): on a `SET_MODE`
+failsafe action, `link` suppresses the attitude stream and edge-triggers
+`MAV_CMD_DO_SET_MODE` via `_ModeController`, a one-directional move out of
+GUIDED_NOGPS only. Otherwise dropping the 50 Hz stream makes the FC abandon
+the GUIDED setpoint. Requires FC params `SERIALn_PROTOCOL=2` and
+`GUID_OPTIONS` bit 3 (direct thrust).
 
 ### 6.5 guidance/
 
@@ -413,18 +420,64 @@ bit 3 (direct thrust).
 - **`static/index.html`** — HUD. Centroid for the crosshair is computed in
   JS from `bbox_x/y/w/h`.
 
-### 6.9 Target-loss disarm failsafe
+### 6.9 Configurable failsafe actions
 
-When `failsafe.disarm_on_lost` is set, the control worker debounces
-`target/estimate.tracker_health == LOST` for `failsafe.lost_hold_ms` and, while
-armed, publishes a latching `failsafe/disarm` (FailsafeCmd). The link worker
-computes `effective_armed = arm/cmd AND NOT failsafe/disarm` and commands the FC
-to DISARM via the existing arm path. The latch is sticky until the operator
-re-arms (cycle the ground arm switch off→on). `tracker_health` is already the
-NanoTrack confidence gate (`tracker.params.score_lock`/`score_lost`); this
-feature only debounces and disarms. Note that re-arming while the target is
-still `LOST` restarts the debounce and re-disarms after `lost_hold_ms`; a clean
-re-arm requires the tracker to have re-acquired (health no longer `LOST`).
+Two conditions each latch to a **configurable terminal action** — `disarm`
+(cut motors) or `mode: <NAME>` (command an ArduPilot flight mode via
+`DO_SET_MODE` and hand off, staying armed):
+
+1. **Target loss** — `target/estimate.tracker_health == LOST` held
+   continuously for `failsafe.target_loss.hold_ms` while armed.
+   `tracker_health` is already the NanoTrack confidence gate
+   (`tracker.params.score_lock`/`score_lost`); this condition only debounces
+   and acts.
+2. **Watchdog staleness** — any watched bus topic (`target/estimate`,
+   `fc/attitude`, `fc/imu`, `guidance/accel`) stale continuously for
+   `failsafe.watchdog.hold_ms` while armed. This is layered on top of the
+   soft-LEVEL behavior in §2.5: during the debounce window control levels
+   roll/pitch (→ 0) but holds throttle (never banks attitude on stale data),
+   and if the watchdog failsafe is disabled that soft-LEVEL path is the only
+   response (backward compat).
+
+A `mode:` action is restricted at config load to a GPS-denied-safe allowlist
+— **LAND, ALTHOLD, STABILIZE** (`custom_mode` 9/2/0) — resolved via
+`ARDUCOPTER_MODES` and validated by `cfg_failsafe`; RTL/LOITER/other GPS-
+dependent modes are rejected with a `ValueError` at load, as are the old flat
+top-level failsafe keys from the single-action design this generalizes.
+
+**Latch + hand-off, no auto-resume.** Each condition is its own
+`FailsafeLatch` (`control/failsafe.py`), a pure debounce/latch state machine
+keyed on `arm/cmd` (the operator's commanded arm intent), not `fc/status` —
+the action itself changes `fc/status.armed`/`custom_mode`, so keying the
+clear on FC state would immediately un-latch. Once tripped, the latch stays
+engaged — QuadGuide stays hands-off — until the operator disarms
+(`arm/cmd` → False). To **re-engage**: disarm to clear the latch, restore
+GUIDED_NOGPS on the FC, then re-arm (off→on); QuadGuide never auto-restores
+GUIDED_NOGPS or resumes on its own. Re-arming while the trip condition is
+still active restarts the `hold_ms` debounce timer and re-acts if the
+condition persists.
+
+**Arbitration.** Both latches are evaluated every control tick; when more
+than one is engaged, precedence is **DISARM > MODE** (the more conservative
+action wins), and among latched MODE conditions, **target-loss beats
+watchdog** (moot when both configs target the same mode).
+
+**Signal path.** `control` is the safety authority and **arbiter**: it
+updates both latches, arbitrates one effective action, and publishes
+`FailsafeCmd(action, custom_mode)` on `failsafe/action` every tick. `link` is
+the **executor**: `DISARM` drives the existing `_ArmController`; `SET_MODE`
+suppresses the `SET_ATTITUDE_TARGET` stream (so QuadGuide stops fighting the
+FC's own mode) and drives a new `_ModeController` — edge-triggered,
+retransmit-until-ACK `MAV_CMD_DO_SET_MODE`, mirroring `_ArmController`.
+`FailsafeState` gains `MODE` alongside `NOMINAL`/`LEVEL`/`DISARMED` for
+health/detail reporting.
+
+```
+tracker ──target/estimate(health)─┐
+                                  ├─► control ──failsafe/action──► link ──DISARM|DO_SET_MODE──► FC
+watchdog topics (staleness) ──────┘   (arbiter)   (action,mode)     (executor)
+ground ──arm/cmd──────────────────────┴───────────────────────────────┘
+```
 
 ---
 
@@ -440,7 +493,7 @@ re-arm requires the tracker to have re-acquired (health no longer `LOST`).
 | `guidance/accel`   | guidance        | control, ground                    | `AccelCmd`       | 24 B |
 | `control/cmd`      | control         | link, ground                       | `ControlCmd`     | 32 B |
 | `arm/cmd`          | ground          | link                               | `ArmCmd`         |  9 B |
-| `failsafe/disarm`  | control         | link                               | `FailsafeCmd`    |  9 B |
+| `failsafe/action`  | control         | link                               | `FailsafeCmd`    | 13 B |
 | `system/health`    | all             | ground                             | `HealthReport`   | 25 B |
 
 **Latency lineage (`origin_ns`).** `target/estimate`, `guidance/accel` and

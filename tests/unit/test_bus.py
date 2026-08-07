@@ -20,7 +20,7 @@ class TestTopicRegistry:
                 "target/estimate",
                 "fc/attitude", "fc/imu", "guidance/accel",
                 "control/cmd", "lockon/cmd", "system/health", "arm/cmd",
-                "fire/cmd", "fc/status", "failsafe/disarm",
+                "fire/cmd", "fc/status", "failsafe/action",
             }
             assert set(b._topics.keys()) == expected
         finally:

@@ -31,11 +31,15 @@ def test_rpi4b_is_usb_camera_flight_default():
     assert abs(config["guidance"]["fov_horizontal_rad"] - 1.05) < 1e-6
 
 
-def test_rpi4b_target_loss_disarm_enabled():
-    """rpi4b enables the target-loss disarm failsafe: LOST tracker_health disarms
-    the FC after lost_hold_ms (bare NanoTrack has no hysteresis → QuadGuide debounces)."""
-    from quadguide.core.config import cfg_failsafe
+def test_rpi4b_failsafe_actions_land_on_loss_and_staleness():
+    """rpi4b: both target-loss and watchdog failsafes LAND the aircraft."""
+    from quadguide.core.config import cfg_failsafe, FailsafeAction
     config = load_config(str(CONFIG), {})
     f = cfg_failsafe(config)
-    assert f.disarm_on_lost is True
-    assert f.lost_hold_ms == 300
+    assert f.target_loss.enabled is True
+    assert f.target_loss.action is FailsafeAction.MODE
+    assert f.target_loss.mode == "LAND"
+    assert f.target_loss.custom_mode == 9
+    assert f.watchdog.enabled is True
+    assert f.watchdog.action is FailsafeAction.MODE
+    assert f.watchdog.custom_mode == 9

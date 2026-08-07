@@ -7,9 +7,12 @@ from quadguide.core.config import cfg_airframe, cfg_guidance, cfg_platform, cfg_
 from quadguide.core.frame_buffer import FrameBuffer
 from quadguide.core.health import FailsafeState, HealthFault
 from quadguide.core.logging import setup_logging
-from quadguide.core.messages import ControlCmd, FailsafeCmd, HealthReport, ProcessState
+from quadguide.core.messages import (
+    ControlCmd, FailsafeCmd, FailsafeActionWire, HealthReport, ProcessState,
+)
+from quadguide.core.messages import TrackerHealth
 from quadguide.control.attitude_cmd import compute as attitude_cmd_compute
-from quadguide.control.failsafe import LostDisarmLatch
+from quadguide.control.failsafe import FailsafeLatch, arbitrate_failsafe
 from quadguide.control.limiter import saturate, slew_rate
 from quadguide.control.watchdog import build_watchdog
 from quadguide.platform.adapter import PlatformAdapter
@@ -36,7 +39,10 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
 
     watchdog = build_watchdog(wcfg, bus)
     rate = RateLimiter(hz=100)
-    latch = LostDisarmLatch(fcfg.disarm_on_lost, fcfg.lost_hold_ms * 1_000_000)
+    tl_latch = FailsafeLatch(fcfg.target_loss.enabled,
+                             fcfg.target_loss.hold_ms * 1_000_000)
+    wd_latch = FailsafeLatch(fcfg.watchdog.enabled,
+                             fcfg.watchdog.hold_ms * 1_000_000)
 
     dcfg = cfg_diag(config)
     trace = DiagTrace("control", enabled=dcfg.trace,
@@ -86,7 +92,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
         try:
             watchdog.check_all()
             if in_failsafe:
-                log.info("control: failsafe cleared")
+                log.info("control: staleness cleared (soft-LEVEL)")
                 in_failsafe = False
             state = FailsafeState.NOMINAL
             fault = None
@@ -94,24 +100,34 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
             fault = e
             state = FailsafeState.LEVEL
             if not in_failsafe:
-                log.warning("control: entering failsafe — %s", e)
+                log.warning("control: entering soft-LEVEL (staleness) — %s", e)
                 in_failsafe = True
 
-        # Target-loss disarm latch: debounce tracker_health==LOST -> disarm.
-        # Independent of the staleness watchdog above; overrides state when engaged.
+        # Failsafe conditions → latch → arbitrated action. `fault is not None`
+        # (from the staleness watchdog above) is the watchdog trip predicate; it
+        # also drives the local leveling below, so brief blips only level while
+        # the debounce runs — the terminal action needs sustained loss.
+        stale = fault is not None
         est = bus.latest("target/estimate")
         health = est.tracker_health if est is not None else None
-        latched = latch.update(now_ns, armed, health)
-        effective_armed = armed and not latched
-        if latched:
+        tl_latched = tl_latch.update(now_ns, armed, health == TrackerHealth.LOST)
+        wd_latched = wd_latch.update(now_ns, armed, stale)
+        action, custom_mode = arbitrate_failsafe(
+            tl_latched, fcfg.target_loss, wd_latched, fcfg.watchdog)
+        any_latched = tl_latched or wd_latched
+        effective_armed = armed and not any_latched
+        if action == FailsafeActionWire.DISARM:
             state = FailsafeState.DISARMED
-        if latched and not latched_prev:
-            log.warning("control: TARGET-LOSS DISARM latched — health LOST > %d ms",
-                        fcfg.lost_hold_ms)
-        elif latched_prev and not latched:
-            log.info("control: target-loss disarm cleared (operator disarm)")
-        latched_prev = latched
-        bus.publish("failsafe/disarm", FailsafeCmd(now_ns, latched))
+        elif action == FailsafeActionWire.SET_MODE:
+            state = FailsafeState.MODE
+        if any_latched and not latched_prev:
+            log.warning("control: FAILSAFE latched — action=%s custom_mode=%d "
+                        "(target_loss=%s watchdog=%s)",
+                        action.name, custom_mode, tl_latched, wd_latched)
+        elif latched_prev and not any_latched:
+            log.info("control: failsafe cleared (operator disarm)")
+        latched_prev = any_latched
+        bus.publish("failsafe/action", FailsafeCmd(now_ns, action, custom_mode))
 
         accel = bus.latest("guidance/accel")
 
@@ -137,15 +153,15 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
             trace.latency(now_ns, accel.timestamp_ns, accel.origin_ns)
 
         if i % _HEALTH_EVERY == 0:
-            proc_state = ProcessState.FAILSAFE if (in_failsafe or latched) else ProcessState.OK
+            proc_state = ProcessState.FAILSAFE if (in_failsafe or any_latched) else ProcessState.OK
             detail = str(fault) if fault is not None else (
-                "target-loss disarm" if latched else "")
+                f"failsafe {action.name}" if any_latched else "")
             bus.publish(
                 "system/health",
                 HealthReport(monotonic_ns(), "control", proc_state, detail),
             )
             trace.state(monotonic_ns(), armed=armed, fire_active=fire_active,
-                        in_failsafe=in_failsafe, disarm_latched=latched,
+                        in_failsafe=in_failsafe, disarm_latched=any_latched,
                         fault=detail, throttle=thr)
 
     trace.flush()

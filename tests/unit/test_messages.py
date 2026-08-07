@@ -4,7 +4,7 @@ from quadguide.core.messages import (
     TrackerHealth, ProcessState,
     BoundingBox, TrackerEstimate,
     AttitudeState, IMUFrame, AccelCmd, ControlCmd,
-    LockOnCmd, HealthReport, ArmCmd, FCStatus, FailsafeCmd,
+    LockOnCmd, HealthReport, ArmCmd, FCStatus, FailsafeCmd, FailsafeActionWire,
     FMT_TRACKER_ESTIMATE,
     FMT_ATTITUDE_STATE, FMT_IMU_FRAME, FMT_ACCEL_CMD,
     FMT_CONTROL_CMD, FMT_LOCKON_CMD, FMT_HEALTH_REPORT, FMT_ARM_CMD,
@@ -210,15 +210,23 @@ class TestFCStatus:
 
 class TestFailsafeCmd:
     def test_format_size(self):
-        assert struct.calcsize(FMT_FAILSAFE_CMD) == 9  # Q(8) + B(1)
+        assert struct.calcsize(FMT_FAILSAFE_CMD) == 13  # Q(8) + B(1) + I(4)
 
-    def test_round_trip_disarm_true(self):
-        msg = FailsafeCmd(timestamp_ns=1_000_000, disarm=True)
+    def test_round_trip_disarm(self):
+        msg = FailsafeCmd(timestamp_ns=1_000_000, action=FailsafeActionWire.DISARM)
         r = FailsafeCmd.unpack(msg.pack())
         assert r.timestamp_ns == 1_000_000
-        assert r.disarm is True
+        assert r.action is FailsafeActionWire.DISARM
+        assert r.custom_mode == 0
 
-    def test_round_trip_disarm_false(self):
-        msg = FailsafeCmd(timestamp_ns=2_000_000, disarm=False)
+    def test_round_trip_set_mode_carries_custom_mode(self):
+        msg = FailsafeCmd(timestamp_ns=2_000_000,
+                          action=FailsafeActionWire.SET_MODE, custom_mode=9)
         r = FailsafeCmd.unpack(msg.pack())
-        assert r.disarm is False
+        assert r.action is FailsafeActionWire.SET_MODE
+        assert r.custom_mode == 9
+
+    def test_round_trip_none(self):
+        r = FailsafeCmd.unpack(
+            FailsafeCmd(3_000_000, FailsafeActionWire.NONE).pack())
+        assert r.action is FailsafeActionWire.NONE

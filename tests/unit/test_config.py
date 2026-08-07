@@ -7,7 +7,7 @@ from quadguide.core.config import (
     cfg_platform, cfg_airframe, cfg_tracker,
     cfg_guidance, cfg_watchdog, cfg_mission,
     cfg_logging, cfg_bus, cfg_diag, cfg_failsafe,
-    BusConfig, DiagConfig, FailsafeConfig,
+    BusConfig, DiagConfig, FailsafeConfig, ConditionFailsafe, FailsafeAction,
 )
 
 CONFIG_PATH = str(pathlib.Path(__file__).parents[2] / "configs" / "config.yaml")
@@ -140,10 +140,38 @@ class TestAccessors:
         assert d.trace_max_rows == 500
 
     def test_cfg_failsafe_defaults_when_section_absent(self):
-        assert cfg_failsafe({}) == FailsafeConfig(disarm_on_lost=False, lost_hold_ms=300)
+        f = cfg_failsafe({})
+        assert f.target_loss.enabled is False
+        assert f.watchdog.enabled is False
 
-    def test_cfg_failsafe_from_config(self):
-        d = {"failsafe": {"disarm_on_lost": True, "lost_hold_ms": 500}}
+    def test_cfg_failsafe_mode_action_resolves_custom_mode(self):
+        d = {"failsafe": {"target_loss": {
+            "enabled": True, "action": "mode", "mode": "LAND", "hold_ms": 400}}}
         f = cfg_failsafe(d)
-        assert f.disarm_on_lost is True
-        assert f.lost_hold_ms == 500
+        assert f.target_loss.enabled is True
+        assert f.target_loss.action is FailsafeAction.MODE
+        assert f.target_loss.mode == "LAND"
+        assert f.target_loss.custom_mode == 9
+        assert f.target_loss.hold_ms == 400
+
+    def test_cfg_failsafe_disarm_action_has_no_mode(self):
+        d = {"failsafe": {"target_loss": {"enabled": True, "action": "disarm"}}}
+        f = cfg_failsafe(d)
+        assert f.target_loss.action is FailsafeAction.DISARM
+        assert f.target_loss.custom_mode is None
+
+    def test_cfg_failsafe_rejects_gps_dependent_mode(self):
+        d = {"failsafe": {"watchdog": {
+            "enabled": True, "action": "mode", "mode": "RTL"}}}
+        with pytest.raises(ValueError, match="RTL"):
+            cfg_failsafe(d)
+
+    def test_cfg_failsafe_mode_action_requires_mode_name(self):
+        d = {"failsafe": {"target_loss": {"enabled": True, "action": "mode"}}}
+        with pytest.raises(ValueError, match="requires a 'mode'"):
+            cfg_failsafe(d)
+
+    def test_cfg_failsafe_rejects_legacy_keys(self):
+        d = {"failsafe": {"disarm_on_lost": True, "lost_hold_ms": 300}}
+        with pytest.raises(ValueError, match="legacy"):
+            cfg_failsafe(d)
