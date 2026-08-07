@@ -70,4 +70,6 @@ def arbitrate_failsafe(
     if any(c.action is FailsafeAction.DISARM for c in active):
         return FailsafeActionWire.DISARM, 0
     chosen = active[0]             # all MODE; first is target-loss if latched
-    return FailsafeActionWire.SET_MODE, int(chosen.custom_mode or 0)
+    assert chosen.custom_mode is not None, \
+        "MODE failsafe reached arbitration without a resolved custom_mode"
+    return FailsafeActionWire.SET_MODE, int(chosen.custom_mode)

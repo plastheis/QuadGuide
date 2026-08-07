@@ -72,7 +72,7 @@ FMT_ACCEL_CMD = "!QffQ"
 
 FMT_CONTROL_CMD = "!QffffQ"
 # Q(8) + roll_deg,pitch_deg,yaw_rate_dps,throttle_norm(4×f=16) + origin_ns(Q=8) = 32 bytes
-# origin_ns is copied from the consumed accel's origin_ns; 0 = no lineage (failsafe/disarmed).
+# origin_ns is copied from the consumed accel's origin_ns; 0 = no lineage (failsafe/action).
 
 FMT_LOCKON_CMD = "!QHffff"
 # Q(8) + seq(H=2) + bbox.x,y,w,h(4×f=16) = 26 bytes

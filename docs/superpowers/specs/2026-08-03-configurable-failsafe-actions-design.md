@@ -363,7 +363,9 @@ re-engage on condition recovery.
 - `control/failsafe.py` — `LostDisarmLatch` → generic `FailsafeLatch`.
 - `control/worker.py` — two latches, arbitration + precedence, publish, local
   safing, keep soft-LEVEL when watchdog failsafe off.
-- `control/watchdog.py` — add `any_stale()` boolean check alongside `check_all()`.
+- `control/worker.py` — reuse the existing `watchdog.check_all()` fault as the
+  watchdog staleness predicate (`stale = fault is not None`); no new
+  `any_stale()` method was added to `control/watchdog.py`.
 - `link/fc.py` — `encode_set_mode`.
 - `link/mavlink_codec.py` — DO_SET_MODE / custom-mode-flag consts (if aliased).
 - `link/worker.py` — `_ModeController`, SET_MODE execution, attitude-stream

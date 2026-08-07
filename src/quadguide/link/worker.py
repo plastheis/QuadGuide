@@ -117,6 +117,15 @@ class _ModeController:
                 and result == mavutil.mavlink.MAV_RESULT_ACCEPTED):
             self._acked = True
 
+    def confirmed(self) -> bool:
+        """True once the current DO_SET_MODE has been ACKed by the FC.
+
+        False when no mode is desired or the ACK has not yet arrived — used to
+        gate attitude-stream suppression so the aircraft is never left armed
+        with neither GUIDED_NOGPS setpoints nor the commanded failsafe mode.
+        """
+        return self._desired is not None and self._acked
+
 
 def latch_yaw(
     armed: bool, prev_armed: bool, last_yaw: float | None, held: float
@@ -218,7 +227,7 @@ async def _tx_loop(serial, mav, bus, state: _LinkState, arm_ctrl: _ArmController
         to_send = arm_ctrl.on_arm_state(effective)
         if to_send is not None and state.have_heartbeat:
             await serial.write(encode_arm(mav, to_send, tsys, tcomp))
-            reason = " (target-loss failsafe)" if (not to_send and disarm) else ""
+            reason = " (failsafe disarm)" if (not to_send and disarm) else ""
             log.info("arm command → %s%s", "ARM" if to_send else "DISARM", reason)
 
         # MODE action: command DO_SET_MODE and suppress the attitude stream.
@@ -227,11 +236,16 @@ async def _tx_loop(serial, mav, bus, state: _LinkState, arm_ctrl: _ArmController
             await serial.write(encode_set_mode(mav, mode_to_send, tsys, tcomp))
             log.info("mode command → custom_mode=%d (failsafe handoff)", mode_to_send)
 
+        # Suppress the attitude stream only once the FC has CONFIRMED the failsafe
+        # mode (DO_SET_MODE ACK). Until then keep streaming GUIDED_NOGPS setpoints so
+        # the aircraft is never left armed with neither setpoints nor the mode.
+        mode_confirmed = mode_active and mode_ctrl.confirmed()
+
         yaw_hold = latch_yaw(effective, prev_armed, state.last_yaw, yaw_hold)
         prev_armed = effective
 
         # Stream SET_ATTITUDE_TARGET unless a mode failsafe has handed off to the FC.
-        if not mode_active:
+        if not mode_confirmed:
             await serial.write(encode_attitude_target(
                 mav, cmd, yaw_hold, tsys, tcomp,
                 lc["max_roll_deg"], lc["max_pitch_deg"], now // _NS_PER_MS))

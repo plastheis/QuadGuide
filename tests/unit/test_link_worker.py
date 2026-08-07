@@ -106,6 +106,26 @@ def test_mode_controller_clears_when_failsafe_releases():
     assert mode.on_mode_state(9) == 9         # re-trip re-emits
 
 
+def test_mode_controller_not_confirmed_until_ack():
+    mode = _ModeController(retry_count=5, resend_every_ticks=2)
+    assert mode.confirmed() is False          # no mode desired
+    mode.on_mode_state(9)
+    assert mode.confirmed() is False          # pending, not acked
+    mode.on_ack(mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+                mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert mode.confirmed() is True           # acked
+
+
+def test_mode_controller_not_confirmed_after_release():
+    mode = _ModeController(retry_count=5, resend_every_ticks=2)
+    mode.on_mode_state(9)
+    mode.on_ack(mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+                mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert mode.confirmed() is True
+    mode.on_mode_state(None)                   # failsafe released
+    assert mode.confirmed() is False
+
+
 # ── latch_yaw ────────────────────────────────────────────────────────────────
 
 def test_latch_yaw_latches_on_arm_edge():
@@ -276,7 +296,7 @@ def test_rx_command_ack_acks_pending_mode():
 
 # ── Failsafe arbitration (target-loss disarm) ────────────────────────────────
 # Ties _ArmController to the _tx_loop scenario where
-# `effective = arm/cmd.armed AND NOT failsafe/disarm` drives on_arm_state.
+# `effective = arm/cmd.armed AND NOT failsafe/action` drives on_arm_state.
 
 def test_arm_controller_drives_failsafe_disarm_then_rearm_sequence():
     arm = _ArmController(retry_count=3, resend_every_ticks=2)
@@ -287,7 +307,7 @@ def test_arm_controller_drives_failsafe_disarm_then_rearm_sequence():
                mavutil.mavlink.MAV_RESULT_ACCEPTED)
 
     # Target-loss failsafe engages while operator is still armed:
-    # effective falls to False on the failsafe/disarm edge → DISARM.
+    # effective falls to False on the failsafe/action edge → DISARM.
     assert arm.on_arm_state(False) is False   # edge → DISARM
     assert arm.on_arm_state(False) is None    # tick 1 → no resend yet
     assert arm.on_arm_state(False) is False   # tick 2 → retransmit before ACK

@@ -92,7 +92,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
         try:
             watchdog.check_all()
             if in_failsafe:
-                log.info("control: failsafe cleared")
+                log.info("control: staleness cleared (soft-LEVEL)")
                 in_failsafe = False
             state = FailsafeState.NOMINAL
             fault = None
@@ -100,7 +100,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
             fault = e
             state = FailsafeState.LEVEL
             if not in_failsafe:
-                log.warning("control: entering failsafe — %s", e)
+                log.warning("control: entering soft-LEVEL (staleness) — %s", e)
                 in_failsafe = True
 
         # Failsafe conditions → latch → arbitrated action. `fault is not None`
