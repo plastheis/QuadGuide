@@ -108,11 +108,19 @@ watchdog:
   guidance_accel_ms: 100
 
 failsafe:
-  # Target-loss disarm (see configs/rpi4b.yaml). Disabled on this build by default;
-  # the RK3588 flight config typically runs acquire_track, whose LOST is already
-  # heavily debounced. Enable if running bare nanotrack here.
-  disarm_on_lost: false
-  lost_hold_ms: 300
+  # Per-condition failsafe actions (see configs/rpi4b.yaml). Disabled on this
+  # build for parity/docs; the RK3588 flight config typically runs acquire_track,
+  # whose LOST is already heavily debounced. Enable per-condition if needed.
+  target_loss:
+    enabled: false
+    action: mode
+    mode: LAND
+    hold_ms: 300
+  watchdog:
+    enabled: false
+    action: mode
+    mode: LAND
+    hold_ms: 200
 
 link:
   tx_rate_hz: 100          # SET_ATTITUDE_TARGET stream rate (Hz) — keep constant to hold GUIDED setpoints

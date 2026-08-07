@@ -26,10 +26,10 @@ def test_rk3588_is_flight_default():
     assert abs(config["guidance"]["fov_horizontal_rad"] - 1.379) < 1e-6
 
 
-def test_rk3588_target_loss_disarm_present_disabled():
-    """rk3588 ships the failsafe section for parity but leaves it off by default."""
+def test_rk3588_failsafe_disabled_for_parity():
+    """rk3588 ships the per-condition failsafe structure but disabled by default."""
     from quadguide.core.config import cfg_failsafe
     config = load_config(str(CONFIG), {})
     f = cfg_failsafe(config)
-    assert f.disarm_on_lost is False
-    assert f.lost_hold_ms == 300
+    assert f.target_loss.enabled is False
+    assert f.watchdog.enabled is False
