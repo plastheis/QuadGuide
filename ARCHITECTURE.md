@@ -434,10 +434,10 @@ Two conditions each latch to a **configurable terminal action** — `disarm`
 2. **Watchdog staleness** — any watched bus topic (`target/estimate`,
    `fc/attitude`, `fc/imu`, `guidance/accel`) stale continuously for
    `failsafe.watchdog.hold_ms` while armed. This is layered on top of the
-   soft-LEVEL behavior in §2.5: during the debounce window control still
-   commands level + zero throttle (never banks on stale data), and if the
-   watchdog failsafe is disabled that soft-LEVEL path is the only response
-   (backward compat).
+   soft-LEVEL behavior in §2.5: during the debounce window control levels
+   roll/pitch (→ 0) but holds throttle (never banks attitude on stale data),
+   and if the watchdog failsafe is disabled that soft-LEVEL path is the only
+   response (backward compat).
 
 A `mode:` action is restricted at config load to a GPS-denied-safe allowlist
 — **LAND, ALTHOLD, STABILIZE** (`custom_mode` 9/2/0) — resolved via
@@ -454,7 +454,8 @@ engaged — QuadGuide stays hands-off — until the operator disarms
 (`arm/cmd` → False). To **re-engage**: disarm to clear the latch, restore
 GUIDED_NOGPS on the FC, then re-arm (off→on); QuadGuide never auto-restores
 GUIDED_NOGPS or resumes on its own. Re-arming while the trip condition is
-still active immediately re-trips the debounce.
+still active restarts the `hold_ms` debounce timer and re-acts if the
+condition persists.
 
 **Arbitration.** Both latches are evaluated every control tick; when more
 than one is engaged, precedence is **DISARM > MODE** (the more conservative
