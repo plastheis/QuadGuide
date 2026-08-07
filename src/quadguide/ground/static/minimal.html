@@ -49,6 +49,10 @@
   #armed  { top: 10px; font-size: 26px; color: #ff4136; display: none; }
   #fcarmed{ top: 42px; font-size: 16px; display: none; }
   #fire   { top: 70px; font-size: 22px; color: #ff851b; display: none; }
+  /* Latched terminal failsafe — unmissable, and distinct from the CTRL health
+     box (which also reddens for a transient staleness blip). */
+  #failsafe { top: 98px; font-size: 24px; color: #fff; background: #ff4136;
+              padding: 2px 10px; border-radius: 3px; display: none; }
   #lock  { bottom: 10px; font-size: 24px; display: none; }
 </style>
 </head>
@@ -75,6 +79,7 @@
     <canvas id="pip" width="160" height="160"></canvas>
     <div id="armed" class="status">ARMED</div>
     <div id="fcarmed" class="status"></div>
+    <div id="failsafe" class="status"></div>
     <div id="fire" class="status">FIRE</div>
     <div id="lock" class="status"></div>
   </div>
@@ -172,6 +177,16 @@ function updateFcArmed(fcArmed) {
 }
 const elFire  = document.getElementById('fire');
 const elLock  = document.getElementById('lock');
+const elFailsafe = document.getElementById('failsafe');
+
+// Latched terminal failsafe from the control worker (d.failsafe_action).
+// "set_mode" shows the ArduPilot mode it handed off to, e.g. "FAILSAFE LAND".
+function updateFailsafe(action, mode) {
+  if (!action || action === 'none') { elFailsafe.style.display = 'none'; return; }
+  elFailsafe.textContent = action === 'disarm'
+    ? 'FAILSAFE DISARM' : 'FAILSAFE ' + (mode || 'MODE');
+  elFailsafe.style.display = 'block';
+}
 
 function updateArmedText() { elArmed.style.display = armState ? 'block' : 'none'; }
 function updateFireOverlay() { elFire.style.display = fireActive ? 'block' : 'none'; }
@@ -237,6 +252,13 @@ sse.onmessage = (ev) => {
     fireActive = d.fire_active;
     updateFireOverlay();
   }
+  // Commanded arm state comes from the bus (arm/cmd), not this page's click
+  // state, so the indicator stays truthful across a reload or a second kiosk.
+  if (d.armed != null && d.armed !== armState) {
+    armState = d.armed;
+    updateArmedText();
+  }
+  updateFailsafe(d.failsafe_action, d.failsafe_mode);
   updateFcArmed(d.fc_armed);
   updateModuleHealth(d.health);
   updateLatency(d.latency_ms, d.latency_avg_ms);

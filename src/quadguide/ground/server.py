@@ -13,8 +13,15 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from quadguide.core.clock import monotonic_ns
-from quadguide.core.messages import ArmCmd, BoundingBox, FireCmd, HealthReport, LockOnCmd, ProcessState
+from quadguide.core.config import ARDUCOPTER_MODES
+from quadguide.core.messages import (
+    ArmCmd, BoundingBox, FailsafeActionWire, FireCmd, HealthReport, LockOnCmd,
+    ProcessState,
+)
 from quadguide.ground import overlay
+
+# custom_mode number → friendly name, for the HUD failsafe banner.
+_MODE_NAMES = {v: k for k, v in ARDUCOPTER_MODES.items()}
 
 _STATIC      = Path(__file__).parent / "static"
 _MJPEG_RATE  = 1 / 15   # 15 Hz
@@ -141,6 +148,20 @@ async def _mjpeg(app: FastAPI):
         yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
 
 
+def _failsafe_name(fs) -> str:
+    """failsafe/action → "none" | "disarm" | "set_mode" (never None, for the HUD)."""
+    if fs is None:
+        return "none"
+    return FailsafeActionWire(fs.action).name.lower()
+
+
+def _failsafe_mode_name(fs) -> str | None:
+    """Friendly ArduCopter mode name for a latched SET_MODE, else None."""
+    if fs is None or fs.action != FailsafeActionWire.SET_MODE:
+        return None
+    return _MODE_NAMES.get(int(fs.custom_mode), str(fs.custom_mode))
+
+
 async def _sse(app: FastAPI):
     while True:
         await asyncio.sleep(_SSE_RATE)
@@ -150,6 +171,8 @@ async def _sse(app: FastAPI):
         accel    = app.state.bus.latest("guidance/accel")
         control  = app.state.bus.latest("control/cmd")
         fire_cmd = app.state.bus.latest("fire/cmd")
+        arm_cmd  = app.state.bus.latest("arm/cmd")
+        failsafe = app.state.bus.latest("failsafe/action")
         fc_status = app.state.bus.latest("fc/status")
         report   = app.state.bus.latest("system/health")
 
@@ -203,6 +226,13 @@ async def _sse(app: FastAPI):
             "ctrl_throttle":     control.throttle_norm   if control else None,
             # fire/cmd
             "fire_active":       bool(fire_cmd and fire_cmd.active),
+            # arm/cmd — the operator's COMMANDED arm intent (what gates the
+            # failsafe latches), distinct from fc_armed below. Sourced from the
+            # bus, not the kiosk's click state, so it survives a page reload.
+            "armed":             bool(arm_cmd and arm_cmd.armed),
+            # failsafe/action — latched terminal action from the control worker.
+            "failsafe_action":   _failsafe_name(failsafe),
+            "failsafe_mode":     _failsafe_mode_name(failsafe),
             # fc/status — ground-truth arm/mode from HEARTBEAT (None until first beat)
             "fc_armed":          (fc_status.armed       if fc_status else None),
             "fc_mode":           (fc_status.custom_mode if fc_status else None),
