@@ -74,6 +74,50 @@ class _ArmController:
             self._acked = True
 
 
+class _ModeController:
+    """Edge-triggered MAVLink DO_SET_MODE with bounded retransmits until ACK.
+
+    Call `on_mode_state(desired)` once per TX tick with the desired custom_mode,
+    or None when no mode failsafe is active. Returns the custom_mode to transmit
+    this tick, or None to send nothing. On a new/changed desired mode it emits
+    immediately, then re-emits every `resend_every_ticks` ticks up to
+    `retry_count` times until `on_ack` confirms a DO_SET_MODE.
+    """
+
+    def __init__(self, retry_count: int, resend_every_ticks: int) -> None:
+        self._desired: int | None = None
+        self._acked: bool = True
+        self._retries_left: int = 0
+        self._ticks: int = 0
+        self._retry_count = retry_count
+        self._resend_every = resend_every_ticks
+
+    def on_mode_state(self, desired: int | None) -> int | None:
+        if desired is None:                  # no mode failsafe active
+            self._desired = None
+            self._acked = True
+            return None
+        if desired != self._desired:         # new/changed target mode → emit now
+            self._desired = desired
+            self._acked = False
+            self._retries_left = self._retry_count
+            self._ticks = 0
+            return desired
+        if self._acked or self._retries_left <= 0:
+            return None
+        self._ticks += 1
+        if self._ticks >= self._resend_every:
+            self._ticks = 0
+            self._retries_left -= 1
+            return self._desired
+        return None
+
+    def on_ack(self, command: int, result: int) -> None:
+        if (command == mavutil.mavlink.MAV_CMD_DO_SET_MODE
+                and result == mavutil.mavlink.MAV_RESULT_ACCEPTED):
+            self._acked = True
+
+
 def latch_yaw(
     armed: bool, prev_armed: bool, last_yaw: float | None, held: float
 ) -> float:

@@ -6,7 +6,7 @@ from pymavlink import mavutil
 
 from quadguide.core.messages import AttitudeState, FCStatus, IMUFrame
 from quadguide.link.mavlink_codec import make_mav
-from quadguide.link.worker import _ArmController, _LinkState, _rx_loop, latch_yaw
+from quadguide.link.worker import _ArmController, _LinkState, _ModeController, _rx_loop, latch_yaw
 
 
 # ── _ArmController ───────────────────────────────────────────────────────────
@@ -56,6 +56,54 @@ def test_arm_controller_ignores_unrelated_ack():
     arm.on_ack(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
                mavutil.mavlink.MAV_RESULT_ACCEPTED)
     assert arm.on_arm_state(True) is True   # still pending → resends
+
+
+# ── _ModeController ──────────────────────────────────────────────────────────
+
+def test_mode_controller_silent_when_no_failsafe():
+    mode = _ModeController(retry_count=3, resend_every_ticks=2)
+    assert mode.on_mode_state(None) is None
+    assert mode.on_mode_state(None) is None
+
+
+def test_mode_controller_emits_on_new_desired_mode():
+    mode = _ModeController(retry_count=3, resend_every_ticks=2)
+    assert mode.on_mode_state(9) == 9
+
+
+def test_mode_controller_resends_until_retries_exhausted():
+    mode = _ModeController(retry_count=2, resend_every_ticks=2)
+    assert mode.on_mode_state(9) == 9     # edge
+    assert mode.on_mode_state(9) is None  # tick 1
+    assert mode.on_mode_state(9) == 9     # tick 2 → resend (retries 2→1)
+    assert mode.on_mode_state(9) is None  # tick 1
+    assert mode.on_mode_state(9) == 9     # tick 2 → resend (retries 1→0)
+    assert mode.on_mode_state(9) is None  # exhausted
+    assert mode.on_mode_state(9) is None
+
+
+def test_mode_controller_stops_after_ack():
+    mode = _ModeController(retry_count=5, resend_every_ticks=2)
+    assert mode.on_mode_state(9) == 9
+    mode.on_ack(mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+                mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert mode.on_mode_state(9) is None
+    assert mode.on_mode_state(9) is None
+
+
+def test_mode_controller_ignores_unrelated_ack():
+    mode = _ModeController(retry_count=5, resend_every_ticks=1)
+    mode.on_mode_state(9)
+    mode.on_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                mavutil.mavlink.MAV_RESULT_ACCEPTED)
+    assert mode.on_mode_state(9) == 9  # still pending → resends
+
+
+def test_mode_controller_clears_when_failsafe_releases():
+    mode = _ModeController(retry_count=5, resend_every_ticks=2)
+    assert mode.on_mode_state(9) == 9
+    assert mode.on_mode_state(None) is None   # failsafe released
+    assert mode.on_mode_state(9) == 9         # re-trip re-emits
 
 
 # ── latch_yaw ────────────────────────────────────────────────────────────────
