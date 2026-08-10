@@ -33,3 +33,15 @@ def test_unit_keeps_installer_tokens():
     text = UNIT.read_text()
     for tok in ("@REPO_DIR@", "@PYTHON@", "@CONFIG@", "@LOG_DIR@"):
         assert tok in text, f"missing installer token {tok}"
+
+
+def test_unit_runs_at_max_verbosity():
+    # The service always logs at DEBUG regardless of the config's logging.level,
+    # and its stdout/stderr are captured by the journal.
+    svc = _parse()["Service"]
+    assert "--log-level DEBUG" in svc["ExecStart"]
+    assert svc["StandardOutput"] == "journal"
+    assert svc["StandardError"] == "journal"
+    assert svc["SyslogIdentifier"] == "quadguide"
+    assert "PYTHONUNBUFFERED=1" in svc["Environment"]
+    assert "PYTHONFAULTHANDLER=1" in svc["Environment"]

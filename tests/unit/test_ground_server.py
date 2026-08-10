@@ -209,3 +209,49 @@ def test_index_serves_minimal_when_configured():
     with TestClient(app) as c:
         body = c.get("/").text
     assert 'id="pip"' in body                # minimal-only marker
+
+
+# ── Shared HUD state ────────────────────────────────────────────────────────
+# The point of these: a toggle made on one client must be visible to every
+# other client, which is what the /telemetry `ui` block delivers.
+
+def test_ui_defaults(client):
+    ui = client.get("/ui").json()
+    assert ui["crosshair"] == 160
+    assert ui["show_bbox"] is True
+    assert ui["show_osd"] is True
+    assert ui["seq"] == 0
+
+
+def test_ui_post_updates_and_persists(client):
+    client.post("/ui", json={"show_bbox": False})
+    assert client.get("/ui").json()["show_bbox"] is False
+
+
+def test_ui_post_is_a_partial_merge(client):
+    client.post("/ui", json={"show_bbox": False})
+    client.post("/ui", json={"crosshair": 200})
+    ui = client.get("/ui").json()
+    assert ui["crosshair"] == 200
+    assert ui["show_bbox"] is False          # untouched by the second POST
+    assert ui["show_osd"] is True
+
+
+def test_ui_crosshair_is_clamped(client):
+    assert client.post("/ui", json={"crosshair": 10_000}).json()["crosshair"] == 380
+    assert client.post("/ui", json={"crosshair": 0}).json()["crosshair"] == 40
+
+
+def test_ui_seq_bumps_only_on_change(client):
+    assert client.post("/ui", json={"show_osd": False}).json()["seq"] == 1
+    assert client.post("/ui", json={"show_osd": False}).json()["seq"] == 1
+    assert client.post("/ui", json={"show_osd": True}).json()["seq"] == 2
+
+
+def test_telemetry_broadcasts_ui_state(client):
+    # A change made through one client shows up in the SSE every client reads.
+    client.post("/ui", json={"crosshair": 240, "show_osd": False})
+    ui = _read_one_sse_event(client)["ui"]
+    assert ui["crosshair"] == 240
+    assert ui["show_osd"] is False
+    assert ui["seq"] == 1

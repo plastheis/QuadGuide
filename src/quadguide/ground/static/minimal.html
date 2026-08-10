@@ -54,6 +54,9 @@
   #failsafe { top: 98px; font-size: 24px; color: #fff; background: #ff4136;
               padding: 2px 10px; border-radius: 3px; display: none; }
   #lock  { bottom: 10px; font-size: 24px; display: none; }
+  /* show_osd=false — hide every status line without disturbing the per-element
+     display logic that drives them individually. */
+  #feed.osd-off .status { display: none !important; }
 </style>
 </head>
 <body>
@@ -90,6 +93,7 @@
 
 const W = 640, H = 400;
 const streamImg = document.getElementById('stream');
+const feed = document.getElementById('feed');
 const overlay = document.getElementById('overlay');
 const octx = overlay.getContext('2d');
 const pip = document.getElementById('pip');
@@ -98,9 +102,38 @@ pctx.imageSmoothingEnabled = false;
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-// ── Crosshair (same model as the verbose UI) ───────────────────────────────
-let crosshairSize = 160;
+// ── Shared HUD state (server-owned; see ground/server.py) ──────────────────
+// Crosshair size and the two view toggles live on the server so every kiosk and
+// laptop shows the same HUD. A local change is applied optimistically for
+// instant feedback, then POSTed; the server's copy rides back on the SSE and
+// wins, which is what converges the *other* clients.
 const STEP = 20, MIN_SIZE = 40, MAX_SIZE = Math.min(W, H) - 20;
+let crosshairSize = 160;
+let showBbox = true;
+let showOsd  = true;
+let uiSeq    = -1;
+
+function applyUi(ui) {
+  if (!ui || ui.seq === uiSeq) return;
+  uiSeq = ui.seq;
+  crosshairSize = clamp(ui.crosshair, MIN_SIZE, MAX_SIZE);
+  showBbox = ui.show_bbox;
+  showOsd  = ui.show_osd;
+  feed.classList.toggle('osd-off', !showOsd);
+  drawCrosshair();
+  drawPip();
+}
+
+function pushUi(patch) {
+  // Optimistic local apply: the operator sees the change on this frame, not on
+  // the next SSE tick. applyUi() reconciles when the server echoes it back.
+  if (patch.crosshair != null) crosshairSize = clamp(patch.crosshair, MIN_SIZE, MAX_SIZE);
+  if (patch.show_bbox != null) showBbox = patch.show_bbox;
+  if (patch.show_osd  != null) { showOsd = patch.show_osd; feed.classList.toggle('osd-off', !showOsd); }
+  drawCrosshair();
+  drawPip();
+  postJson('/ui', patch);
+}
 
 function drawCrosshair() {
   octx.clearRect(0, 0, W, H);
@@ -131,26 +164,43 @@ function drawCrosshair() {
 drawCrosshair();
 
 // ── PIP magnifier (client-side crop of the streamed frame) ─────────────────
-const PAD = 0.20, MIN_PIP = 48, MAX_PIP = 400;
+// drawImage() source coordinates are in the MJPEG's *intrinsic* pixels — the
+// camera's native size (1280x800 on the Pi 4B / OV9281), NOT the 640x400 CSS box
+// it is displayed in. Doing the crop math in 640x400 put the window in the
+// top-left quadrant at half the intended zoom, so everything below works in
+// normalized frame coords and scales by naturalWidth/naturalHeight at the end.
+const PAD = 0.20;          // margin around the locked bbox, as a fraction of it
+const MIN_PIP_FRAC = 0.05; // floor on crop side, as a fraction of the short edge
 let trackState = { health: null, bx: 0, by: 0, bw: 0, bh: 0 };
 
 function pipCropRect() {
-  const h = trackState.health;
-  const locked = (h === 'nominal' || h === 'uncertain') && trackState.bh > 0;
+  const nw = streamImg.naturalWidth, nh = streamImg.naturalHeight;
+  const t = trackState;
+  const locked = (t.health === 'nominal' || t.health === 'uncertain')
+                 && t.bw > 0 && t.bh > 0;
+
+  let cx, cy, side;
   if (locked) {
-    const cx = (trackState.bx + trackState.bw / 2) * W;
-    const cy = (trackState.by + trackState.bh / 2) * H;
-    const side = clamp(trackState.bh * H * (1 + 2 * PAD), MIN_PIP, MAX_PIP);
-    const sx = clamp(cx - side / 2, 0, W - side);
-    const sy = clamp(cy - side / 2, 0, H - side);
-    return [sx, sy, side];
+    // Locked: the crop the tracking bbox defines — centred on the box, square,
+    // big enough to contain it whole (max of the two sides) plus a PAD margin.
+    cx   = (t.bx + t.bw / 2) * nw;
+    cy   = (t.by + t.bh / 2) * nh;
+    side = Math.max(t.bw * nw, t.bh * nh) * (1 + 2 * PAD);
+  } else {
+    // Pre-lock: exactly the centre crosshair box — the same rect sendLockon()
+    // posts, so the magnified region is precisely what locking will grab.
+    cx   = nw / 2;
+    cy   = nh / 2;
+    side = Math.max(crosshairSize / W * nw, crosshairSize / H * nh);
   }
-  const side = crosshairSize;
-  return [(W - side) / 2, (H - side) / 2, side];
+  side = clamp(side, MIN_PIP_FRAC * Math.min(nw, nh), Math.min(nw, nh));
+  return [clamp(cx - side / 2, 0, nw - side),
+          clamp(cy - side / 2, 0, nh - side),
+          side];
 }
 
 function drawPip() {
-  if (!streamImg.complete || streamImg.naturalWidth === 0) return;
+  if (!streamImg.complete || !streamImg.naturalWidth || !streamImg.naturalHeight) return;
   const [sx, sy, side] = pipCropRect();
   pctx.clearRect(0, 0, 160, 160);
   try {
@@ -262,6 +312,7 @@ sse.onmessage = (ev) => {
   updateFcArmed(d.fc_armed);
   updateModuleHealth(d.health);
   updateLatency(d.latency_ms, d.latency_avg_ms);
+  applyUi(d.ui);   // shared HUD state — picks up toggles made on other clients
   drawPip();
 };
 sse.onerror = () => { updateModuleHealth(null); };
@@ -308,11 +359,9 @@ function toggleFire() {
 // ── Keys (physical buttons / arm switch mapped to keys on the kiosk Pi) ─────
 document.addEventListener('keydown', (e) => {
   if (e.key === '+' || e.key === '=') {
-    crosshairSize = clamp(crosshairSize + STEP, MIN_SIZE, MAX_SIZE);
-    drawCrosshair(); drawPip();
+    pushUi({ crosshair: clamp(crosshairSize + STEP, MIN_SIZE, MAX_SIZE) });
   } else if (e.key === '-' || e.key === '_') {
-    crosshairSize = clamp(crosshairSize - STEP, MIN_SIZE, MAX_SIZE);
-    drawCrosshair(); drawPip();
+    pushUi({ crosshair: clamp(crosshairSize - STEP, MIN_SIZE, MAX_SIZE) });
   } else if (e.key === 'Enter') {
     toggleLock();
   } else if (e.key === 'a') {
@@ -321,8 +370,16 @@ document.addEventListener('keydown', (e) => {
     sendArm(false);
   } else if (e.key === 'f' || e.key === 'F') {
     toggleFire();
+  } else if (e.key === 'b' || e.key === 'B') {
+    pushUi({ show_bbox: !showBbox });
+  } else if (e.key === 't' || e.key === 'T') {
+    pushUi({ show_osd: !showOsd });
   }
 });
+
+// Start in sync with whatever the other clients are already showing, rather
+// than flashing the defaults until the first SSE tick lands.
+fetch('/ui').then(r => r.json()).then(applyUi).catch(() => {});
 </script>
 </body>
 </html>

@@ -213,7 +213,8 @@ quadguide/
   serve web UI on :8080
   POST /lockon  → bus.publish("lockon/cmd", LockOnCmd)
   POST /arm     → bus.publish("arm/cmd", ArmCmd)
-  GET /telemetry (SSE) → reads all topics
+  POST /ui      → shared HUD state (crosshair, show_bbox, show_osd)
+  GET /telemetry (SSE) → reads all topics + broadcasts the shared HUD state
   GET /stream  (MJPEG) → frame_buffer + overlay(target/estimate)
 ```
 
@@ -432,14 +433,43 @@ the GUIDED setpoint. Requires FC params `SERIALn_PROTOCOL=2` and
 ### 6.8 ground/
 
 - **`server.py`** — FastAPI app: `GET /` (HUD), `GET /stream` (MJPEG),
-  `GET /telemetry` (SSE), `POST /lockon`, `POST /reset_lockon`, `POST /arm`.
-  The SSE payload includes `tracker_algo` (the tracker's `.name()` exposed
-  via the worker's process name).
+  `GET /telemetry` (SSE), `POST /lockon`, `POST /reset_lockon`, `POST /arm`,
+  `GET`/`POST /ui`. The SSE payload includes `tracker_algo` (the tracker's
+  `.name()` exposed via the worker's process name).
 - **`overlay.py`** — draws the bbox over each MJPEG frame based on the
-  latest `target/estimate`.
-- **`worker.py`** — uvicorn launcher.
-- **`static/index.html`** — HUD. Centroid for the crosshair is computed in
-  JS from `bbox_x/y/w/h`.
+  latest `target/estimate`. Suppressed when the shared `show_bbox` is off.
+- **`worker.py`** — uvicorn launcher; also installs the process logger, so
+  uvicorn's own output lands in the same log file/journal as the workers'.
+- **`static/index.html`** — verbose HUD.
+- **`static/minimal.html`** — 800×480 kiosk HUD (`ground.ui_mode: minimal`).
+
+#### Shared HUD state
+
+Operator view settings are held by the server, not by each browser, so a change
+made on one client reaches every other one:
+
+| key | meaning |
+| --- | --- |
+| `crosshair` | crosshair box size, in the clients' 640×400 overlay-canvas px |
+| `show_bbox` | draw the tracking bbox (and acquire guide) into the MJPEG |
+| `show_osd`  | show the on-video status text (ARMED / FC / FAILSAFE / FIRE / LOCK) |
+
+A client applies a change locally for instant feedback and `POST`s it; the
+authoritative state rides back out on the `/telemetry` SSE as `ui`, carrying a
+`seq` that only advances on a real change, so clients ignore redundant echoes.
+`GET /ui` gives a fresh page the current state without waiting for a tick.
+
+Keys `b` (bbox) and `t` (text) toggle them; `+` / `-` resize the crosshair.
+
+#### PIP magnifier crop (`minimal.html`)
+
+`drawImage()` source coordinates are in the MJPEG's **intrinsic** pixels — the
+camera's native size (1280×800 on the Pi 4B) — not the 640×400 CSS box it is
+displayed in. All crop math is therefore done in normalized frame coords and
+scaled by `naturalWidth`/`naturalHeight`. Before lock the crop is exactly the
+region the centre crosshair box encloses (the same rect `/lockon` posts, so what
+you magnify is what you lock); after lock it is the square crop the tracking
+bbox defines — centred on the box, sized to contain it whole plus a 20% margin.
 
 ### 6.9 Configurable failsafe actions
 

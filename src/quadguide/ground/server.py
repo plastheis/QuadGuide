@@ -28,6 +28,23 @@ _MJPEG_RATE  = 1 / 15   # 15 Hz
 _SSE_RATE    = 0.1       # 10 Hz
 _HEALTH_RATE = 0.2       # 5 Hz
 
+# ── Shared HUD state ────────────────────────────────────────────────────────
+# Operator-toggleable view settings live on the server, not in each browser, so
+# every connected client (kiosk + laptop) shows the same HUD. Clients apply a
+# change optimistically and POST /ui; the authoritative state rides back out on
+# the /telemetry SSE, which is what makes the other clients converge.
+#
+# `crosshair` is in the clients' 640x400 overlay-canvas pixel space (both UIs
+# use that canvas size regardless of the camera's native resolution).
+_UI_CANVAS_W, _UI_CANVAS_H = 640, 400
+_CROSSHAIR_MIN  = 40
+_CROSSHAIR_MAX  = min(_UI_CANVAS_W, _UI_CANVAS_H) - 20
+_UI_DEFAULTS = {
+    "crosshair": 160,    # px, in the 640x400 overlay canvas space
+    "show_bbox": True,   # burn the tracker box into the MJPEG stream
+    "show_osd":  True,   # on-video status text (ARMED / FIRE / LOCK / FAILSAFE)
+}
+
 # Pre-encoded black frame served before the camera is ready.
 _NO_SIGNAL_JPEG: bytes = cv2.imencode(
     ".jpg", np.zeros((480, 640, 3), dtype=np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 80]
@@ -45,6 +62,8 @@ def create_app(bus, frame_buffer, config: dict | None = None) -> FastAPI:
         app.state.frame_buffer   = frame_buffer
         app.state.acquire_crop   = acquire_crop
         app.state.lockon_seq     = 0
+        app.state.ui             = dict(_UI_DEFAULTS)
+        app.state.ui_seq         = 0
         app.state.process_health: dict[str, str] = {}
         app.state.latency_window: deque = deque(maxlen=20)
         app.state.mjpeg_frames   = 0
@@ -111,7 +130,43 @@ def create_app(bus, frame_buffer, config: dict | None = None) -> FastAPI:
         request.app.state.bus.publish("fire/cmd", cmd)
         return {"ok": True}
 
+    @app.get("/ui")
+    async def get_ui(request: Request):
+        """Shared HUD state, so a client starts in sync instead of waiting a tick."""
+        return _ui_payload(request.app)
+
+    @app.post("/ui")
+    async def set_ui(body: _UiBody, request: Request):
+        """Merge a partial HUD update; unset fields keep their current value."""
+        return _apply_ui(request.app, body.model_dump(exclude_unset=True))
+
     return app
+
+
+def _apply_ui(app: FastAPI, patch: dict) -> dict:
+    """Merge ``patch`` into the shared HUD state and bump its sequence number.
+
+    Only bumps ``ui_seq`` when something actually changed, so a client can ignore
+    its own echo (and any redundant broadcast) by comparing sequence numbers.
+    """
+    changed = False
+    for key, value in patch.items():
+        if value is None or key not in _UI_DEFAULTS:
+            continue
+        if key == "crosshair":
+            value = max(_CROSSHAIR_MIN, min(_CROSSHAIR_MAX, int(value)))
+        else:
+            value = bool(value)
+        if app.state.ui[key] != value:
+            app.state.ui[key] = value
+            changed = True
+    if changed:
+        app.state.ui_seq += 1
+    return _ui_payload(app)
+
+
+def _ui_payload(app: FastAPI) -> dict:
+    return {**app.state.ui, "seq": app.state.ui_seq}
 
 
 class _LockOnBody(BaseModel):
@@ -129,6 +184,13 @@ class _FireBody(BaseModel):
     active: bool
 
 
+class _UiBody(BaseModel):
+    """Partial HUD update — every field optional, absent fields left untouched."""
+    crosshair: int | None = None
+    show_bbox: bool | None = None
+    show_osd: bool | None = None
+
+
 async def _mjpeg(app: FastAPI):
     while True:
         await asyncio.sleep(_MJPEG_RATE)
@@ -137,7 +199,10 @@ async def _mjpeg(app: FastAPI):
             jpeg = _NO_SIGNAL_JPEG
         else:
             estimate = app.state.bus.latest("target/estimate")
-            jpeg = overlay.draw_overlay(frame, estimate, app.state.acquire_crop)
+            jpeg = overlay.draw_overlay(
+                frame, estimate, app.state.acquire_crop,
+                show_bbox=app.state.ui["show_bbox"],
+            )
         app.state.mjpeg_frames += 1
         now = monotonic_ns()
         dt = (now - app.state.mjpeg_fps_ts) / 1e9
@@ -243,6 +308,8 @@ async def _sse(app: FastAPI):
             "latency_avg_ms": avg_ms,
             # video stream fps
             "video_fps": app.state.mjpeg_fps if app.state.mjpeg_fps > 0 else None,
+            # shared HUD state — broadcast so a toggle on one client reaches all
+            "ui": _ui_payload(app),
         }
         yield f"data: {json.dumps(data)}\n\n"
 

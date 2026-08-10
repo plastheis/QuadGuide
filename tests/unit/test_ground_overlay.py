@@ -128,3 +128,22 @@ def test_acquire_crop_from_config_none_for_other_trackers():
     assert acquire_crop_from_config({"tracker": {"params": {"tracker": "mosse"}}}) is None
     assert acquire_crop_from_config(None) is None
     assert acquire_crop_from_config({}) is None
+
+
+# ── show_bbox (shared HUD toggle) ────────────────────────────────────────────
+
+def test_show_bbox_false_suppresses_tracking_box():
+    frame = _black_frame()
+    assert draw_overlay(frame, _estimate(TrackerHealth.NOMINAL), show_bbox=False) \
+        == _plain_jpeg(frame)
+
+
+def test_show_bbox_false_suppresses_acquire_guide():
+    frame = _black_frame()
+    assert draw_overlay(frame, None, acquire_crop=0.7, show_bbox=False) \
+        == _plain_jpeg(frame)
+
+
+def test_show_bbox_defaults_to_drawing():
+    frame = _black_frame()
+    assert draw_overlay(frame, _estimate(TrackerHealth.NOMINAL)) != _plain_jpeg(frame)

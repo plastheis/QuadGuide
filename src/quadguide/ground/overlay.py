@@ -43,6 +43,8 @@ def draw_overlay(
     frame: np.ndarray,
     estimate: TrackerEstimate | None,
     acquire_crop: float | None = None,
+    *,
+    show_bbox: bool = True,
 ) -> bytes:
     """Return frame encoded as JPEG, with tracking bbox drawn if tracker is active.
 
@@ -51,14 +53,17 @@ def draw_overlay(
     candidate box in cyan (guidance ignores it; see guidance.worker). When
     ``acquire_crop`` is given (the AcquireTrack central-crop fraction), a faint
     cyan square marking that scan region is drawn underneath in every state.
+
+    ``show_bbox=False`` (the operator's shared HUD toggle) suppresses both boxes,
+    leaving a clean picture. Tracking itself is unaffected — this is draw-only.
     """
     out = None  # copy lazily — only when something is actually drawn
 
-    if acquire_crop:
+    if acquire_crop and show_bbox:
         out = frame.copy()
         _draw_acquire_guide(out, float(acquire_crop))
 
-    if estimate is not None and estimate.tracker_health not in _NO_DRAW:
+    if show_bbox and estimate is not None and estimate.tracker_health not in _NO_DRAW:
         if out is None:
             out = frame.copy()
         h, w = frame.shape[:2]

@@ -62,6 +62,19 @@
   #stream  { position: absolute; top: 0; left: 0; width: 640px; height: 400px; }
   #overlay { position: absolute; top: 0; left: 0; width: 640px; height: 400px; cursor: crosshair; }
 
+  /* On-video status text — same set as the kiosk UI, so the shared show_osd
+     toggle has the same visible meaning on both. */
+  .status { position: absolute; left: 0; width: 640px; text-align: center;
+            font-weight: bold; letter-spacing: 3px; pointer-events: none;
+            text-shadow: 0 0 4px #000, 0 0 4px #000; }
+  #osd-armed  { top: 8px;  font-size: 22px; color: #ff4136; display: none; }
+  #osd-fc     { top: 36px; font-size: 14px; display: none; }
+  #osd-fire   { top: 60px; font-size: 18px; color: #ff851b; display: none; }
+  #osd-failsafe { top: 86px; font-size: 20px; color: #fff; background: #ff4136;
+                  padding: 2px 10px; border-radius: 3px; display: none; }
+  #osd-lock   { bottom: 8px; font-size: 20px; display: none; }
+  #view.osd-off .status { display: none !important; }
+
   /* Right column: all telemetry */
   #right-col {
     display: flex;
@@ -150,6 +163,11 @@
     <div id="view">
       <img id="stream" src="/stream" alt="stream">
       <canvas id="overlay" width="640" height="400"></canvas>
+      <div id="osd-armed" class="status">ARMED</div>
+      <div id="osd-fc" class="status"></div>
+      <div id="osd-failsafe" class="status"></div>
+      <div id="osd-fire" class="status">FIRE</div>
+      <div id="osd-lock" class="status"></div>
     </div>
 
     <!-- Keybindings -->
@@ -163,6 +181,8 @@
         <div class="kb"><span>[ a ]</span> arm</div>
         <div class="kb"><span>[ d ]</span> disarm</div>
         <div class="kb"><span>[ f ]</span> fire</div>
+        <div class="kb"><span>[ b ]</span> bbox on/off</div>
+        <div class="kb"><span>[ t ]</span> on-screen text on/off</div>
       </div>
     </div>
 
@@ -177,6 +197,8 @@
         </div>
         <div>
           <div class="row"><span class="lbl">crosshair</span><span class="val" id="hud-size">160 px</span></div>
+          <div class="row"><span class="lbl">tracking bbox</span><span class="val" id="hud-bbox">ON</span></div>
+          <div class="row"><span class="lbl">on-screen text</span><span class="val" id="hud-osd">ON</span></div>
         </div>
       </div>
     </div>
@@ -246,6 +268,8 @@
           <button class="btn" id="btn-disarm">DISARM</button>
           <button class="btn" id="btn-fire">FIRE OFF</button>
           <button class="btn" id="btn-reset" title="Reset lock-on and clear bounding box">RESET LOCK</button>
+          <button class="btn" id="btn-bbox" title="Show/hide the tracking bbox on every client">BBOX ON</button>
+          <button class="btn" id="btn-osd" title="Show/hide on-screen text on every client">TEXT ON</button>
         </div>
       </div>
     </div>
@@ -259,12 +283,52 @@
 
 const canvas = document.getElementById('overlay');
 const ctx    = canvas.getContext('2d');
+const view   = document.getElementById('view');
 const W = 640, H = 400;
 
-let crosshairSize = 160;
 const STEP = 20;
 const MIN_SIZE = 40;
 const MAX_SIZE = Math.min(W, H) - 20;
+
+// ── Shared HUD state (server-owned; see ground/server.py) ──────────────────
+// Crosshair size and the two view toggles live on the server so every connected
+// client shows the same HUD. A local change is applied optimistically for
+// instant feedback, then POSTed; the server's copy rides back on the SSE and
+// wins, which is what converges the *other* clients.
+let crosshairSize = 160;
+let showBbox = true;
+let showOsd  = true;
+let uiSeq    = -1;
+
+function applyUi(ui) {
+  if (!ui || ui.seq === uiSeq) return;
+  uiSeq = ui.seq;
+  crosshairSize = clamp(ui.crosshair, MIN_SIZE, MAX_SIZE);
+  showBbox = ui.show_bbox;
+  showOsd  = ui.show_osd;
+  renderUiState();
+}
+
+function pushUi(patch) {
+  if (patch.crosshair != null) crosshairSize = clamp(patch.crosshair, MIN_SIZE, MAX_SIZE);
+  if (patch.show_bbox != null) showBbox = patch.show_bbox;
+  if (patch.show_osd  != null) showOsd  = patch.show_osd;
+  renderUiState();
+  fetch('/ui', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(patch),
+  }).catch(() => {});
+}
+
+function renderUiState() {
+  view.classList.toggle('osd-off', !showOsd);
+  document.getElementById('hud-bbox').textContent = showBbox ? 'ON' : 'OFF';
+  document.getElementById('hud-osd').textContent  = showOsd  ? 'ON' : 'OFF';
+  document.getElementById('btn-bbox').textContent = showBbox ? 'BBOX ON' : 'BBOX OFF';
+  document.getElementById('btn-osd').textContent  = showOsd  ? 'TEXT ON' : 'TEXT OFF';
+  drawCrosshair();
+}
 
 // EdgeCV AcquireTrack scans a fixed central crop for the target before lock-on.
 // Mirror its `acquire_crop` (fraction of the shorter dimension) so the operator
@@ -288,7 +352,7 @@ function drawAcquireCrop() {
 
 function drawCrosshair() {
   ctx.clearRect(0, 0, W, H);
-  if (acquireActive) drawAcquireCrop();
+  if (acquireActive && showBbox) drawAcquireCrop();
   const cx   = W / 2;
   const cy   = H / 2;
   const half = crosshairSize / 2;
@@ -326,11 +390,13 @@ drawCrosshair();
 
 document.addEventListener('keydown', (e) => {
   if (e.key === '+' || e.key === '=') {
-    crosshairSize = clamp(crosshairSize + STEP, MIN_SIZE, MAX_SIZE);
-    drawCrosshair();
+    pushUi({ crosshair: clamp(crosshairSize + STEP, MIN_SIZE, MAX_SIZE) });
   } else if (e.key === '-' || e.key === '_') {
-    crosshairSize = clamp(crosshairSize - STEP, MIN_SIZE, MAX_SIZE);
-    drawCrosshair();
+    pushUi({ crosshair: clamp(crosshairSize - STEP, MIN_SIZE, MAX_SIZE) });
+  } else if (e.key === 'b' || e.key === 'B') {
+    pushUi({ show_bbox: !showBbox });
+  } else if (e.key === 't' || e.key === 'T') {
+    pushUi({ show_osd: !showOsd });
   } else if (e.key === 'Enter') {
     sendLockon();
   } else if (e.key === 'r' || e.key === 'R') {
@@ -412,19 +478,25 @@ sse.onmessage = (ev) => {
   let d;
   try { d = JSON.parse(ev.data); } catch { return; }
 
+  // shared HUD state — picks up toggles made on any other client
+  applyUi(d.ui);
+
   // target/estimate
   set('h-tracker',  d.tracker_health);
-  set('h-active',   d.active_tracker);
+  set('h-active',   d.tracker_algo);
 
   // Show the YOLO acquisition crop guide while an AcquireTrack-family tracker is
   // active (matches by name; redraw only on change to avoid clobbering the canvas).
-  const isAcquire = (d.active_tracker || '').toLowerCase().includes('acquire');
+  const isAcquire = (d.tracker_algo || '').toLowerCase().includes('acquire');
   if (isAcquire !== acquireActive) {
     acquireActive = isAcquire;
     drawCrosshair();
   }
   set('h-conf',     f(d.confidence,   2));
-  set('h-centroid', d.centroid_x != null ? f(d.centroid_x, 3) + ' / ' + f(d.centroid_y, 3) : null);
+  // Centroid is the bbox centre — derived here rather than sent twice.
+  const cenX = d.bbox_x != null ? d.bbox_x + d.bbox_w / 2 : null;
+  const cenY = d.bbox_y != null ? d.bbox_y + d.bbox_h / 2 : null;
+  set('h-centroid', cenX != null ? f(cenX, 3) + ' / ' + f(cenY, 3) : null);
   set('h-bbox-xy',  d.bbox_x     != null ? f(d.bbox_x, 3)     + ' / ' + f(d.bbox_y, 3)     : null);
   set('h-bbox-wh',  d.bbox_w     != null ? f(d.bbox_w, 3)     + ' / ' + f(d.bbox_h, 3)     : null);
 
@@ -464,9 +536,50 @@ sse.onmessage = (ev) => {
     updateFireIndicator(d.fire_active);
   }
 
+  // arm/cmd → arm indicator. Sourced from the bus rather than this page's click
+  // state, so an ARM issued from the kiosk shows up here too.
+  if (d.armed != null) {
+    updateArmIndicator(d.armed);
+  }
+
   // system/health → module column
   updateModuleHealth(d.health);
+
+  // on-video status text (hidden as a group when show_osd is off)
+  updateOsd(d);
 };
+
+// ── On-video status text ───────────────────────────────────────────────────
+
+function osdText(id, text, color) {
+  const el = document.getElementById(id);
+  if (text == null) { el.style.display = 'none'; return; }
+  el.textContent = text;
+  if (color) el.style.color = color;
+  el.style.display = 'block';
+}
+
+function updateOsd(d) {
+  // Commanded arm intent comes from the bus (arm/cmd), so it survives a reload
+  // and matches what a second client shows.
+  osdText('osd-armed', d.armed ? 'ARMED' : null);
+  osdText('osd-fire',  d.fire_active ? 'FIRE' : null);
+  osdText('osd-fc',
+          d.fc_armed == null ? null : (d.fc_armed ? 'FC ARMED' : 'FC DISARMED'),
+          d.fc_armed ? '#2ecc40' : '#ff851b');
+
+  const fs = d.failsafe_action;
+  osdText('osd-failsafe',
+          !fs || fs === 'none' ? null
+            : fs === 'disarm' ? 'FAILSAFE DISARM'
+            : 'FAILSAFE ' + (d.failsafe_mode || 'MODE'));
+
+  const h = d.tracker_health;
+  if (h === 'nominal' || h === 'uncertain') osdText('osd-lock', 'LOCK', '#2ecc40');
+  else if (h === 'lost')      osdText('osd-lock', 'LOST', '#ffdc00');
+  else if (h === 'acquiring') osdText('osd-lock', 'ACQ',  '#00ffff');
+  else                        osdText('osd-lock', null);
+}
 
 sse.onerror = () => {
   updateModuleHealth(null);
@@ -480,13 +593,17 @@ function sendArm(armed) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({armed}),
   }).then(r => r.json()).then(() => {
-    const el = document.getElementById('h-arm-state');
-    el.textContent = armed ? 'ARMED' : 'DISARMED';
-    el.className = 'val ' + (armed ? 'danger' : 'dim');
-    document.getElementById('btn-arm').classList.toggle('armed', armed);
+    updateArmIndicator(armed);
     // Auto-reset fire when disarming
     if (!armed) sendFire(false);
   }).catch(() => {});
+}
+
+function updateArmIndicator(armed) {
+  const el = document.getElementById('h-arm-state');
+  el.textContent = armed ? 'ARMED' : 'DISARMED';
+  el.className = 'val ' + (armed ? 'danger' : 'dim');
+  document.getElementById('btn-arm').classList.toggle('armed', armed);
 }
 
 let fireActive = false;
@@ -520,6 +637,12 @@ document.getElementById('btn-arm').addEventListener('click', () => sendArm(true)
 document.getElementById('btn-disarm').addEventListener('click', () => sendArm(false));
 document.getElementById('btn-fire').addEventListener('click', () => toggleFire());
 document.getElementById('btn-reset').addEventListener('click', () => sendReset());
+document.getElementById('btn-bbox').addEventListener('click', () => pushUi({ show_bbox: !showBbox }));
+document.getElementById('btn-osd').addEventListener('click', () => pushUi({ show_osd: !showOsd }));
+
+// Start in sync with whatever the other clients are already showing, rather
+// than flashing the defaults until the first SSE tick lands.
+fetch('/ui').then(r => r.json()).then(applyUi).catch(() => {});
 </script>
 </body>
 </html>
