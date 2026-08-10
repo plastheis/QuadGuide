@@ -40,17 +40,24 @@ def setup_logging(process_name: str, config: dict) -> logging.Logger:
 
     fmt = _MonotonicFormatter(fmt=_FMT)
 
-    try:
-        os.makedirs(log_dir, exist_ok=True)
-        fh = RotatingFileHandler(
-            os.path.join(log_dir, f"{process_name}.log"),
-            maxBytes=max_bytes,
-            backupCount=backup,
-        )
+    # /var/log/quadguide is created root-owned by the systemd unit, so a bench
+    # run started as a normal user cannot open the file and every log line —
+    # including the FC's own STATUSTEXT reasoning, which exists nowhere else —
+    # would survive only in terminal scrollback. Fall back to a writable dir
+    # next to the trace output rather than degrading to stderr-only.
+    for candidate in (log_dir, os.path.join(os.getcwd(), "quadguide-logs")):
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            fh = RotatingFileHandler(
+                os.path.join(candidate, f"{process_name}.log"),
+                maxBytes=max_bytes,
+                backupCount=backup,
+            )
+        except (PermissionError, OSError):
+            continue
         fh.setFormatter(fmt)
         logger.addHandler(fh)
-    except PermissionError:
-        pass  # dev machine without /var/log/quadguide — fall through to stderr
+        break
 
     sh = logging.StreamHandler()
     sh.setFormatter(fmt)

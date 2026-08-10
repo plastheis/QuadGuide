@@ -9,21 +9,23 @@ def test_zero_los_rate_gives_zero_accel():
     assert ay == 0.0
 
 
-def test_positive_los_x_gives_positive_ax():
+def test_positive_los_x_gives_positive_ay():
+    # Bore-up mount: horizontal image rate is lateral → ay (nulled by roll).
     ax, ay = pronav((1.0, 0.0), 2.0, 4.0)
-    assert math.isclose(ax, 8.0)   # N * v_c * los_x = 4 * 2 * 1
-    assert ay == 0.0
-
-
-def test_positive_los_y_gives_positive_ay():
-    ax, ay = pronav((0.0, 1.0), 2.0, 4.0)
+    assert math.isclose(ay, 8.0)   # N * v_c * los_x = 4 * 2 * 1
     assert ax == 0.0
-    assert math.isclose(ay, 8.0)
+
+
+def test_positive_los_y_gives_positive_ax():
+    # Bore-up mount: vertical image rate is fore/aft → ax (nulled by pitch).
+    ax, ay = pronav((0.0, 1.0), 2.0, 4.0)
+    assert ay == 0.0
+    assert math.isclose(ax, 8.0)
 
 
 def test_negative_closing_vel_flips_sign():
-    ax, _ = pronav((1.0, 0.0), -2.0, 4.0)
-    assert math.isclose(ax, -8.0)
+    _, ay = pronav((1.0, 0.0), -2.0, 4.0)
+    assert math.isclose(ay, -8.0)
 
 
 def test_scales_with_N():

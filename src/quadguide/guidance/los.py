@@ -10,12 +10,14 @@ def _body_rate_correction(
 ) -> tuple[float, float]:
     """Image-plane LOS rate induced by body rotation, in centroid_norm/s.
 
-    Bore-sight is body +Z. With pitch about body Y the image sweeps in x;
-    with roll about body X the image sweeps in y (opposite sign). Yaw about
-    +Z rotates the image about its centre, contributing nothing at the centroid.
+    Bore-sight is body +Z (up), image right = body +Y, image down = body +X.
+    Rolling right (gx>0) tips the bore-sight right, so a fixed target sweeps
+    *left* in the image (−x); pitching nose-up (gy>0) tips the bore-sight aft,
+    so the target sweeps *down* the image (+y). Yaw about the bore-sight
+    rotates the image about its centre, contributing nothing at the centroid.
     """
     fov_v = fov_h / aspect
-    return imu.gy * (2.0 / fov_h), -imu.gx * (2.0 / fov_v)
+    return -imu.gx * (2.0 / fov_h), imu.gy * (2.0 / fov_v)
 
 
 class LOSRateEstimator:

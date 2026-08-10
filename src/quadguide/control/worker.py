@@ -1,5 +1,4 @@
 from __future__ import annotations
-import signal
 
 from quadguide.core.bus import Bus
 from quadguide.core.clock import RateLimiter, monotonic_ns
@@ -7,6 +6,7 @@ from quadguide.core.config import cfg_airframe, cfg_guidance, cfg_platform, cfg_
 from quadguide.core.frame_buffer import FrameBuffer
 from quadguide.core.health import FailsafeState, HealthFault
 from quadguide.core.logging import setup_logging
+from quadguide.core.shutdown import install_shutdown_handler
 from quadguide.core.messages import (
     ControlCmd, FailsafeCmd, FailsafeActionWire, HealthReport, ProcessState,
 )
@@ -60,9 +60,10 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
         nonlocal stop
         stop = True
 
-    signal.signal(signal.SIGTERM, _on_sigterm)
+    install_shutdown_handler(_on_sigterm)
 
     armed = False
+    fired = False
     in_failsafe = False
     latched_prev = False
     i = 0
@@ -91,6 +92,13 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
         # Track fire state from ground station
         fire_cmd = bus.latest("fire/cmd")
         fire_active = bool(fire_cmd and fire_cmd.active)
+        if fire_active != fired:
+            fired = fire_active
+            # t0 for every post-fire timeline — the 5 Hz trace snapshot is too
+            # coarse to anchor "N seconds after firing" on its own.
+            log.info("control: FIRE %s — throttle=%.2f",
+                     "ACTIVE" if fired else "RELEASED",
+                     gcfg.throttle_hold if fired else 0.0)
 
         # Watchdog
         try:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
-import signal
+import math
 
 from pymavlink import mavutil
 
@@ -9,14 +9,15 @@ from quadguide.core.clock import monotonic_ns
 from quadguide.core.config import cfg_airframe, cfg_diag
 from quadguide.core.diagtrace import DiagTrace
 from quadguide.core.logging import setup_logging
+from quadguide.core.shutdown import install_shutdown_handler
 from quadguide.core.messages import FCStatus, HealthReport, ProcessState, FailsafeActionWire
 from quadguide.link.fc import (
-    decode_attitude, decode_heartbeat, decode_imu,
+    attitude_setpoint, decode_attitude, decode_heartbeat, decode_imu, decode_vfr_hud,
     encode_arm, encode_attitude_target, encode_heartbeat,
     encode_set_message_interval, encode_set_mode,
 )
 from quadguide.link.mavlink_codec import (
-    MSG_ID_ATTITUDE, MSG_ID_RAW_IMU, make_mav,
+    MSG_ID_ATTITUDE, MSG_ID_RAW_IMU, MSG_ID_VFR_HUD, make_mav,
 )
 from quadguide.link.serial_port import SerialPort
 from quadguide.link.tcp_serial import TCPSerialPort
@@ -33,6 +34,20 @@ class _LinkState:
         self.last_yaw: float | None = None
         self.fc_armed: bool = False
         self.fc_mode: int = -1
+        # Diagnostic only — never read by guidance/control. The sent_* fields are
+        # what we last put in SET_ATTITUDE_TARGET; the fc_* fields are what the FC
+        # reported back in ATTITUDE/VFR_HUD. Pairing them on one timeline is what
+        # separates "the FC never acted on our setpoint" from "it flew the
+        # attitude but held the throttle at zero".
+        self.sent_thrust: float = 0.0
+        self.sent_roll_deg: float = 0.0
+        self.sent_pitch_deg: float = 0.0
+        self.yaw_hold: float = 0.0
+        self.fc_throttle_pct: int = -1
+        self.fc_climb_mps: float = 0.0
+        self.fc_alt_m: float = 0.0
+        self.fc_roll_deg: float = 0.0
+        self.fc_pitch_deg: float = 0.0
 
 
 class _ArmController:
@@ -157,9 +172,34 @@ def _on_heartbeat(msg, state: _LinkState, bus, log: logging.Logger) -> None:
     bus.publish("fc/status", FCStatus(monotonic_ns(), armed, int(mode)))
 
 
+def _log_statustext(msg, log: logging.Logger, trace) -> None:
+    """Mirror an FC STATUSTEXT into the link log AND the trace.
+
+    It goes to both because they fail independently: the log needs a writable
+    log dir, while the trace only flushes if the worker exits cleanly. This is
+    the autopilot's own account of what it did, so losing it costs a whole run.
+
+    MAV_SEVERITY: 0=EMERGENCY … 3=ERROR, 4=WARNING, 5=NOTICE, 6=INFO, 7=DEBUG.
+    """
+    text = getattr(msg, "text", "")
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "replace")
+    text = text.rstrip("\x00").strip()
+    if not text:
+        return
+    sev = int(getattr(msg, "severity", 6))
+    if sev <= 3:
+        log.error("FC: %s (severity=%d)", text, sev)
+    elif sev <= 4:
+        log.warning("FC: %s (severity=%d)", text, sev)
+    else:
+        log.info("FC: %s (severity=%d)", text, sev)
+    trace.state(monotonic_ns(), statustext=text, severity=sev)
+
+
 async def _rx_loop(serial, mav, state: _LinkState, bus,
                    arm_ctrl: _ArmController, mode_ctrl: _ModeController,
-                   log: logging.Logger) -> None:
+                   log: logging.Logger, trace) -> None:
     async for byte in serial.read_stream():
         msg = mav.parse_char(bytes([byte]))
         if msg is None:
@@ -167,6 +207,8 @@ async def _rx_loop(serial, mav, state: _LinkState, bus,
         t = msg.get_type()
         if t == "ATTITUDE":
             state.last_yaw = msg.yaw
+            state.fc_roll_deg = math.degrees(msg.roll)
+            state.fc_pitch_deg = math.degrees(msg.pitch)
             bus.publish("fc/attitude", decode_attitude(msg, monotonic_ns()))
         elif t == "RAW_IMU":
             state.have_raw_imu = True
@@ -174,6 +216,14 @@ async def _rx_loop(serial, mav, state: _LinkState, bus,
         elif t == "SCALED_IMU2":
             if not state.have_raw_imu:          # fallback until RAW_IMU arrives
                 bus.publish("fc/imu", decode_imu(msg, monotonic_ns()))
+        elif t == "VFR_HUD":
+            state.fc_throttle_pct, state.fc_climb_mps, state.fc_alt_m = decode_vfr_hud(msg)
+        elif t == "STATUSTEXT":
+            # The autopilot's own account of why it did something ("Disarming
+            # motors", "Crash: Disarming", "PreArm: ...", "Potential Thrust
+            # Loss"). Nothing else in quadguide records the FC's reasoning, so
+            # this is the primary evidence for an unexplained disarm.
+            _log_statustext(msg, log, trace)
         elif t == "HEARTBEAT":
             if msg.autopilot != mavutil.mavlink.MAV_AUTOPILOT_INVALID:  # ignore GCS
                 _on_heartbeat(msg, state, bus, log)
@@ -183,6 +233,7 @@ async def _rx_loop(serial, mav, state: _LinkState, bus,
 
 
 _NS_PER_MS = 1_000_000
+_VFR_HUD_RATE_HZ = 10       # diagnostic throttle/climb feedback; not a control input
 
 
 def _link_cfg(config: dict) -> dict:
@@ -242,15 +293,32 @@ async def _tx_loop(serial, mav, bus, state: _LinkState, arm_ctrl: _ArmController
         mode_confirmed = mode_active and mode_ctrl.confirmed()
 
         yaw_hold = latch_yaw(effective, prev_armed, state.last_yaw, yaw_hold)
+        if effective and not prev_armed:
+            # The heading the whole flight is commanded to hold. If last_yaw was
+            # still None at the arm edge this latches 0.0 (due north) and the FC
+            # will fight to that heading — worth seeing explicitly in the log.
+            log.info("yaw hold latched → %.1f deg (fc_yaw=%s)",
+                     math.degrees(yaw_hold),
+                     "none yet" if state.last_yaw is None
+                     else f"{math.degrees(state.last_yaw):.1f} deg")
         prev_armed = effective
+        state.yaw_hold = yaw_hold
 
         # Stream SET_ATTITUDE_TARGET unless a mode failsafe has handed off to the FC.
         if not mode_confirmed:
             await serial.write(encode_attitude_target(
                 mav, cmd, yaw_hold, tsys, tcomp,
                 lc["max_roll_deg"], lc["max_pitch_deg"], now // _NS_PER_MS))
+            # Record what actually went on the wire — post-clamp, and 0 for a
+            # missing cmd — so the trace pairs it with the FC's ATTITUDE/VFR_HUD
+            # replies on one timeline.
+            (state.sent_roll_deg, state.sent_pitch_deg, state.sent_thrust) = (
+                attitude_setpoint(cmd, lc["max_roll_deg"], lc["max_pitch_deg"]))
             if cmd is not None and cmd.origin_ns > 0:
                 trace.latency(now, cmd.timestamp_ns, cmd.origin_ns)
+        else:
+            # Stream suppressed — nothing being commanded.
+            state.sent_roll_deg = state.sent_pitch_deg = state.sent_thrust = 0.0
         await asyncio.sleep(interval)
 
 
@@ -276,16 +344,38 @@ async def _stream_setup_loop(serial, mav, state: _LinkState, lc: dict,
     for mid in (MSG_ID_ATTITUDE, MSG_ID_RAW_IMU):
         await serial.write(encode_set_message_interval(
             mav, mid, lc["stream_rate_hz"], tsys, tcomp))
-    log.info("requested ATTITUDE+RAW_IMU @ %d Hz from sys=%d comp=%d",
-             lc["stream_rate_hz"], tsys, tcomp)
+    # VFR_HUD is diagnostic, not a control input — request it slowly so it costs
+    # ~nothing on the UART next to the 50 Hz ATTITUDE/RAW_IMU pair.
+    await serial.write(encode_set_message_interval(
+        mav, MSG_ID_VFR_HUD, _VFR_HUD_RATE_HZ, tsys, tcomp))
+    log.info("requested ATTITUDE+RAW_IMU @ %d Hz, VFR_HUD @ %d Hz from sys=%d comp=%d",
+             lc["stream_rate_hz"], _VFR_HUD_RATE_HZ, tsys, tcomp)
 
 
-async def _health_loop(bus, state: _LinkState, trace) -> None:
+async def _health_loop(bus, state: _LinkState, trace, log: logging.Logger) -> None:
+    i = 0
     while True:
         mode = str(state.fc_mode) if state.have_heartbeat else ""
         bus.publish("system/health",
                     HealthReport(monotonic_ns(), "link", ProcessState.OK, mode))
         trace.health(monotonic_ns(), "ok", mode)
+        # Commanded thrust next to what the FC did with it, on one timeline.
+        trace.state(monotonic_ns(), fc_armed=state.fc_armed, fc_mode=state.fc_mode,
+                    sent_thrust=round(state.sent_thrust, 3),
+                    sent_roll_deg=round(state.sent_roll_deg, 2),
+                    sent_pitch_deg=round(state.sent_pitch_deg, 2),
+                    yaw_hold_deg=round(math.degrees(state.yaw_hold), 1),
+                    fc_throttle_pct=state.fc_throttle_pct,
+                    fc_climb_mps=round(state.fc_climb_mps, 2),
+                    fc_alt_m=round(state.fc_alt_m, 2),
+                    fc_roll_deg=round(state.fc_roll_deg, 2),
+                    fc_pitch_deg=round(state.fc_pitch_deg, 2))
+        i += 1
+        if state.fc_armed and i % 5 == 0:      # 1 Hz while the FC is armed
+            log.info("FC armed: mode=%d thrust_sent=%.2f fc_throttle=%d%% "
+                     "climb=%+.2f m/s alt=%.2f m",
+                     state.fc_mode, state.sent_thrust, state.fc_throttle_pct,
+                     state.fc_climb_mps, state.fc_alt_m)
         await asyncio.sleep(0.2)
 
 
@@ -325,7 +415,7 @@ async def _run_async(config: dict, bus) -> None:
         for task in asyncio.all_tasks(loop):
             task.cancel()
 
-    signal.signal(signal.SIGTERM, _on_sigterm)
+    install_shutdown_handler(_on_sigterm)
 
     while True:
         serial = make_serial()
@@ -340,11 +430,11 @@ async def _run_async(config: dict, bus) -> None:
             await serial.open()
             log.info(f"Link opened ({transport})")
             tasks = [
-                asyncio.create_task(_rx_loop(serial, mav, state, bus, arm_ctrl, mode_ctrl, log)),
+                asyncio.create_task(_rx_loop(serial, mav, state, bus, arm_ctrl, mode_ctrl, log, trace)),
                 asyncio.create_task(_tx_loop(serial, mav, bus, state, arm_ctrl, mode_ctrl, lc, log, trace)),
                 asyncio.create_task(_heartbeat_loop(serial, mav)),
                 asyncio.create_task(_stream_setup_loop(serial, mav, state, lc, log)),
-                asyncio.create_task(_health_loop(bus, state, trace)),
+                asyncio.create_task(_health_loop(bus, state, trace, log)),
             ]
             await asyncio.gather(*tasks)
 

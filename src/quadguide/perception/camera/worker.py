@@ -1,11 +1,11 @@
 from __future__ import annotations
-import signal
 import time
 
 from quadguide.core.bus import Bus
 from quadguide.core.clock import monotonic_ns
 from quadguide.core.frame_buffer import FrameBuffer
 from quadguide.core.logging import setup_logging
+from quadguide.core.shutdown import install_shutdown_handler
 from quadguide.core.messages import HealthReport, ProcessState
 from quadguide.perception.camera.sources import (
     CameraSource, USBCamera, CSICamera, CSIY10Camera, VirtualCamera,
@@ -40,7 +40,7 @@ def run(source: CameraSource, frame_buffer: FrameBuffer, bus: Bus,
         nonlocal stop
         stop = True
 
-    signal.signal(signal.SIGTERM, _on_sigterm)
+    install_shutdown_handler(_on_sigterm)
 
     source.open()
     log.info("camera: source opened")

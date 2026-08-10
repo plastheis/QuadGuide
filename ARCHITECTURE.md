@@ -53,6 +53,16 @@ with body-rate and acceleration data from the FC's MAVLink ATTITUDE
 > tilting also swings the +Z axis (and therefore the bore-sight) in the same
 > direction, which drives the centroid back toward image centre. Per-axis
 > sign mapping is in `control/attitude_cmd.py`.
+>
+> **Camera clocking (physical).** The signs assume the camera is bolted so
+> that **image-right = airframe right** and therefore **image-bottom = the
+> nose** (the two are not independent: with the bore-sight up, right-handed
+> image axes force the second once the first is chosen). Target low in frame
+> → pitch down (accelerate forward); target right of frame → roll right.
+> Bench check: with the quad level, hold the target above and forward of the
+> nose — it must appear in the **lower** half of the stream. If it appears in
+> the upper half the camera is clocked 180° and *both* axes are inverted.
+> `tests/unit/test_seeker_sign_chain.py` locks the software half of this.
 
 ---
 

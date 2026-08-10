@@ -1,11 +1,11 @@
 from __future__ import annotations
-import signal
 
 from quadguide.core.bus import Bus
 from quadguide.core.clock import RateLimiter, monotonic_ns
 from quadguide.core.config import cfg_guidance, cfg_platform, cfg_watchdog
 from quadguide.core.frame_buffer import FrameBuffer
 from quadguide.core.logging import setup_logging
+from quadguide.core.shutdown import install_shutdown_handler
 from quadguide.core.messages import (
     AccelCmd, HealthReport, ProcessState, TrackerHealth,
 )
@@ -46,7 +46,7 @@ def run(config: dict, bus: Bus, frame_buffer: FrameBuffer) -> None:
         nonlocal stop
         stop = True
 
-    signal.signal(signal.SIGTERM, _on_sigterm)
+    install_shutdown_handler(_on_sigterm)
 
     i = 0
     log.info("guidance: started (method=%s, throttle_hold=%.2f)", method.name(), gcfg.throttle_hold)

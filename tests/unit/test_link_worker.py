@@ -6,6 +6,7 @@ from pymavlink import mavutil
 
 from quadguide.core.messages import AttitudeState, FCStatus, IMUFrame
 from quadguide.link.mavlink_codec import make_mav
+from quadguide.core.diagtrace import DiagTrace
 from quadguide.link.worker import _ArmController, _LinkState, _ModeController, _rx_loop, latch_yaw
 
 
@@ -178,6 +179,11 @@ class _FakeBus:
         return None
 
 
+def _disabled_trace() -> DiagTrace:
+    """A real DiagTrace in its default no-op state — _rx_loop only records into it."""
+    return DiagTrace("test", enabled=False, dir=None)
+
+
 def _enc(fn) -> bytes:
     """Pack a message on a fresh FC-side codec (sys=1, comp=1)."""
     m = make_mav(1, 1)
@@ -192,7 +198,7 @@ def _run_rx(data: bytes):
     mode = _ModeController(retry_count=5, resend_every_ticks=25)
     log = logging.getLogger("test")
     mav = make_mav(1, 191)
-    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log))
+    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log, _disabled_trace()))
     return bus, state, arm
 
 
@@ -274,7 +280,7 @@ def test_rx_command_ack_acks_pending_arm():
     state = _LinkState()
     log = logging.getLogger("test")
     mav = make_mav(1, 191)
-    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log))
+    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log, _disabled_trace()))
     assert arm.on_arm_state(True) is None  # acked → nothing more to send
 
 
@@ -290,7 +296,7 @@ def test_rx_command_ack_acks_pending_mode():
     state = _LinkState()
     log = logging.getLogger("test")
     mav = make_mav(1, 191)
-    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log))
+    asyncio.run(_rx_loop(serial, mav, state, bus, arm, mode, log, _disabled_trace()))
     assert mode.on_mode_state(9) is None  # acked → nothing more to send
 
 

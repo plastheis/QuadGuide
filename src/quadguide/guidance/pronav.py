@@ -12,8 +12,14 @@ def pronav(
     closing_vel: float,
     N: float,
 ) -> tuple[float, float]:
-    """Proportional navigation: a_cmd = N * V_c * los_rate."""
-    return N * closing_vel * los_rate[0], N * closing_vel * los_rate[1]
+    """Proportional navigation: a_cmd = N * V_c * los_rate.
+
+    `los_rate` is (d cx/dt, d cy/dt) in *image* axes; the return is (ax, ay) in
+    *body* axes. The bore-up mount swaps them exactly as pure_pursuit does: the
+    horizontal image rate is lateral (ay, nulled by roll), the vertical image
+    rate is fore/aft (ax, nulled by pitch).
+    """
+    return N * closing_vel * los_rate[1], N * closing_vel * los_rate[0]
 
 
 class ProNavGuidance:

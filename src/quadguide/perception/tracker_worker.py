@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib
 import os
-import signal
 import time
 from collections import namedtuple
 
@@ -18,6 +17,7 @@ from quadguide.core.bus import Bus
 from quadguide.core.clock import monotonic_ns
 from quadguide.core.frame_buffer import FrameBuffer
 from quadguide.core.logging import setup_logging
+from quadguide.core.shutdown import install_shutdown_handler
 from quadguide.core.messages import (
     BoundingBox, HealthReport, LockOnCmd, ProcessState,
     TrackerEstimate, TrackerHealth,
@@ -185,7 +185,7 @@ class TrackerWorker:
         from quadguide.core.diagtrace import DiagTrace
 
         log = setup_logging(self._proc_name, self._config)
-        signal.signal(signal.SIGTERM, self._handle_sigterm)
+        install_shutdown_handler(self._handle_sigterm)
 
         _pin_cpu(self._cpu_core)
 

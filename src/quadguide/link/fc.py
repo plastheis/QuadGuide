@@ -48,10 +48,41 @@ def decode_imu(msg, recv_ns: int) -> IMUFrame:
     )
 
 
+def decode_vfr_hud(msg) -> tuple[int, float, float]:
+    """VFR_HUD (#74) → (throttle_pct, climb_mps, alt_m). Diagnostic only.
+
+    ``throttle`` is the FC's own commanded throttle in percent — compare it
+    against the thrust we sent in SET_ATTITUDE_TARGET. A steady mismatch, or a
+    non-zero ``climb`` under constant thrust, means ArduPilot is treating the
+    thrust field as a CLIMB RATE (GUID_OPTIONS bit 3 clear) rather than thrust.
+    """
+    return int(msg.throttle), float(msg.climb), float(msg.alt)
+
+
 def decode_heartbeat(msg) -> tuple[bool, int]:
     """HEARTBEAT → (armed, custom_mode)."""
     armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
     return armed, msg.custom_mode
+
+
+def attitude_setpoint(
+    cmd: ControlCmd | None, max_roll_deg: float, max_pitch_deg: float,
+) -> tuple[float, float, float]:
+    """`cmd` → the (roll_deg, pitch_deg, thrust) that will go on the wire.
+
+    Split out of ``encode_attitude_target`` so the TX loop can record exactly
+    what was commanded — post-clamp — without re-deriving the limits. Comparing
+    that against the FC's own ATTITUDE reply is the only way to tell "the FC
+    ignored SET_ATTITUDE_TARGET" from "the FC flew the attitude but gated the
+    throttle": the two look identical in VFR_HUD alone.
+    """
+    if cmd is None:
+        return 0.0, 0.0, 0.0
+    return (
+        _clamp(cmd.roll_deg, -max_roll_deg, max_roll_deg),
+        _clamp(cmd.pitch_deg, -max_pitch_deg, max_pitch_deg),
+        _clamp(cmd.throttle_norm, 0.0, 1.0),
+    )
 
 
 def encode_attitude_target(
@@ -65,14 +96,9 @@ def encode_attitude_target(
     `yaw_hold`, all baked into the quaternion (type_mask ignores body rates).
     thrust = clamped throttle_norm. `cmd is None` → level attitude, zero thrust.
     """
-    if cmd is None:
-        roll_rad = pitch_rad = 0.0
-        thrust = 0.0
-    else:
-        roll_rad = math.radians(_clamp(cmd.roll_deg, -max_roll_deg, max_roll_deg))
-        pitch_rad = math.radians(_clamp(cmd.pitch_deg, -max_pitch_deg, max_pitch_deg))
-        thrust = _clamp(cmd.throttle_norm, 0.0, 1.0)
-    q = euler_to_quaternion(roll_rad, pitch_rad, yaw_hold)
+    roll_deg, pitch_deg, thrust = attitude_setpoint(cmd, max_roll_deg, max_pitch_deg)
+    q = euler_to_quaternion(
+        math.radians(roll_deg), math.radians(pitch_deg), yaw_hold)
     msg = mav.set_attitude_target_encode(
         now_ms, target_sys, target_comp, ATT_TARGET_IGNORE_RATES,
         list(q), 0.0, 0.0, 0.0, thrust,

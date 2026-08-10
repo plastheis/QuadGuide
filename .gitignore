@@ -12,4 +12,5 @@ models/**
 !models/**/
 !models/**/*.onnx
 quadguide-trace/
+quadguide-logs/
 hil-test/

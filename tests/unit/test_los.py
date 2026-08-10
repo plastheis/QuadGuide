@@ -74,24 +74,28 @@ class TestLOSRateComputation:
 
 
 class TestLOSBodyRateDerotation:
-    def test_pitch_rate_subtracts_from_x(self):
-        """Body pitching (gy>0) with stationary centroid → negative LOS x rate."""
-        est = LOSRateEstimator(FOV_H, ASPECT)
-        t0 = time.monotonic_ns()
-        est.update((0.0, 0.0), _imu(), None, t0)
-        result = est.update((0.0, 0.0), _imu(gy=1.0), None, t0 + 20_000_000)
-        expected_x = -(2.0 / FOV_H)
-        assert result[0] == pytest.approx(expected_x, abs=0.02)
-
-    def test_roll_rate_subtracts_from_y(self):
-        """Body rolling (gx>0) with stationary centroid → positive LOS y rate (sign flip)."""
+    def test_roll_rate_subtracts_from_x(self):
+        """Body rolling right (gx>0) sweeps a fixed target left, so derotation
+        removes a −x rate → the residual is +x."""
         est = LOSRateEstimator(FOV_H, ASPECT)
         t0 = time.monotonic_ns()
         est.update((0.0, 0.0), _imu(), None, t0)
         result = est.update((0.0, 0.0), _imu(gx=1.0), None, t0 + 20_000_000)
+        expected_x = 2.0 / FOV_H
+        assert result[0] == pytest.approx(expected_x, abs=0.02)
+        assert result[1] == pytest.approx(0.0, abs=1e-9)
+
+    def test_pitch_rate_subtracts_from_y(self):
+        """Body pitching nose-up (gy>0) sweeps a fixed target down the image,
+        so derotation removes a +y rate → the residual is −y."""
+        est = LOSRateEstimator(FOV_H, ASPECT)
+        t0 = time.monotonic_ns()
+        est.update((0.0, 0.0), _imu(), None, t0)
+        result = est.update((0.0, 0.0), _imu(gy=1.0), None, t0 + 20_000_000)
         fov_v = FOV_H / ASPECT
-        expected_y = 2.0 / fov_v
+        expected_y = -(2.0 / fov_v)
         assert result[1] == pytest.approx(expected_y, abs=0.02)
+        assert result[0] == pytest.approx(0.0, abs=1e-9)
 
     def test_yaw_rate_has_no_image_effect(self):
         """Yaw rotation about +Z bore-sight does not move a centred target."""

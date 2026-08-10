@@ -14,6 +14,13 @@ from pymavlink.dialects.v20 import ardupilotmega as mavlink2
 # Telemetry message ids we request via SET_MESSAGE_INTERVAL.
 MSG_ID_ATTITUDE = mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE  # 30
 MSG_ID_RAW_IMU = mavutil.mavlink.MAVLINK_MSG_ID_RAW_IMU    # 27
+# VFR_HUD is diagnostic only (never a guidance input, never watchdogged): it is
+# the ONLY way to see what the FC actually did with the thrust we sent — its
+# throttle % and climb rate. Measured 2026-08-10: with GUID_OPTIONS bit 3 set
+# (thrust-as-thrust) and a commanded thrust of 0.20 held for 8.3 s while armed
+# in GUIDED_NOGPS, the FC reported 0% throttle throughout — so the field is
+# reaching ArduPilot correctly and being gated somewhere past the mode handler.
+MSG_ID_VFR_HUD = mavutil.mavlink.MAVLINK_MSG_ID_VFR_HUD    # 74
 
 # SET_ATTITUDE_TARGET type_mask: ignore the three body-rate fields (bits 0,1,2).
 # ArduPilot GUIDED_NOGPS ignores them regardless, so attitude — yaw included — is
