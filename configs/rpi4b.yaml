@@ -18,10 +18,54 @@ platform:
     # mono sensor exposes 'R8'/'R10_CSI2P' (not GRAY8), and forcing a format string
     # makes libcamerasrc fail with "Internal data stream error". Pin width/height
     # only (native 1280x800 = full FoV, no crop) and let videoconvert emit BGR.
-    pipeline: "libcamerasrc ! video/x-raw,width=1280,height=800 ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
+    # The caps framerate is NOT cosmetic: libcamerasrc turns it into libcamera's
+    # FrameDurationLimits, which caps how long AE may expose. Without it, AE lengthens
+    # exposure in low light and the capture rate silently drops below the configured
+    # fps (the same trap as exposure_dynamic_framerate on the UVC path).
+    pipeline: "libcamerasrc ! video/x-raw,width=1280,height=800,framerate=30/1 ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
     width: 1280            # OV9281 native array (mono global shutter)
     height: 800
     fps: 30                 # most USB webcams cap at 30 @ 720p; raise if yours supports it
+    # ── Exposure / gain (libcamera AGC; injected into libcamerasrc by CSICamera) ──
+    # The OV9281 is raw mono with no ISP AE of its own — libcamera's AGC, tuned by
+    # /usr/share/libcamera/ipa/rpi/vc4/ov9281_mono.json, is the only auto exposure.
+    auto_exposure: true             # false → ae-enable=false: BOTH exposure and gain go
+                                    # manual and hold analogue_gain/exposure_time_us below
+    ae_exposure_mode: short         # normal | short | long. "short" spends the light budget on
+                                    # gain before exposure time (caps shutter at 30 ms vs 120 ms
+                                    # for "normal") — a global shutter's whole advantage is lost
+                                    # to motion blur if AE stretches exposure chasing a target
+    ae_metering_mode: ""            # the tuning file defines ONLY "centre-weighted" — nothing
+                                    # to choose, so leave empty. NB a value the tuning file does
+                                    # not define is ignored with a `WARN RPiAgc No metering mode
+                                    # <x>` and AE silently runs on the default, so check the
+                                    # tuning file before setting this or ae_constraint_mode.
+    ae_constraint_mode: highlight   # hold the brightest 2% of the frame (the sky) at or below
+                                    # 0.8 instead of letting AE average it out — a blown-out sky
+                                    # hides a target flying against it. Requires tuning_file
+                                    # below: the STOCK ov9281_mono.json has no highlight list.
+                                    # The 0.8 is LINEAR luminance, measured before the contrast
+                                    # curve — through this tuning's gamma it lands at ~242/255 in
+                                    # the delivered frame, i.e. just under clipping. Lower the
+                                    # highlight list's UPPER y_target (0.6 -> ~226/255) for more
+                                    # headroom; do NOT reach for exposure_value, which darkens
+                                    # the whole frame instead of just bounding the highlights.
+    # AE's metering/exposure/constraint modes come from the libcamera IPA tuning file, so a mode
+    # that isn't in the file cannot be selected. This is the stock ov9281_mono.json with one
+    # addition: a "highlight" constraint list, derived from imx296_mono.json (the other mono
+    # global-shutter sensor shipped with a highlight list) — its UPPER bound at 0.8, over this
+    # sensor's own LOWER bound of 0.4, so "highlight" is exactly "normal" plus a ceiling.
+    # Exported as LIBCAMERA_RPI_TUNING_FILE by CSICamera. Relative to the repo root.
+    tuning_file: configs/libcamera/ov9281_mono_quadguide.json
+    exposure_value: 0.0             # EV bias on AE, log2: -1.0 halves exposure, +1.0 doubles it.
+                                    # The tuning's y_target is ~0.17 (deliberately dark, to keep
+                                    # highlights intact); bias negative for more silhouette
+                                    # contrast against a bright sky, positive for a dark target.
+    # Manual operating point — used when auto_exposure is false (ignored when true).
+    analogue_gain: 0.0              # gain MULTIPLIER 1.0..15.9 (sensor reports 16..255 raw,
+                                    # i.e. raw/16). 0 = leave to AE.
+    exposure_time_us: 0             # exposure time in MICROSECONDS; must stay under the frame
+                                    # period (33333 at 30 fps) or the rate drops. 0 = leave to AE.
     url: "http://192.168.86.46:8090/camera"   # used when backend=network — dev-machine MJPEG stream
     raw_tcp_host: "192.168.86.46"   # used when backend=raw_tcp (HIL) — dev-machine frame server host
     raw_tcp_port: 8091              # used when backend=raw_tcp (HIL) — dev-machine frame server port

@@ -116,14 +116,105 @@ class USBCamera(CameraSource):
 
 
 class CSICamera(CameraSource):
-    """CSI camera via a GStreamer pipeline string, read through cv2.VideoCapture."""
+    """CSI camera via a GStreamer pipeline string, read through cv2.VideoCapture.
+
+    On a ``libcamerasrc`` pipeline (the RPi OV9281 path) the exposure/gain controls
+    from config are injected as element properties — see ``_libcamera_props``.
+    """
+
+    # libcamera builds this name as LIBCAMERA_<ipa>_TUNING_FILE; for the RPi IPA it is
+    # RPI (NOT RPI_VC4 — verified on the board: the VC4 spelling is ignored and the
+    # stock file loads silently).
+    _TUNING_ENV = "LIBCAMERA_RPI_TUNING_FILE"
 
     def __init__(self, config) -> None:
-        self._pipeline = getattr(config, "pipeline", "")
+        self._pipeline = self._with_libcamera_controls(
+            getattr(config, "pipeline", ""), config
+        )
+        self._tuning_file = self._resolve_tuning_file(getattr(config, "tuning_file", ""))
         self._cap      = None
+
+    @staticmethod
+    def _resolve_tuning_file(tuning_file: str) -> str:
+        """Absolute path of the configured IPA tuning file ('' if unset)."""
+        if not tuning_file:
+            return ""
+        from pathlib import Path
+        path = Path(tuning_file)
+        if not path.is_absolute():
+            # parents[4] == repo root (src/quadguide/perception/camera/sources.py)
+            path = Path(__file__).resolve().parents[4] / path
+        if not path.is_file():
+            raise RuntimeError(f"CSICamera: tuning file not found: {path}")
+        return str(path)
+
+    @staticmethod
+    def _libcamera_props(config) -> list[str]:
+        """libcamerasrc property assignments for the configured exposure/gain policy.
+
+        libcamera exposes the sensor's AE/AGC as camera controls, which libcamerasrc
+        surfaces as GObject properties. There is no ISP auto-exposure to fall back on
+        for a raw mono sensor other than this, so it is the only exposure control on
+        the RPi path.
+
+        ``auto_exposure`` picks the branch. With AE on we only bias it (EV, metering,
+        constraint, exposure mode) and leave the loop to libcamera's AGC — which is
+        tuned per-sensor by ``/usr/share/libcamera/ipa/rpi/vc4/ov9281_mono.json``.
+        With AE off, ``ae-enable=false`` puts BOTH exposure time and gain into manual
+        (libcamera ties the two modes to that one control), so the sensor holds
+        exactly the configured values — the deterministic choice for tracking, where a
+        hunting AE changes target contrast frame to frame.
+        """
+        props: list[str] = []
+        auto = bool(getattr(config, "auto_exposure", True))
+        props.append("ae-enable=%s" % ("true" if auto else "false"))
+        if auto:
+            # Bias knobs; these are ignored by libcamera once a mode is manual.
+            for prop, attr in (("ae-exposure-mode",   "ae_exposure_mode"),
+                               ("ae-metering-mode",   "ae_metering_mode"),
+                               ("ae-constraint-mode", "ae_constraint_mode")):
+                value = getattr(config, attr, "")
+                if value:
+                    props.append("%s=%s" % (prop, value))
+            ev = float(getattr(config, "exposure_value", 0.0) or 0.0)
+            if ev:
+                props.append("exposure-value=%s" % ev)
+        gain = float(getattr(config, "analogue_gain", 0.0) or 0.0)
+        exposure_us = int(getattr(config, "exposure_time_us", 0) or 0)
+        # Set even when auto: on the manual branch these ARE the operating point, and
+        # a value supplied in the same request that switches to manual is applied
+        # immediately (no frame at a stale AE value).
+        if gain:
+            props.append("analogue-gain=%s" % gain)
+        if exposure_us:
+            props.append("exposure-time=%d" % exposure_us)
+        return props
+
+    @classmethod
+    def _with_libcamera_controls(cls, pipeline: str, config) -> str:
+        """Splice the exposure/gain properties into the pipeline's libcamerasrc.
+
+        A property already written into the configured pipeline string wins: the
+        pipeline is the more specific statement of intent, and silently overriding a
+        hand-tuned one would be a confusing debugging trap.
+        """
+        if "libcamerasrc" not in pipeline:
+            return pipeline
+        head = pipeline.split("!", 1)[0]     # the libcamerasrc element and its properties
+        add = [p for p in cls._libcamera_props(config)
+               if not re.search(r"\b%s\s*=" % re.escape(p.split("=", 1)[0]), head)]
+        if not add:
+            return pipeline
+        return pipeline.replace("libcamerasrc", "libcamerasrc " + " ".join(add), 1)
 
     def open(self) -> None:
         import cv2
+        if self._tuning_file:
+            # Must be exported BEFORE the pipeline goes to READY: libcamerasrc creates the
+            # camera manager there, and the IPA reads this once at load. Setting it in this
+            # (per-worker) process is enough — no service-wide Environment= needed.
+            import os
+            os.environ[self._TUNING_ENV] = self._tuning_file
         self._cap = cv2.VideoCapture(self._pipeline, cv2.CAP_GSTREAMER)
         if not self._cap.isOpened():
             raise RuntimeError(f"CSICamera: failed to open pipeline: {self._pipeline!r}")
