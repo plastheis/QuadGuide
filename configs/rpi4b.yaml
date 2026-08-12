@@ -239,7 +239,7 @@ tracker:
     # (score_lock 0.70) if you see spurious LOCK DROPPED entries in the tracker log
     # or unexplained LAND commands — grep "LOCK DROPPED" in the tracker log.
     score_lock: 0.94
-    score_lost: 0.90
+    score_lost: 0.88
   # Latch the loss instead of classifying it per frame: the first drop_lock_frames
   # consecutive frames below score_lost RELEASE the lock permanently — the tracker
   # stops updating (so it can never drift back onto clutter) and reports LOST until
