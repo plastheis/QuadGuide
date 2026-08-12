@@ -1,0 +1,111 @@
+QUADGUIDE FLIGHT TEST — ARM / FIRE / CRASH SEQUENCE
+Extracted 2026-08-12 from /var/log/quadguide/{control,link,ground}.log
+
+SOURCE NOTE
+  There is NO JSONL trace for this flight. configs/rpi4b.yaml:340 has `trace: false`,
+  so quadguide-trace/ was never written (newest dir there is 20260810-124734).
+  The only record of this flight is the text logs below.
+
+  Those logs are append-shared by every boot and every concurrent process, and the
+  timestamps are time.monotonic_ns() (reset each boot), so the flight session was
+  isolated by FILE ORDER, not by timestamp:
+      control.log lines 2452-2463   link.log lines 1782-1828   ground.log lines 485-529
+  All times are seconds since the flight boot. t-arm is relative to operator ARM.
+
+SESSION HEALTH BEFORE THE EVENT (same block, earlier records)
+     18.518  link     Link opened (uart /dev/serial0 @ 921600)
+     18.524  control  control: started (100 Hz, core=3, sched_fifo=True, throttle_hold=0.60)
+     19.085  link     FC HEARTBEAT: sys=1 comp=1
+     19.087  link     FC custom_mode -> 9          (LAND)
+     19.136  link     requested ATTITUDE+RAW_IMU @ 50 Hz, VFR_HUD @ 10 Hz
+     19.653  camera   camera: source opened
+     19.665  tracker  tracker_NanoTrack: started (drop_lock_on_lost=True, drop_lock_frames=2)
+     19.685  control  control: staleness cleared (soft-LEVEL)
+    287.348  link     FC custom_mode -> 20         (GUIDED_NOGPS)
+  -> No failsafe, no LOCK DROPPED, no staleness for the next 332 s. Perception and
+     guidance were HEALTHY right up to the launch.
+
+============================================================================
+  t(s)     t-arm   worker   event
+============================================================================
+--- 3 s before arm: complete silence, nothing logged ----------------------
+  349.035   -3.000  (no records in this window)
+
+--- ARM -------------------------------------------------------------------
+  352.029   -0.006  ground   POST /arm            <- from 10.42.0.17:38112
+  352.035   +0.000  control  ARMED - throttle gated by fire button
+  352.039   +0.004  link     arm command -> ARM
+  352.039   +0.004  link     yaw hold latched -> -93.9 deg (fc_yaw=-93.9 deg)
+  352.052   +0.017  link     FC WARNING: Arming Checks Disabled (severity=4)
+  352.897   +0.863  link     FC arm state -> ARMED       <<< last FC arm-state change
+
+--- armed on the launcher, thrust gated off, not moving -------------------
+  353.857   +1.823  link     mode=20 thrust_sent=0.00 fc_throttle=0% climb=-0.00 alt=-0.05
+  354.864   +2.829  link     mode=20 thrust_sent=0.00 fc_throttle=0% climb=+0.01 alt=-0.05
+  355.872   +3.837  link     mode=20 thrust_sent=0.00 fc_throttle=0% climb=+0.05 alt=-0.05
+  356.879   +4.844  link     mode=20 thrust_sent=0.00 fc_throttle=0% climb=+0.10 alt=-0.05
+  357.888   +5.853  link     mode=20 thrust_sent=0.00 fc_throttle=0% climb=+0.11 alt=-0.05
+
+--- FIRE ------------------------------------------------------------------
+  358.131   +6.096  ground   POST /fire
+  358.136   +6.101  control  FIRE ACTIVE - throttle=0.60      <<< POWER ON
+
+--- 309 ms later: DISARM --------------------------------------------------
+  358.442   +6.407  ground   POST /arm                        <<< operator disarm
+  358.444   +6.409  link     arm command -> DISARM
+  358.445   +6.410  control  DISARMED - throttle=0, commands suppressed   <<< POWER OFF
+  358.457   +6.422  ground   POST /fire
+  358.465   +6.430  control  FIRE RELEASED - throttle=0.00
+                             ** total powered flight: 0.309 s **
+  358.753   +6.718  ground   POST /reset_lockon
+
+--- the fall (FC never disarmed; thrust commanded 0.00) -------------------
+  358.894   +6.859  link     mode=20 thrust_sent=0.00 fc_throttle=0% climb=-1.38 alt=-0.05
+  359.034   +6.999  link     arm command -> DISARM   (duplicate)
+  359.331   +7.296  ground   POST /arm
+  359.335   +7.300  control  ARMED - throttle gated by fire button
+  359.342   +7.307  link     arm command -> ARM
+  359.342   +7.307  link     yaw hold latched -> -104.2 deg      <-- heading moved 10 deg
+  359.899   +7.864  link     mode=20 thrust_sent=0.00 fc_throttle=0% climb=-4.38 alt=-0.05
+  360.875   +8.841  ground   POST /arm
+  360.883   +8.848  link     arm command -> DISARM
+  360.885   +8.850  control  DISARMED - throttle=0, commands suppressed
+  360.885   +8.850  ground   POST /fire        (no FIRE ACTIVE logged -> fire went OFF)
+  360.904   +8.869  link     mode=20 thrust_sent=0.00 fc_throttle=0% climb=-4.64 alt=-0.05
+  361.082   +9.048  ground   POST /arm
+  361.085   +9.050  control  ARMED - throttle gated by fire button
+  361.088   +9.053  link     arm command -> ARM
+  361.088   +9.054  link     yaw hold latched -> +6.4 deg       <-- heading moved 110 deg
+                                                                    in 1.75 s = TUMBLING
+  361.909   +9.874  link     mode=20 thrust_sent=0.00 fc_throttle=0% climb=-4.18 alt=-0.05
+
+--- IMPACT (most likely t+7 .. t+10, see caveat) --------------------------
+  362.165  +10.131  link     FC custom_mode -> 9   (LAND — commanded from the TX)
+  362.913  +10.878  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=-3.51 alt=-0.05
+  363.917  +11.882  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=-2.70 alt=-0.05
+  364.924  +12.889  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=-1.83 alt=-0.05
+  365.928  +13.893  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=-0.97 alt=-0.05
+  366.934  +14.900  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=-0.19 alt=-0.05
+  367.939  +15.904  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=+0.48 alt=-0.05
+  368.946  +16.911  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=+1.00 alt=-0.05
+  369.950  +17.915  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=+1.38 alt=-0.05
+  370.957  +18.922  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=+1.84 alt=-0.05
+  371.962  +19.927  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=+1.99 alt=-0.05
+  372.966  +20.931  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=+2.72 alt=-0.05
+  373.971  +21.936  link     mode=9  thrust_sent=0.00 fc_throttle=0% climb=+1.49 alt=-0.05
+  ... decays to ~0 by t+26, log ends t+31 (power cut / no clean shutdown)
+
+============================================================================
+DATA-QUALITY CAVEATS (important — do not over-read the numbers above)
+  1. alt = -0.05 m for the ENTIRE event, while climb swings -4.64 .. +2.72 m/s.
+     Those are inconsistent. The altitude channel is frozen/not updating, so the
+     climb-rate channel is also suspect.
+  2. The smooth ramp from -4.18 through 0 to +2.72 m/s after LAND is not credible
+     as real motion (a ground impact is abrupt). It reads as the EKF vertical
+     estimate re-converging. Hence impact is bracketed t+7..t+10, not pinpointed.
+  3. link telemetry is logged at 1 Hz. The 309 ms fire window falls BETWEEN two
+     samples, so there is no direct sample of thrust_sent during the burst.
+  4. ATTITUDE was requested at 50 Hz but pitch/roll are NEVER logged — only mode,
+     thrust_sent, fc_throttle, climb, alt. There is no attitude data in this log.
+     The pitch-up cannot be confirmed or refuted from here. The FC's own dataflash
+     .bin on the H743 SD card is the only source with ATT/RATE/RCOU.

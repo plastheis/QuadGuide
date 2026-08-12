@@ -326,6 +326,17 @@ mission:
 ground:
   port: 8080
   ui_mode: minimal
+  # Once fire goes active, refuse disarm and fire-release from the ground
+  # station; only `POST /abort {"confirm":true}` can cut the throttle. Added
+  # after the 2026-08-12 crash, where a spurious edge on the kiosk's arm toggle
+  # produced POST /arm {armed:false} 311 ms after fire and zeroed the throttle
+  # mid-launch. See docs/flight-20260812-crash-analysis.txt.
+  fire_latch: true
+  # 0 = the latch never expires on its own (recommended). A non-zero value
+  # re-opens the normal disarm path that many ms after fire, which only covers
+  # the launch window — weaker, but restores single-button abort after the
+  # transient has passed.
+  fire_latch_timeout_ms: 0
 
 logging:
   level: INFO

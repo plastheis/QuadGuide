@@ -255,3 +255,97 @@ def test_telemetry_broadcasts_ui_state(client):
     assert ui["crosshair"] == 240
     assert ui["show_osd"] is False
     assert ui["seq"] == 1
+
+
+# ── Fire latch ──────────────────────────────────────────────────────────────
+# Regression cover for the 2026-08-12 crash: a burst of spurious GPIO edges on
+# the kiosk panel reached POST /arm {armed:false} 311 ms after fire and cut the
+# throttle mid-launch. See docs/flight-20260812-crash-analysis.txt.
+
+def _last(bus, topic):
+    """Last message published on ``topic``, or None."""
+    msgs = [m for t, m in bus.published if t == topic]
+    return msgs[-1] if msgs else None
+
+
+def _latched(bus_client):
+    """Arm, then fire — leaving the app in the committed state."""
+    bus, c = bus_client
+    assert c.post("/arm", json={"armed": True}).status_code == 200
+    assert c.post("/fire", json={"active": True}).status_code == 200
+    return bus, c
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/arm",          {"armed": False}),
+    ("/arm",          {"armed": True}),
+    ("/fire",         {"active": False}),
+    ("/fire",         {"active": True}),
+    ("/lockon",       {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}),
+    ("/reset_lockon", None),
+    ("/ui",           {"crosshair": 200}),
+])
+def test_fire_latch_refuses_every_write(bus_client, path, body):
+    """Default-deny: /abort is the only POST that survives the latch.
+
+    Parametrised over every write endpoint rather than the few that obviously
+    cut throttle — the first version of this latch guarded /arm and /fire only
+    and the crash sequence still got through via /reset_lockon.
+    """
+    _, c = _latched(bus_client)
+    r = c.post(path, json=body) if body is not None else c.post(path)
+    assert r.status_code == 409
+    assert r.json()["rejected"] == "fire_latched"
+
+
+def test_fire_latch_holds_throttle_through_the_20260812_sequence(bus_client):
+    """Replay the recorded ground.log command sequence from the crash."""
+    bus, c = bus_client
+    recorded = [
+        ("/arm",          {"armed": True}),    # t+0.000  operator
+        ("/fire",         {"active": True}),   # t+6.096  operator
+        ("/arm",          {"armed": False}),   # t+6.407  glitch
+        ("/fire",         {"active": False}),  # t+6.422  glitch (auto-reset)
+        ("/reset_lockon", None),               # t+6.718  glitch
+        ("/arm",          {"armed": True}),    # t+7.296  glitch
+        ("/arm",          {"armed": False}),   # t+8.840  glitch
+        ("/fire",         {"active": False}),  # t+8.850  glitch (auto-reset)
+        ("/arm",          {"armed": True}),    # t+9.047  glitch
+    ]
+    for path, body in recorded:
+        c.post(path, json=body) if body is not None else c.post(path)
+
+    # Throttle is gated on (armed AND fire_active) in the control worker, and
+    # a cleared lock would trip target_loss into the same place 300 ms later.
+    assert _last(bus, "arm/cmd").armed is True
+    assert _last(bus, "fire/cmd").active is True
+    assert _last(bus, "lockon/cmd") is None
+
+
+def test_fire_latch_allows_reads_while_committed(bus_client):
+    """Video/telemetry/HUD must keep working — only writes are refused."""
+    _, c = _latched(bus_client)
+    assert c.get("/").status_code == 200
+    assert c.get("/ui").status_code == 200
+    assert _read_one_sse_event(c)["fire_latched"] is True
+
+
+def test_abort_requires_confirm_then_clears_the_latch(bus_client):
+    bus, c = _latched(bus_client)
+    assert c.post("/abort", json={}).status_code == 400
+    assert c.post("/abort", json={"confirm": True}).status_code == 200
+    # Abort is the kill switch: it releases fire and disarms in one action.
+    assert _last(bus, "fire/cmd").active is False
+    assert _last(bus, "arm/cmd").armed is False
+    # ...and hands normal control back.
+    assert c.post("/arm", json={"armed": False}).status_code == 200
+
+
+def test_fire_latch_can_be_disabled_by_config():
+    bus = _MockBus()
+    app = create_app(bus, _MockFrameBuffer(), {"ground": {"fire_latch": False}})
+    with TestClient(app) as c:
+        c.post("/arm", json={"armed": True})
+        c.post("/fire", json={"active": True})
+        assert c.post("/arm", json={"armed": False}).status_code == 200
+        assert _last(bus, "arm/cmd").armed is False
