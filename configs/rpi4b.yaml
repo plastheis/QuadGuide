@@ -63,26 +63,63 @@ platform:
                                     # against it. Requires tuning_file below: the STOCK
                                     # ov9281_mono.json has no highlight list.
                                     #
+                                    # ⚠ READ THIS BEFORE TOUCHING ANY EXPOSURE KNOB. Until
+                                    # 2026-08-12 this camera blew the sky to pure white in
+                                    # daylight and NOTHING here changed it — not the constraint
+                                    # y_targets, not exposure_value. The cause was NOT in this
+                                    # file: the tuning file's exposure_modes shutter list STARTED
+                                    # AT 100 us, and AE cannot pick a total exposure below the
+                                    # first entry in that list. AE was pinned at the floor
+                                    # (measured: exp=95us, gain=1.00, digital gain 1.05) with the
+                                    # sky at 250/255 over 70% of the frame, so every knob here was
+                                    # asking a loop that had already run out of range. The shutter
+                                    # list now starts at 8 us — see the tuning file.
+                                    #
+                                    # The general trap: a bias knob only does something if AE has
+                                    # room to move AND the knob is tighter than the unconstrained
+                                    # result. When a change here does nothing, check where AE
+                                    # actually landed BEFORE assuming the value was too weak:
+                                    #   LIBCAMERA_LOG_LEVELS=RPiAgc:DEBUG ... | grep -E \
+                                    #     "Constraint has|Final gain|Target total|after channel"
+                                    # "Target totalExposure" vs "Total exposure after channel
+                                    # constraints" shows what AE wanted vs what it was clamped to.
+                                    #
                                     # ⚠ The y_target is LINEAR luminance, metered BEFORE the
-                                    # contrast curve, so it reads far darker than the number
-                                    # suggests. MEASURED end-to-end on this camera (98th pctl of
-                                    # the delivered 8-bit frame, EV 0):
-                                    #   no constraint  -> 215/255      UPPER 0.35 -> 178/255
-                                    #   UPPER 0.50     -> 206/255      UPPER 0.30 -> 165/255  ←
-                                    #   UPPER 0.25     -> 149/255
-                                    # An UPPER of 0.8 (the value this list originally shipped
-                                    # with) lands at ~242/255 — ABOVE where AE already settles,
-                                    # so it never binds and switching normal↔highlight does
-                                    # nothing at all. That is the trap: a constraint only has an
-                                    # effect if it is tighter than the unconstrained result.
-                                    # The list now uses UPPER 0.30. Tune THAT for sky headroom;
-                                    # do NOT reach for exposure_value, which darkens the whole
-                                    # frame — including the target — instead of just bounding
-                                    # the highlights.
+                                    # contrast curve. With the gamma 2.2 curve now in the tuning
+                                    # file the mapping to the delivered 8-bit frame is
+                                    # 255*(y)^(1/2.2), so UPPER 0.78 -> ~228/255. MEASURED
+                                    # end-to-end (delivered frame, bright sky + dark foreground,
+                                    # EV 0, 2026-08-12): p50 139, p98 232, 0.05% of pixels >=250.
+                                    # UPPER is set to 0.78 to hold the sky just under clipping —
+                                    # that MAXIMISES silhouette contrast. Do not lower it toward
+                                    # a "safe" mid-grey: a dark target against a 228 sky separates
+                                    # better than against a 130 one. Do NOT reach for
+                                    # exposure_value, which darkens the whole frame — including
+                                    # the target — instead of just bounding the highlights.
+                                    #
+                                    # NB in THIS scene the UPPER does not bind: the base y_target
+                                    # (0.17) already asks for a bigger reduction (AE wants 5.7us,
+                                    # clamped to the 8.8us sensor floor). UPPER earns its keep in
+                                    # the flight case — dark foreground filling the frame, where
+                                    # the mean target would otherwise pull AE up and clip the sky.
     # AE's metering/exposure/constraint modes come from the libcamera IPA tuning file, so a mode
-    # that isn't in the file cannot be selected. This is the stock ov9281_mono.json with one
-    # addition: a "highlight" constraint list holding the top 2% of the frame between a LOWER
-    # bound of 0.2 and an UPPER of 0.3.
+    # that isn't in the file cannot be selected. This is the stock ov9281_mono.json with three
+    # changes:
+    #   1. exposure_modes "normal"/"short" shutter lists start at 8 us instead of 100 us. THIS is
+    #      the change that actually fixed the blown-out sky (see ae_constraint_mode above). 8 us
+    #      is the sensor's own floor: the OV9281 exposure control is in LINES, min=1, and one line
+    #      is ~9 us in the 640x400 mode, so nothing below this is reachable. Verified with
+    #      `v4l2-ctl -d /dev/v4l-subdev0 -l | grep exposure` (min=1) and by manual sweep — frames
+    #      at 8/5/2/1 us are bit-identical. In full daylight AE now sits AT this floor and still
+    #      wants ~1.5x less light, so the camera is out of range: if the sky ever clips again in
+    #      brighter conditions, the fix is an ND filter or a smaller aperture, NOT this file.
+    #   2. a "highlight" constraint list holding the top 2% of the frame between a LOWER bound of
+    #      0.1 and an UPPER of 0.78.
+    #   3. gamma_curve replaced with a plain gamma 2.2 (was ~gamma 3.0, which lifted the midtones
+    #      hard and was the other half of the washed-out look — it mapped a linear 0.27 midtone to
+    #      160/255). 2.2 puts that midtone at ~139 and drops the sky from 241 to 232, i.e. more
+    #      contrast AND more highlight headroom, at no cost in exposure. The AGC meters LINEAR
+    #      luminance upstream of this curve, so changing it does not move any y_target.
     #
     # NB the LOWER bound matters as much as the UPPER on a blank sky. Constraints are applied in
     # LIST ORDER, each one able to raise (LOWER) or lower (UPPER) the running gain. On a uniform
@@ -98,6 +135,9 @@ platform:
                                     # of every constraint, so it darkens the target silhouette
                                     # by exactly as much as the sky and buys no contrast. Bound
                                     # the sky with the highlight UPPER y_target instead.
+                                    # (Was -1.0 while chasing the blown-out sky; it did nothing,
+                                    # because AE was already pinned at its shutter floor and EV
+                                    # only moves a target AE cannot reach anyway.)
     # Manual operating point — applied ONLY when auto_exposure is false. libcamera >= 0.4 ignores
     # ExposureTime/AnalogueGain while AE owns them (verified on 0.7.1: identical frames with and
     # without these set), so a value here cannot "trim" AE — it is dead config until you also set
