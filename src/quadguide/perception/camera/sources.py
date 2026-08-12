@@ -131,8 +131,39 @@ class CSICamera(CameraSource):
         self._pipeline = self._with_libcamera_controls(
             getattr(config, "pipeline", ""), config
         )
+        self._check_caps_match_config(self._pipeline, config)
         self._tuning_file = self._resolve_tuning_file(getattr(config, "tuning_file", ""))
         self._cap      = None
+
+    @staticmethod
+    def _check_caps_match_config(pipeline: str, config) -> None:
+        """Fail loudly when the pipeline caps and width/height/fps disagree.
+
+        On this backend the caps are the only thing GStreamer reads — ``width``/
+        ``height``/``fps`` are consumed elsewhere (guidance derives its aspect ratio
+        from them), so the two must agree or the config lies about what the camera is
+        doing. They are easy to drift apart silently: raising ``fps`` alone looks like
+        it should raise the frame rate and changes nothing whatsoever. Better to refuse
+        to start than to run at a rate nobody chose.
+        """
+        # Caps may or may not carry an explicit type, i.e. `width=640` or `width=(int)640`.
+        found = {k: int(v) for k, v in re.findall(
+            r"\b(width|height)\s*=\s*(?:\(\w+\))?\s*(\d+)", pipeline)}
+        rate = re.search(
+            r"\bframerate\s*=\s*(?:\(\w+\))?\s*(\d+)\s*/\s*1\b", pipeline)
+        if rate:
+            found["fps"] = int(rate.group(1))
+        mismatched = [
+            "%s: pipeline=%d config=%d" % (name, caps, configured)
+            for name, caps in found.items()
+            if (configured := int(getattr(config, name, 0) or 0)) and caps != configured
+        ]
+        if mismatched:
+            raise RuntimeError(
+                "CSICamera: pipeline caps disagree with camera config (%s). The caps "
+                "drive capture; width/height/fps only describe it. Change both."
+                % "; ".join(mismatched)
+            )
 
     @staticmethod
     def _resolve_tuning_file(tuning_file: str) -> str:
@@ -157,13 +188,21 @@ class CSICamera(CameraSource):
         for a raw mono sensor other than this, so it is the only exposure control on
         the RPi path.
 
-        ``auto_exposure`` picks the branch. With AE on we only bias it (EV, metering,
-        constraint, exposure mode) and leave the loop to libcamera's AGC — which is
-        tuned per-sensor by ``/usr/share/libcamera/ipa/rpi/vc4/ov9281_mono.json``.
+        ``auto_exposure`` picks the branch, and the two branches are DISJOINT — a
+        control belongs to whichever loop owns it, and emitting it on the other branch
+        does nothing (see the manual-branch comment below).
+
+        With AE on we only bias it (EV, metering, constraint, exposure mode) and leave
+        the loop to libcamera's AGC, tuned per-sensor by the file in ``tuning_file``
+        (default ``/usr/share/libcamera/ipa/rpi/vc4/ov9281_mono.json``). Note that the
+        bias knobs can only ever make AE *tighter* than its unconstrained result: a
+        constraint whose ``y_target`` sits above where AE already settles never binds,
+        which reads exactly like the mode being ignored.
+
         With AE off, ``ae-enable=false`` puts BOTH exposure time and gain into manual
-        (libcamera ties the two modes to that one control), so the sensor holds
-        exactly the configured values — the deterministic choice for tracking, where a
-        hunting AE changes target contrast frame to frame.
+        (libcamera ties the two modes to that one control), so the sensor holds exactly
+        the configured values — the deterministic choice for tracking, where a hunting
+        AE changes target contrast frame to frame.
         """
         props: list[str] = []
         auto = bool(getattr(config, "auto_exposure", True))
@@ -179,11 +218,15 @@ class CSICamera(CameraSource):
             ev = float(getattr(config, "exposure_value", 0.0) or 0.0)
             if ev:
                 props.append("exposure-value=%s" % ev)
+            return props
+        # Manual branch only. libcamera >= 0.4 gates ExposureTime/AnalogueGain behind
+        # ExposureTimeMode/AnalogueGainMode (which ae-enable drives), so while AE is on
+        # these are silently ignored — verified on 0.7.1: a pipeline with
+        # exposure-time=33333 analogue-gain=1.0 alongside ae-enable=true delivers frames
+        # identical to one without them. Emitting them anyway only invites the reader to
+        # believe they trim AE, so keep them where they actually do something.
         gain = float(getattr(config, "analogue_gain", 0.0) or 0.0)
         exposure_us = int(getattr(config, "exposure_time_us", 0) or 0)
-        # Set even when auto: on the manual branch these ARE the operating point, and
-        # a value supplied in the same request that switches to manual is applied
-        # immediately (no frame at a stale AE value).
         if gain:
             props.append("analogue-gain=%s" % gain)
         if exposure_us:
