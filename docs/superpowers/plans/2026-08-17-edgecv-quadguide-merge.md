@@ -17,7 +17,7 @@
 - **CI matrix: `["3.11", "3.12"]`** on `ubuntu-latest` only. `src/quadguide` imports `fcntl` and `select` and calls `os.sched_setaffinity` — it cannot run on Windows or macOS.
 - **`cv2` must NOT be a base dependency.** The device uses apt's GStreamer-enabled `python3-opencv` via `--system-site-packages`; a pip-installed opencv shadows it and breaks `CSICamera`. CI gets `opencv-python-headless` in the `test` extra only.
 - **No EdgeCV source file under `src/edgecv/` is edited in this plan.** Verify by diffing against the source of truth — `diff -r /c/Users/plas/projects/EdgeCV/edgecv src/edgecv --exclude="__pycache__"` must print nothing (Task 2 Step 7). Do **not** use `git diff src/edgecv/`: these are newly-added files, so that command is trivially empty once committed and proves nothing.
-- **Test edits are capped at the 14 lines enumerated in Task 3.** `git diff tests/` must show no assertion, fixture, or logic changes.
+- **Test edits are capped at the 18 lines enumerated in Task 3** — 14 relocation path-couplings plus 4 stale manifest assertions (see Task 3 Step 5). No other test may be touched: no new assertions, no fixture changes, no logic changes.
 - Work happens in the **QuadGuide** repo (`github.com/plastheis/QuadGuide`) on a branch. The EdgeCV repo (`github.com/plastheis/EdgeCV`) is read-only source material until Task 8.
 
 ## Baseline facts (measured 2026-08-17, do not re-derive)
@@ -27,7 +27,8 @@
 | EdgeCV commits | 1 (`b03eae6 kalman`) — no history to preserve |
 | EdgeCV modules | 57 `.py` under `edgecv/` |
 | EdgeCV relative imports | **0** — all absolute |
-| EdgeCV tests | 44 `test_*.py` + 5 support files (`conftest.py`, `__init__.py`, `_acquire_stubs.py`, `_nn_stubs.py`, `_onnx_synth.py`) = 49 `.py`; **306 tests collected** |
+| EdgeCV tests | 44 `test_*.py` + 5 support files (`conftest.py`, `__init__.py`, `_acquire_stubs.py`, `_nn_stubs.py`, `_onnx_synth.py`) = 49 `.py`; **306 collected**; on Windows **292 passed, 9 failed, 9 skipped** |
+| EdgeCV's 9 Windows failures | **7 are Windows-only** (seqlock/shm — no `os.sched_yield` on Windows, see Task 3 Step 6) and **2 are real stale assertions** repaired in Task 3 Step 5b |
 | QuadGuide tests | **276 collected, 6 collection errors on Windows** (all `ModuleNotFoundError: fcntl` — Linux-only, expected) |
 | QuadGuide CI | none — no `.github/` on any branch |
 | Git LFS | not used by either repo; both commit real blobs |
@@ -88,7 +89,9 @@ python -m pytest -q 2>&1 | tail -20 > "$SCRATCH/baseline-edgecv.txt"
 cat "$SCRATCH/baseline-edgecv.txt"
 ```
 
-Expected: a passing summary ending in `306 passed` (or `306 passed, N skipped`). Record the exact line. If tests *fail* here, stop — you are not merging a broken baseline; report the failures.
+Expected: `9 failed, 292 passed, 9 skipped`. Record the exact line **and the list of failing test IDs**.
+
+This baseline is **known-red and that is accepted** — see the baseline facts table. Do not attempt to fix anything. Any deviation from 9 failures, or a different set of failing IDs, is what you should report.
 
 - [ ] **Step 2: Record the QuadGuide suite**
 
@@ -244,21 +247,27 @@ Tests move separately in the next commit."
 
 ---
 
-## Task 3: Relocate the EdgeCV test tree and fix its 14 path couplings
+## Task 3: Relocate the EdgeCV test tree, fix its 14 path couplings and 4 stale assertions
 
 This is the only task that edits test files. The edits are enumerated exhaustively below — there are no others.
 
 **Files:**
 - Create: `tests/edgecv/**` (49 test files, 3 helper modules, `conftest.py`, `__init__.py`)
-- Modify: `tests/edgecv/conftest.py` (1 line)
-- Modify: 10 test files (import prefix)
-- Modify: 3 test files (path expression)
+- Modify: `tests/edgecv/conftest.py` (1 line — `tools/` path)
+- Modify: 10 test files (1 helper-import prefix each)
+- Modify: 3 test files (1 `Path(__file__)` expression each)
+- Modify: `tests/edgecv/test_manifests_nn.py` (3 stale assertions) and `tests/edgecv/test_nanotrack_rknn.py` (1 stale assertion)
+
+`test_nanotrack_rknn.py` appears twice — it takes both a path fix (Step 5a) and a stale assertion (Step 5b). Total edited files: 13. Total edited lines: 18.
 
 **Interfaces:**
 - Consumes: `src/edgecv/` and `tools/` from Task 2.
 - Produces: 306 EdgeCV tests collectable from the QuadGuide repo root.
 
-**Why these edits exist:** EdgeCV's tests import shared helpers as an absolute `tests.` package (`from tests._nn_stubs import ...`) and reach for `tools/` and `edgecv/models/manifests/` by relative filesystem path. Nesting one directory deeper shifts both.
+**Why these edits exist — two unrelated causes, kept separate on purpose:**
+
+- **Steps 3–5a (14 lines), caused by the move.** EdgeCV's tests import shared helpers as an absolute `tests.` package (`from tests._nn_stubs import ...`) and reach for `tools/` and `edgecv/models/manifests/` by relative filesystem path. Nesting one directory deeper shifts both.
+- **Step 5b (4 lines), pre-existing rot.** Four assertions contradict the `nanotrack.yaml` shipped beside them. They fail in EdgeCV today, they are platform-independent, and they would keep Task 6's CI gate red forever. Approved for repair by the human partner on 2026-08-17.
 
 - [ ] **Step 1: Copy the test tree**
 
@@ -315,7 +324,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 now sits one directory deeper. Leave the comment on a single line: Step 8's
 diff-count assertion depends on this being a 1-line change.
 
-- [ ] **Step 5: Fix the 3 filesystem-path expressions**
+- [ ] **Step 5: Fix the 3 filesystem-path expressions, then the 4 stale manifest assertions**
+
+### 5a — path expressions (caused by the move)
+
 
 `tests/edgecv/test_nanotrack_rknn.py` line ~22 — the manifest moved under `src/`:
 
@@ -342,6 +354,43 @@ cd /c/Users/plas/projects/QuadGuide
 grep -rn "parent\.parent\|parents\[1\]" tests/edgecv/*.py    # expect NO output
 ```
 
+### 5b — stale manifest assertions (pre-existing rot, NOT caused by the move)
+
+EdgeCV's `nanotrack.yaml` manifest was updated to the v3 backbone and the
+yolocrop RKNN blob, but two tests still assert the old names. They fail today in
+EdgeCV and would fail on Linux CI, blocking Task 6's gate. The **manifest is
+correct** — every file it names exists (`models/nanotrackv3_backbone.onnx`,
+`models/nanotrack_quant_rk3588/nanotrack_backbone_yolocrop.rknn`). The tests are
+stale. Fix the tests, never the manifest.
+
+Note that pytest stops at a test's first failing assert, which masked the
+siblings: fixing only the first line will just surface the next.
+
+In `tests/edgecv/test_manifests_nn.py`, three lines in `test_nanotrack_manifest_loads`:
+
+```python
+    assert bb["onnx"]["path"] == "nanotrackv3_backbone.onnx"
+    assert bb["rknn"]["path"] == "nanotrack_quant_{target}/nanotrack_backbone_yolocrop.rknn"
+    assert bb["rknn"]["quant"] == "int8"                       # already correct — leave
+    assert hd["onnx"]["path"] == "nanotrackv3_head.onnx"
+    assert hd["rknn"]["path"] == "nanotrack_quant_{target}/nanotrack_head.rknn"   # correct — leave
+    assert hd["rknn"]["quant"] == "fp16"                       # already correct — leave
+```
+
+In `tests/edgecv/test_nanotrack_rknn.py`, one line in the sorted-paths list:
+
+```python
+    assert [Path(p).name for p in paths] == [
+        "nanotrack_backbone_yolocrop.rknn",
+        "nanotrack_head.rknn",
+    ]
+```
+
+`yolocrop` still sorts before `head` (`b` < `h`), so the list order is unchanged.
+
+**Change exactly these 4 lines.** Do not "improve" neighbouring assertions, and
+do not touch any manifest.
+
 - [ ] **Step 6: Run the EdgeCV suite to verify it passes**
 
 ```bash
@@ -349,7 +398,21 @@ cd /c/Users/plas/projects/QuadGuide
 python -m pytest tests/edgecv -q 2>&1 | tail -10
 ```
 
-Expected: the same pass count as `$SCRATCH/baseline-edgecv.txt` — **306 passed** (plus the same skip count). Any difference in count is a regression; investigate before proceeding.
+Expected on **Windows**: `294 passed, 7 failed, 9 skipped`.
+
+Reconcile that against the baseline (`292 passed, 9 failed, 9 skipped`) as follows:
+
+- **+2 passed / −2 failed** — the two manifest tests you repaired in Step 5b.
+- **The remaining 7 failures are Windows-only and must persist unchanged**:
+  `test_acquire_channels` (×4), `test_search_roi` (×2), `test_seqlock` (×1). All
+  are seqlock-backed. `edgecv/runtime/shm/seqlock.py:23` does
+  `_yield = getattr(os, "sched_yield", lambda: None)`, and Windows has no
+  `os.sched_yield`, so the yield degrades to a no-op and the reader starves —
+  precisely the spurious livelock EdgeCV's ARCHITECTURE §7.3 documents. **These
+  are expected. Do not attempt to fix them.** They pass on Linux, which CI proves
+  in Task 6.
+
+Any *other* difference is a real regression — investigate before proceeding.
 
 - [ ] **Step 7: Verify QuadGuide's own suite is untouched**
 
@@ -360,7 +423,7 @@ cd /c/Users/plas/projects/QuadGuide
 
 Expected: `276 tests collected, 6 errors` — byte-identical to `$SCRATCH/baseline-quadguide.txt`.
 
-- [ ] **Step 8: Verify the edit surface is exactly 14 lines**
+- [ ] **Step 8: Verify the edit surface is exactly 18 lines**
 
 ```bash
 cd /c/Users/plas/projects/QuadGuide
@@ -374,7 +437,7 @@ Since these are new files, the stat shows additions only. Instead, diff against 
 diff -r /c/Users/plas/projects/EdgeCV/tests tests/edgecv --exclude="__pycache__" | grep "^[<>]" | wc -l
 ```
 
-Expected: **28** (14 changed lines × 2, one `<` and one `>` each). If higher, something beyond the enumerated set was edited — find it and revert it.
+Expected: **36** (18 changed lines × 2, one `<` and one `>` each) — 14 relocation couplings from Steps 3–5a plus 4 stale assertions from Step 5b. If higher, something beyond the enumerated set was edited; find it and revert it. If lower, an enumerated edit was missed.
 
 - [ ] **Step 9: Commit**
 
@@ -383,12 +446,19 @@ cd /c/Users/plas/projects/QuadGuide
 git add -A
 git commit -m "test: relocate EdgeCV's test tree to tests/edgecv/
 
-306 tests, unchanged except for 14 path-coupling lines: 10 helper-import
-prefixes (tests. -> tests.edgecv.), 3 Path(__file__).parents[] expressions
-(manifests moved under src/, tools/ is one level further up), and the
-conftest sys.path insert for tools/.
+306 tests, unchanged except for 18 lines across 13 files.
 
-No assertion, fixture, or logic changes."
+14 are relocation path-couplings: 10 helper-import prefixes (tests. ->
+tests.edgecv.), 3 Path(__file__).parents[] expressions (manifests moved
+under src/, tools/ is one level further up), and the conftest sys.path
+insert for tools/.
+
+4 repair stale assertions that fail in EdgeCV today and would block CI:
+nanotrack.yaml was updated to the v3 backbone and the yolocrop RKNN blob
+without updating test_manifests_nn.py (3 lines) or test_nanotrack_rknn.py
+(1 line). The manifest is correct — every file it names exists.
+
+No fixture or logic changes; no manifest changes."
 ```
 
 ---
@@ -752,7 +822,20 @@ cd /c/Users/plas/projects/QuadGuide
 gh run watch
 ```
 
-Expected: green on both 3.11 and 3.12. The test step must report **582 passed** with **zero errors** — the 6 `fcntl` collection errors seen on Windows must not appear on Linux. If they do, something other than platform is wrong.
+Expected: green on both 3.11 and 3.12, with **zero failures and zero errors**.
+
+Record the actual `N passed, M skipped` line in your report — do not assert a
+hardcoded pass count. Collection totals (306 + 276 = 582) are known and additive,
+but the pass/skip split is not: the Windows baseline reports more results than
+collected items because some tests are parametrized at runtime.
+
+What the Linux run must prove:
+
+- The 6 `fcntl` collection errors seen on Windows are **absent** (Linux has `fcntl`).
+- The 7 seqlock/shm failures seen on Windows are **absent** (Linux has `os.sched_yield`).
+- The 4 assertions repaired in Task 3 Step 5b **pass**.
+
+Any failure at all means something other than platform is wrong — stop and report it.
 
 This is spec success criteria 1 and 2 satisfied on the platform that matters.
 

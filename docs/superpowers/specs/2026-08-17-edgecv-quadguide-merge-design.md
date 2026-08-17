@@ -36,17 +36,30 @@ behaviour change**.
 
 Success is defined negatively and must be demonstrated, not asserted:
 
-1. Both test suites pass. Test-body edits are limited to a **closed, enumerated
-   set of 14 path-coupling lines across 13 files** (listed in the implementation
-   plan): 10 helper-import prefixes (`from tests._nn_stubs` →
-   `from tests.edgecv._nn_stubs`), 3 `Path(__file__).parents[...]` expressions,
-   and the `tools/` path insert in `conftest.py`. `git diff tests/` must show no
-   assertion, fixture, or logic changes — only those lines.
+1. Both test suites pass on Linux with zero failures and zero errors. Test-body
+   edits are limited to a **closed, enumerated set of 18 lines across 13 files**
+   (listed in the implementation plan), from two unrelated causes:
 
-   These exist because EdgeCV's tests import shared helpers as an absolute
-   `tests.` package and reach for `tools/` and `edgecv/models/manifests` by
-   relative filesystem path, both of which shift by one directory level in the
-   move.
+   - **14 path couplings, caused by the move:** 10 helper-import prefixes
+     (`from tests._nn_stubs` → `from tests.edgecv._nn_stubs`), 3
+     `Path(__file__).parents[...]` expressions, and the `tools/` path insert in
+     `conftest.py`. EdgeCV's tests import shared helpers as an absolute `tests.`
+     package and reach for `tools/` and `edgecv/models/manifests` by relative
+     path; both shift one directory level in the move.
+   - **4 stale assertions, pre-existing rot:** `nanotrack.yaml` was updated to
+     the v3 backbone and the yolocrop RKNN blob without updating
+     `test_manifests_nn.py` (3 lines) or `test_nanotrack_rknn.py` (1 line). These
+     fail in EdgeCV today, are platform-independent, and would hold the new CI
+     gate permanently red. The manifest is correct — every artifact it names
+     exists — so the tests are repaired, never the manifest.
+
+   No fixture or logic changes, and no manifest changes.
+
+   **Known-red Windows baseline.** 7 further EdgeCV tests fail on the Windows dev
+   box only (`test_acquire_channels` ×4, `test_search_roi` ×2, `test_seqlock` ×1).
+   All are seqlock-backed, and `runtime/shm/seqlock.py:23` degrades
+   `os.sched_yield` to a no-op where it is absent, producing exactly the spurious
+   livelock ARCHITECTURE §7.3 documents. They pass on Linux; CI is what proves it.
 2. `scripts/bench_tracker.py` produces identical output before and after. It is
    deterministic and synthesized ("No camera/hardware required"), which makes it
    the natural regression oracle.
