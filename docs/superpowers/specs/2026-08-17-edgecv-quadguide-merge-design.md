@@ -36,8 +36,17 @@ behaviour change**.
 
 Success is defined negatively and must be demonstrated, not asserted:
 
-1. Both test suites pass with **no test-body edits** — only relocation and
-   import-path-neutral moves.
+1. Both test suites pass. Test-body edits are limited to a **closed, enumerated
+   set of 14 path-coupling lines across 13 files** (listed in the implementation
+   plan): 10 helper-import prefixes (`from tests._nn_stubs` →
+   `from tests.edgecv._nn_stubs`), 3 `Path(__file__).parents[...]` expressions,
+   and the `tools/` path insert in `conftest.py`. `git diff tests/` must show no
+   assertion, fixture, or logic changes — only those lines.
+
+   These exist because EdgeCV's tests import shared helpers as an absolute
+   `tests.` package and reach for `tools/` and `edgecv/models/manifests` by
+   relative filesystem path, both of which shift by one directory level in the
+   move.
 2. `scripts/bench_tracker.py` produces identical output before and after. It is
    deterministic and synthesized ("No camera/hardware required"), which makes it
    the natural regression oracle.
