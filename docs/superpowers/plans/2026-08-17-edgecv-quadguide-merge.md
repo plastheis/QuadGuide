@@ -105,15 +105,21 @@ Expected: `276 tests collected, 6 errors`. The 6 errors are `ModuleNotFoundError
 
 - [ ] **Step 3: Record the bench_tracker oracle**
 
+Two things make this oracle work, and it is useless without both:
+
+- **`edgecv` must be importable.** Pre-merge it is not installed in QuadGuide's venv, so a bare run dies with `ModuleNotFoundError: No module named 'edgecv'`. Put the EdgeCV checkout on the path for the baseline run only.
+- **Only three lines are deterministic.** The latency table (`p50`/`p95`/`max`/`mean`) varies run to run and must never be diffed. The locked-fraction and IoU lines are stable — verified identical across repeated same-seed runs.
+
 ```bash
 cd /c/Users/plas/projects/QuadGuide
-.venv/Scripts/python.exe scripts/bench_tracker.py track \
-    --frames 150 --width 480 --height 360 --seed 0 --no-plot \
-    > "$SCRATCH/baseline-bench.txt" 2>&1
-tail -20 "$SCRATCH/baseline-bench.txt"
+PYTHONPATH=/c/Users/plas/projects/EdgeCV .venv/Scripts/python.exe \
+    scripts/bench_tracker.py track \
+    --frames 150 --width 480 --height 360 --seed 0 --no-plot 2>&1 \
+  | grep -E "locked fraction|bbox IoU" > "$SCRATCH/baseline-bench.txt"
+cat "$SCRATCH/baseline-bench.txt"
 ```
 
-The sequence is synthesized and seeded (`--seed 0`), so this is deterministic. If it errors because model files or onnxruntime are missing, note that and skip — record the failure text as the baseline instead, so Task 6 Step 5 can confirm the *same* failure rather than a new one.
+Expected: exactly 3 lines — `locked fraction:`, `bbox IoU between variants:`, `bbox IoU vs ground truth:`. If the file is empty or has fewer than 3 lines, the run failed; capture the unfiltered output instead and report it, because Task 6 Step 5 has no oracle without this.
 
 - [ ] **Step 4: Create the working branch**
 
@@ -841,15 +847,17 @@ This is spec success criteria 1 and 2 satisfied on the platform that matters.
 
 - [ ] **Step 5: Run the bench oracle and diff against baseline**
 
+No `PYTHONPATH` this time — the probe venv has the merged repo installed editable, so `edgecv` resolves from `src/`. Filter to the same three deterministic lines the baseline captured.
+
 ```bash
 cd /c/Users/plas/projects/QuadGuide
 /tmp/qg-probe/Scripts/python.exe scripts/bench_tracker.py track \
-    --frames 150 --width 480 --height 360 --seed 0 --no-plot \
-    > /tmp/after-bench.txt 2>&1
-diff "$SCRATCH/baseline-bench.txt" /tmp/after-bench.txt && echo "IDENTICAL"
+    --frames 150 --width 480 --height 360 --seed 0 --no-plot 2>&1 \
+  | grep -E "locked fraction|bbox IoU" > "$SCRATCH/after-bench.txt"
+diff "$SCRATCH/baseline-bench.txt" "$SCRATCH/after-bench.txt" && echo "IDENTICAL"
 ```
 
-Expected: `IDENTICAL`. Timing lines may differ run-to-run; if so, diff only the drift/correlation metrics and confirm those match exactly. This satisfies spec success criterion 2.
+Expected: `IDENTICAL`. This is the strongest evidence in the plan that the relocation changed no behaviour — the same synthetic sequence, through the same two ONNX model pairs, producing bit-identical tracking geometry before and after the move. If it differs, **stop**: something in the relocation altered tracker behaviour. Satisfies spec success criterion 2.
 
 ---
 
