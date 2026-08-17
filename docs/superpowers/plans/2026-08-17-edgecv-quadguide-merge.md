@@ -16,7 +16,7 @@
 - **`requires-python = ">=3.11"`** — QuadGuide's floor, matching the device. EdgeCV drops its 3.10 support.
 - **CI matrix: `["3.11", "3.12"]`** on `ubuntu-latest` only. `src/quadguide` imports `fcntl` and `select` and calls `os.sched_setaffinity` — it cannot run on Windows or macOS.
 - **`cv2` must NOT be a base dependency.** The device uses apt's GStreamer-enabled `python3-opencv` via `--system-site-packages`; a pip-installed opencv shadows it and breaks `CSICamera`. CI gets `opencv-python-headless` in the `test` extra only.
-- **No EdgeCV source file under `src/edgecv/` is edited in this plan.** Verify with `git diff --stat src/edgecv/` → empty.
+- **No EdgeCV source file under `src/edgecv/` is edited in this plan.** Verify by diffing against the source of truth — `diff -r /c/Users/plas/projects/EdgeCV/edgecv src/edgecv --exclude="__pycache__"` must print nothing (Task 2 Step 7). Do **not** use `git diff src/edgecv/`: these are newly-added files, so that command is trivially empty once committed and proves nothing.
 - **Test edits are capped at the 14 lines enumerated in Task 3.** `git diff tests/` must show no assertion, fixture, or logic changes.
 - Work happens in the **QuadGuide** repo (`github.com/plastheis/QuadGuide`) on a branch. The EdgeCV repo (`github.com/plastheis/EdgeCV`) is read-only source material until Task 8.
 
@@ -307,11 +307,13 @@ Replace the file's path line:
 import sys
 from pathlib import Path
 
-# tools/ is not an installed package; put it on sys.path so `import convert_lib`
-# works. This file lives at tests/edgecv/conftest.py, so the repo root is 3
-# parents up (edgecv -> tests -> repo root).
+# tools/ is not an installed package; put it on sys.path so `import convert_lib` works.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 ```
+
+**Change exactly one line** — `parent.parent` → `parents[2]`, because this file
+now sits one directory deeper. Leave the comment on a single line: Step 8's
+diff-count assertion depends on this being a 1-line change.
 
 - [ ] **Step 5: Fix the 3 filesystem-path expressions**
 
@@ -599,27 +601,31 @@ from importlib import resources
 import pytest
 
 
-def _names(pkg: str) -> set[str]:
-    return {p.name for p in resources.files(pkg).iterdir()}
+def _names(subdir: str) -> set[str]:
+    # Anchor on edgecv.models — a REAL package (it has __init__.py) — and reach
+    # the data directory with joinpath. Do not use resources.files() directly on
+    # "edgecv.models.manifests": that directory has no __init__.py, so it is at
+    # best a namespace package and the call is not reliable across environments.
+    return {p.name for p in resources.files("edgecv.models").joinpath(subdir).iterdir()}
 
 
 def test_manifests_ship_as_package_data():
-    names = _names("edgecv.models.manifests")
+    names = _names("manifests")
     assert {"nanotrack.yaml", "siamfc_generic.yaml", "yolo11n.yaml"} <= names
 
 
 def test_profiles_ship_as_package_data():
-    names = _names("edgecv.models.profiles")
+    names = _names("profiles")
     assert {"dev.yaml", "rk3588.yaml"} <= names
 
 
 @pytest.mark.parametrize("name", ["nanotrack.yaml", "yolo11n.yaml"])
 def test_manifest_is_readable_and_nonempty(name):
-    text = resources.files("edgecv.models.manifests").joinpath(name).read_text()
+    text = (resources.files("edgecv.models")
+            .joinpath("manifests", name)
+            .read_text(encoding="utf-8"))
     assert "artifacts" in text
 ```
-
-`edgecv.models.manifests` and `edgecv.models.profiles` are directories without `__init__.py`. `resources.files()` handles namespace-style data directories on 3.11+, but if it raises, add empty `__init__.py` files to both — and note that doing so also requires adding them to `package-data` patterns.
 
 - [ ] **Step 2: Run the test in the source checkout**
 
