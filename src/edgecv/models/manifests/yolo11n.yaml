@@ -1,0 +1,46 @@
+name: yolo11n
+task: detection
+# Ultralytics YOLO11n, single-class, P2/P3/P4 small-object head (strides 4/8/16),
+# exported rknn_model_zoo-style: the head is SEPARATED per scale into raw tensors
+# (no in-graph NMS/concat — those ops are RKNN-unfriendly), decoded on the CPU by
+# edgecv.trackers.nn.preprocess.decode_yolo_dfl (output_format: rknn_dfl).
+#
+# Probed I/O of yolo11n_p2p3p4_rk3588_*.rknn (input 1x3x640x640, NCHW):
+#   9 outputs, 3 scales × {box DFL (1,64,H,W), cls (1,1,H,W), score-sum (1,1,H,W)}
+#   H,W = 160,80,40  →  strides 4,8,16.  cls is already sigmoid-activated.
+#
+# NORMALISATION (verify on-device, spec Task 14): assumed baked into the graph
+# (rknn_model_zoo convention mean=0/std=255), so feed raw 0–255 → scale: 1.0. If
+# detections never fire on a real frame, the model wants 0–1 → set scale: 0.0039216.
+preprocessing:
+  color: rgb
+  input: 640
+  scale: 1.0                     # raw 0–255 (÷255 baked into the rknn); see note above
+  output_format: rknn_dfl
+  class_agnostic: true
+  strides: [4, 8, 16]            # P2, P3, P4
+  reg_max: 16                    # DFL bins per box side (64 = 4 × 16)
+  conf_thresh: 0.25
+  iou_thresh: 0.45
+# io.outputs MUST be in the compiled output order (RKNNLite returns positionally):
+# per scale [box, cls, score_sum], scales 160→80→40. decode_yolo_dfl reads them
+# positionally (box = group[0], cls = group[1]; score_sum ignored for 1 class).
+io:
+  inputs:
+    - { name: images, shape: [1, 3, 640, 640], dtype: float32 }
+  outputs:
+    - { name: box_p2,   shape: [1, 64, 160, 160], dtype: float32 }
+    - { name: cls_p2,   shape: [1, 1, 160, 160],  dtype: float32 }
+    - { name: sum_p2,   shape: [1, 1, 160, 160],  dtype: float32 }
+    - { name: box_p3,   shape: [1, 64, 80, 80],   dtype: float32 }
+    - { name: cls_p3,   shape: [1, 1, 80, 80],    dtype: float32 }
+    - { name: sum_p3,   shape: [1, 1, 80, 80],    dtype: float32 }
+    - { name: box_p4,   shape: [1, 64, 40, 40],   dtype: float32 }
+    - { name: cls_p4,   shape: [1, 1, 40, 40],    dtype: float32 }
+    - { name: sum_p4,   shape: [1, 1, 40, 40],    dtype: float32 }
+# int8 default (~3.6 MB, ~55 ms NPU on rk3588 vs ~73 ms fp16). Verify it still
+# detects your target well on real frames; swap the path to ..._fp.rknn (quant
+# fp16) if int8 drops recall. npu_core 1 keeps YOLO off NanoTrack's core (2).
+# {target} fills with the active SoC (only rk3588 committed so far).
+artifacts:
+  rknn: { path: "yolo11n_p2p3p4_{target}_i8.rknn", quant: int8, npu_core: 1 }

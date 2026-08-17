@@ -1,0 +1,9 @@
+# Dev machine placement profile (MAFiD spec §8.1).
+# x86, no NPU, ONNX CPU backend, no CPU affinity pinning.
+board: dev
+processes:
+  caller:
+    # No CPU affinity — runs wherever the OS puts it.
+  detector:
+    backend: onnx         # ONNXRuntime CPU
+    cpu_affinity: []      # no pinning
