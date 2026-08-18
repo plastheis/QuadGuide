@@ -230,7 +230,7 @@ class EdgeCVTracker:
             return _TrackerOutput(_BBox(0.0, 0.0, 0.0, 0.0), 0.0, health, origin_ns)
         b = res.bbox
         return _TrackerOutput(
-            _BBox(b.x, b.y, max(0.0, b.w), max(0.0, b.h)),
+            _BBox(float(b.x), float(b.y), max(0.0, float(b.w)), max(0.0, float(b.h))),
             self._normalize_confidence(res.confidence),
             health,
             origin_ns,

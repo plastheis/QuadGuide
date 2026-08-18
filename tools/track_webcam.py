@@ -48,7 +48,7 @@ YELLOW = (0, 255, 255)
 RED = (0, 0, 255)
 
 _ROOT = Path(__file__).resolve().parent.parent
-MANIFESTS_DIR = _ROOT / "edgecv" / "models" / "manifests"
+MANIFESTS_DIR = _ROOT / "src" / "edgecv" / "models" / "manifests"
 MODELS_DIR = _ROOT / "models"
 
 _NN_TRACKERS: dict[str, tuple[Callable[..., Tracker], str]] = {
