@@ -4,7 +4,7 @@
 
 **Goal:** Fold the EdgeCV tracking library into the QuadGuide repository as a pure relocation, with zero behaviour change, so that later work on the 10-bit pixel path and the classical seeker happens inside one repo.
 
-**Architecture:** EdgeCV lands at `src/edgecv/` as a *second top-level package* alongside `src/quadguide/`, not nested inside it. EdgeCV's 57 modules use only absolute `from edgecv.x import y` imports (verified: zero relative imports), and its backend plugins register via `edgecv.backends` entry points, so this placement requires **no source-file edits at all**. Only the test tree needs touching, and only on 14 enumerated path-coupling lines.
+**Architecture:** EdgeCV lands at `src/edgecv/` as a *second top-level package* alongside `src/quadguide/`, not nested inside it. EdgeCV's 57 modules use only absolute `from edgecv.x import y` imports (verified: zero relative imports), and its backend plugins register via `edgecv.backends` entry points, so this placement requires **no edits under `src/edgecv/` at all**. Touched elsewhere: 27 enumerated lines in the relocated test tree, plus exactly two non-test lines (`tools/track_webcam.py:51` and the adapter's `np.float32` leak).
 
 **Tech Stack:** Python 3.11+, setuptools (src-layout), pytest, ruff, mypy, GitHub Actions.
 
@@ -17,7 +17,10 @@
 - **CI matrix: `["3.11", "3.12"]`** on `ubuntu-latest` only. `src/quadguide` imports `fcntl` and `select` and calls `os.sched_setaffinity` — it cannot run on Windows or macOS.
 - **`cv2` must NOT be a base dependency.** The device uses apt's GStreamer-enabled `python3-opencv` via `--system-site-packages`; a pip-installed opencv shadows it and breaks `CSICamera`. CI gets `opencv-python-headless` in the `test` extra only.
 - **No EdgeCV source file under `src/edgecv/` is edited in this plan.** Verify by diffing against the source of truth — `diff -r /c/Users/plas/projects/EdgeCV/edgecv src/edgecv --exclude="__pycache__"` must print nothing (Task 2 Step 7). Do **not** use `git diff src/edgecv/`: these are newly-added files, so that command is trivially empty once committed and proves nothing.
-- **Test edits are capped at the 18 lines enumerated in Task 3** — 14 relocation path-couplings plus 4 stale manifest assertions (see Task 3 Step 5). No other test may be touched: no new assertions, no fixture changes, no logic changes.
+- **Test edits are capped at the 27 lines enumerated in Task 3** — 14 relocation path-couplings (Steps 3–5a), 4 stale manifest assertions (5b), and 9 CWD-relative manifest paths (5c). No other test may be touched: no new assertions, no fixture changes, no logic changes.
+- **Two non-test files are also in scope, and only these two:** `tools/track_webcam.py:51` (Step 5d — hardcodes the old layout) and `src/quadguide/perception/edgecv_adapter.py` (Step 5e — the `np.float32` protocol leak). Neither is under `src/edgecv/`, so neither violates the no-source-edit rule.
+- **One deliberate exception to "zero behaviour change":** Step 5e is a real behaviour fix. It is admitted because the merge is what exposed the bug — `tests/unit/test_edgecv_adapter.py:11` calls `pytest.importorskip("edgecv")`, so those 6 tests never ran while EdgeCV lived in a separate repo — and because Task 6's CI gate cannot go green without it. Approved by the human partner on 2026-08-17.
+- **`sed -i` rewrites line endings on this box** (CRLF → LF on every file it touches), so a plain `diff -r` against the EdgeCV checkout reports every touched file as wholly changed. Always pass `--strip-trailing-cr` when diffing relocated tests.
 - Work happens in the **QuadGuide** repo (`github.com/plastheis/QuadGuide`) on a branch. The EdgeCV repo (`github.com/plastheis/EdgeCV`) is read-only source material until Task 8.
 
 ## Baseline facts (measured 2026-08-17, do not re-derive)
@@ -36,7 +39,7 @@
 
 **Where verification runs.** WSL is not installed on this dev box, so QuadGuide's suite cannot fully run locally — its 6 `fcntl` errors are permanent on Windows. Verification is therefore tiered:
 
-- **Local (Windows):** EdgeCV's 306 tests must pass fully. QuadGuide's collection must stay at exactly *276 collected, 6 errors*.
+- **Local (Windows):** EdgeCV's suite must reach `294 passed, 7 failed, 9 skipped` (the 7 are the documented seqlock/`sched_yield` set). QuadGuide's suite moves from *276 collected* to *282 collected, 6 errors, 1 failure* — the extra 6 are `test_edgecv_adapter.py`, un-hidden because `edgecv` is now importable past its `pytest.importorskip`; the 1 remaining failure is Windows-only `fcntl`.
 - **Linux:** the CI workflow added in Task 6 is the first real Linux run of QuadGuide's suite. This is the gate.
 - **Device (ROCK 5C):** Task 8 smoke test.
 
@@ -397,6 +400,76 @@ In `tests/edgecv/test_nanotrack_rknn.py`, one line in the sorted-paths list:
 **Change exactly these 4 lines.** Do not "improve" neighbouring assertions, and
 do not touch any manifest.
 
+### 5c — CWD-relative manifest paths (a SECOND relocation idiom, 9 lines)
+
+Steps 3–5a caught the `Path(__file__).parents[...]` idiom. A different one also
+assumes the old layout: string literals resolved relative to the **current working
+directory**, i.e. `"edgecv/models/manifests/..."` meaning repo-root/`edgecv/`. After
+Task 2 that directory is `src/edgecv/`. Prefix each with `src/`, changing nothing
+else on the line:
+
+| File:line | Change |
+|---|---|
+| `test_manifests_nn.py:5` | `Path("edgecv/models/manifests")` → `Path("src/edgecv/models/manifests")` |
+| `test_convert_yolo.py:38` | `load_manifest("edgecv/...")` → `load_manifest("src/edgecv/...")` |
+| `test_nn_base.py:35` | `NNTracker("edgecv/...")` → `NNTracker("src/edgecv/...")` |
+| `test_nn_base.py:44` | same |
+| `test_nn_onnx.py:26` | `_manifest_with_artifact("edgecv/...")` → `"src/edgecv/..."` |
+| `test_nn_onnx.py:39` | same |
+| `test_nn_onnx.py:54` | same |
+| `test_nn_onnx.py:66` | same |
+| `test_pp_precedence.py:21` | `manifest_preprocessing("edgecv/...")` → `"src/edgecv/..."` |
+
+`test_manifests_nn.py:5` is a single module-level constant that causes **6** test
+failures on its own — one line, six greens.
+
+Confirm none remain:
+
+```bash
+cd /c/Users/plas/projects/QuadGuide
+grep -rn '"edgecv/\|Path("edgecv' tests/edgecv/*.py     # expect NO output
+```
+
+### 5d — `tools/track_webcam.py` (1 line, not a test)
+
+`tools/track_webcam.py:51` hardcodes the pre-merge layout, which breaks the tool
+itself and 2 tests. `_ROOT` is the repo root (`Path(__file__).resolve().parent.parent`):
+
+```python
+MANIFESTS_DIR = _ROOT / "src" / "edgecv" / "models" / "manifests"
+```
+
+Leave `MODELS_DIR = _ROOT / "models"` on the next line alone — that path is still correct.
+
+### 5e — the `np.float32` protocol leak (1 line, not a test)
+
+`tests/unit/test_edgecv_adapter.py` asserts every bbox component reaching
+QuadGuide's tracker protocol is a Python `float`, but MOSSE returns `np.float32`
+and the adapter passes it straight through. These 6 tests have **never run** —
+line 11 is `pytest.importorskip("edgecv")`, and EdgeCV was never installed in
+QuadGuide's venv — so the merge is what exposed this.
+
+Fix it at the boundary that owns the protocol. In
+`src/quadguide/perception/edgecv_adapter.py`, in `update()`, the final return:
+
+```python
+        b = res.bbox
+        return _TrackerOutput(
+            _BBox(float(b.x), float(b.y), max(0.0, float(b.w)), max(0.0, float(b.h))),
+            self._normalize_confidence(res.confidence),
+            health,
+            origin_ns,
+        )
+```
+
+This is the right layer: the module's own docstring calls it "the impedance match
+between the two", and it already coerces confidence via `_normalize_confidence`.
+Do **not** fix this in `src/edgecv/core/bbox.py` — that is barred by the
+no-source-edit constraint, and EdgeCV is entitled to its own numeric types.
+
+(For context, not a task: `struct.pack` accepts `np.float32` happily, so this was
+a contract defect, not silent wire corruption.)
+
 - [ ] **Step 6: Run the EdgeCV suite to verify it passes**
 
 ```bash
@@ -424,12 +497,20 @@ Any *other* difference is a real regression — investigate before proceeding.
 
 ```bash
 cd /c/Users/plas/projects/QuadGuide
-.venv/Scripts/python.exe -m pytest tests/unit tests/integration tests/hil --collect-only -q 2>&1 | tail -5
+.venv/Scripts/python.exe -m pytest tests/unit tests/integration tests/hil -q 2>&1 | tail -5
 ```
 
-Expected: `276 tests collected, 6 errors` — byte-identical to `$SCRATCH/baseline-quadguide.txt`.
+Expected: **`282 tests collected, 6 errors`**, with exactly **1 failure**
+(`test_loadable_via_tracker_worker_load_tracker`, a Windows-only `fcntl` import).
 
-- [ ] **Step 8: Verify the edit surface is exactly 18 lines**
+Do not be alarmed that this exceeds Task 1's `276` baseline. The extra 6 are
+`tests/unit/test_edgecv_adapter.py`, which line 11 gates behind
+`pytest.importorskip("edgecv")`. EdgeCV was never installed in QuadGuide's venv, so
+those 6 tests **had never executed**; Task 2 made `edgecv` importable from `src/`
+and un-hid them. That is the merge working as intended, not a regression. One of
+the two that failed is repaired in Step 5e; the other is the `fcntl` platform case.
+
+- [ ] **Step 8: Verify the edit surface is exactly 27 lines**
 
 ```bash
 cd /c/Users/plas/projects/QuadGuide
@@ -439,11 +520,29 @@ git diff --cached --stat tests/edgecv/ | tail -3
 
 Since these are new files, the stat shows additions only. Instead, diff against the source of truth:
 
+**`--strip-trailing-cr` is mandatory here.** `sed -i` rewrites CRLF to LF on every
+file it touches on this box, so without it `diff -r` reports whole files as changed
+and the count is meaningless.
+
 ```bash
-diff -r /c/Users/plas/projects/EdgeCV/tests tests/edgecv --exclude="__pycache__" | grep "^[<>]" | wc -l
+diff -r --strip-trailing-cr /c/Users/plas/projects/EdgeCV/tests tests/edgecv \
+     --exclude="__pycache__" | grep "^[<>]" | wc -l
 ```
 
-Expected: **36** (18 changed lines × 2, one `<` and one `>` each) — 14 relocation couplings from Steps 3–5a plus 4 stale assertions from Step 5b. If higher, something beyond the enumerated set was edited; find it and revert it. If lower, an enumerated edit was missed.
+Expected: **54** (27 changed lines × 2, one `<` and one `>` each) — 14 relocation
+couplings (Steps 3–5a) + 4 stale assertions (5b) + 9 CWD-relative paths (5c). If
+higher, something beyond the enumerated set was edited; find it and revert it. If
+lower, an enumerated edit was missed.
+
+The two non-test files are tracked, so plain `git diff` works for them and each
+must show exactly one changed line:
+
+```bash
+git diff --stat tools/track_webcam.py src/quadguide/perception/edgecv_adapter.py
+```
+
+Expected: `tools/track_webcam.py | 2 +-` and
+`src/quadguide/perception/edgecv_adapter.py | 2 +-` (1 insertion, 1 deletion each).
 
 - [ ] **Step 9: Commit**
 
