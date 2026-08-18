@@ -672,6 +672,10 @@ subprocesses, and define its own types. **Zero quadguide imports required.**
 
 ### EdgeCV trackers
 
+The tracking library itself (trackers, backends, runtime/IPC, fusion) is
+documented separately in [`docs/architecture-edgecv.md`](docs/architecture-edgecv.md).
+It lives at `src/edgecv/` and was a standalone repository until 2026-08-17.
+
 [EdgeCV](../EdgeCV) is the reference external library. Its `Tracker` contract is
 close but not identical to the §6.4 protocol — `update()` returns a
 `TrackResult(bbox|None, confidence|None, status: TrackStatus)`, it has no

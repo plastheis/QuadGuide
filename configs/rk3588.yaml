@@ -69,7 +69,7 @@ tracker:
   params:
     tracker: nanotrack           # mosse | nanotrack | siamfc | yolo | acquire_track | verified_acquire_track
     backend: rknn                 # auto | onnx | rknn | mock
-    model_dir: /home/radxa/EdgeCV/models   # resolves *.rknn artifacts (EDGECV_MODEL_DIR)
+    model_dir: /home/radxa/quadguide/models   # resolves *.rknn artifacts (EDGECV_MODEL_DIR)
     color: bgr                    # QuadGuide camera frames are BGR; adapter swaps to RGB
     #  acquire_crop: 0.7          # central crop side, fraction of shorter dim
     # lock_pad: 1.5              # padding on the YOLO box seeding NanoTrack
