@@ -5,15 +5,69 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "quadguide"
 version = "0.1.0"
+description = "CV-guided quadcopter interceptor: perception, guidance, control, link"
+readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["pyyaml"]
+license = { text = "Apache-2.0" }
+authors = [{ name = "plastheis" }]
+dependencies = [
+    "numpy>=2.0",
+    "PyYAML>=6.0",
+    "pymavlink>=2.4",
+    "pyserial>=3.5",
+]
 
 [project.optional-dependencies]
-ground = ["fastapi", "uvicorn[standard]"]
+# Optional CF-ops accelerators. The numpy reference ops work without these;
+# installing them just selects faster FFT/HOG/image paths.
+fast = ["scipy>=1.10", "numba>=0.58", "pyFFTW>=0.13"]
+onnx = ["onnxruntime>=1.16"]
+# rknn-toolkit-lite2 is NOT on PyPI; install it manually on-device.
+rknn = []
+# Host-only conversion tooling. Not a runtime dependency.
+dev = ["torch>=2.5", "onnx>=1.15", "ultralytics>=8.3", "opencv-python>=4.10"]
+ground = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "pydantic>=2.0"]
+# opencv-python-headless (NOT opencv-python) — GitHub runners have no
+# libGL.so.1, so the non-headless wheel fails at import and takes the whole
+# collection down. The device uses apt's GStreamer-enabled python3-opencv
+# instead; see the cv2 note in the merge spec.
+test = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "onnxruntime>=1.16",
+    "onnx>=1.15",
+    "httpx>=0.27",
+    "opencv-python-headless>=4.10",
+]
+
+[project.entry-points."edgecv.backends"]
+mock = "edgecv.backends.mock:MockBackend"
+onnx = "edgecv.backends.onnx:OnnxBackend"
+rknn = "edgecv.backends.rknn:RknnBackend"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Replaces hatchling's force-include. If this is wrong, NOTHING fails locally
+# (manifests resolve via edgecv.__file__ in a source checkout) — only an
+# installed wheel breaks, at model-load time on the device. Guarded by
+# tests/edgecv/test_package_data.py.
+[tool.setuptools.package-data]
+"edgecv.models" = ["profiles/*.yaml", "manifests/*.yaml"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = false
