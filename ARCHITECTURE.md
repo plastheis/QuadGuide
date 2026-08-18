@@ -676,7 +676,7 @@ The tracking library itself (trackers, backends, runtime/IPC, fusion) is
 documented separately in [`docs/architecture-edgecv.md`](docs/architecture-edgecv.md).
 It lives at `src/edgecv/` and was a standalone repository until 2026-08-17.
 
-[EdgeCV](../EdgeCV) is the reference external library. Its `Tracker` contract is
+[EdgeCV](docs/architecture-edgecv.md) is the tracking library described above. Its `Tracker` contract is
 close but not identical to the §6.4 protocol — `update()` returns a
 `TrackResult(bbox|None, confidence|None, status: TrackStatus)`, it has no
 `reset()`, and its trackers take a manifest + backend rather than plain kwargs.
@@ -693,7 +693,7 @@ tracker:
   params:
     tracker: nanotrack            # mosse | nanotrack | siamfc | yolo
     backend: rknn                 # auto | onnx | rknn | mock
-    model_dir: /home/radxa/EdgeCV/models   # resolves *.rknn artifacts
+    model_dir: /home/radxa/quadguide/models   # resolves *.rknn artifacts
 ```
 
 `configs/rk3588.yaml` ships this preset (NanoTrack on the RK3588 NPU). MOSSE
