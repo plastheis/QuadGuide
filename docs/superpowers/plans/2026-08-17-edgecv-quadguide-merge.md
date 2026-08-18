@@ -707,9 +707,14 @@ cd /c/Users/plas/projects/QuadGuide
 /tmp/qg-probe/Scripts/python.exe -m pytest --collect-only -q 2>&1 | tail -5
 ```
 
-Expected: **`588 tests collected, 6 errors`** — 306 from `tests/edgecv` plus 282 from QuadGuide's own suite. The 6 are the Windows `fcntl` collection errors.
+Expected: **`592 tests collected, 6 errors`** — 310 from `tests/edgecv` plus 282 from QuadGuide's own suite. The 6 are the Windows `fcntl` collection errors.
 
-Note this is 588, not the 582 an earlier draft of this plan predicted: QuadGuide's own count rose from 276 to 282 in Task 2, because `tests/unit/test_edgecv_adapter.py:11` gates on `pytest.importorskip("edgecv")` and those 6 tests had never been able to run before. If the total is not 588, a test file was lost in the move.
+**The collected total is environment-dependent, so do not treat a mismatch as a lost test file without checking why.** Three `pytest.importorskip` gates have moved during this merge, each admitting tests that were previously invisible:
+
+- 276 → 282 (Task 2): `tests/unit/test_edgecv_adapter.py:11` gates on `edgecv`, which was never installed in QuadGuide's venv. Those 6 tests had never executed in the project's history.
+- 306 → 310 (this task): several EdgeCV modules gate on `onnx` at module level. The repo's `.venv` has `onnxruntime` but **not** `onnx`; the `test` extra installs `onnx>=1.15`, so 4 more modules collect in the probe venv.
+
+Measured in the repo `.venv` (no `onnx`) the figure is 588; in a venv with the `test` extra it is 592. Both are correct for their environment. If you see a number outside these two, then investigate.
 
 Add `--continue-on-collection-errors`, or pytest aborts on the first collection error and reports zero tests.
 
