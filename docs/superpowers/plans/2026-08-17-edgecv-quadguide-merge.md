@@ -707,7 +707,11 @@ cd /c/Users/plas/projects/QuadGuide
 /tmp/qg-probe/Scripts/python.exe -m pytest --collect-only -q 2>&1 | tail -5
 ```
 
-Expected: `582 tests collected, 6 errors` (306 EdgeCV + 276 QuadGuide; the 6 are the Windows `fcntl` errors). If the total is not 582, a test file was lost in the move.
+Expected: **`588 tests collected, 6 errors`** — 306 from `tests/edgecv` plus 282 from QuadGuide's own suite. The 6 are the Windows `fcntl` collection errors.
+
+Note this is 588, not the 582 an earlier draft of this plan predicted: QuadGuide's own count rose from 276 to 282 in Task 2, because `tests/unit/test_edgecv_adapter.py:11` gates on `pytest.importorskip("edgecv")` and those 6 tests had never been able to run before. If the total is not 588, a test file was lost in the move.
+
+Add `--continue-on-collection-errors`, or pytest aborts on the first collection error and reports zero tests.
 
 - [ ] **Step 6: Verify the backend entry points still resolve**
 
