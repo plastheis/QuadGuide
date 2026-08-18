@@ -9,7 +9,11 @@ from edgecv.core.result import TrackResult, TrackStatus  # noqa: E402
 from edgecv.models.manifest import load_manifest  # noqa: E402
 from edgecv.trackers.nn.siamfc import SiamFC  # noqa: E402
 from edgecv.trackers.nn.yolo import YoloDetector, YoloTracker  # noqa: E402
-from tests.edgecv._onnx_synth import build_siamfc_onnx, build_yolo_onnx, build_yolo_onnx_v8  # noqa: E402
+from tests.edgecv._onnx_synth import (  # noqa: E402
+    build_siamfc_onnx,
+    build_yolo_onnx,
+    build_yolo_onnx_v8,
+)
 
 FH, FW = 240, 320
 
