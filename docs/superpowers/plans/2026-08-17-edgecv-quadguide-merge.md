@@ -904,7 +904,50 @@ jobs:
         run: mypy src/edgecv
       - name: Test
         run: pytest -q
+
+  # The package-data guard CANNOT do its job in the job above. pyproject's
+  # [tool.pytest.ini_options] pythonpath = ["src"] puts the source tree first for
+  # every pytest run made from this repo, so tests/edgecv/test_package_data.py
+  # reads src/edgecv and passes even when the built wheel ships no YAML at all.
+  # Proven by negative control in Task 5: deleting the installed wheel's
+  # manifests/ directory still gave "4 passed" without isolation.
+  #
+  # This job is therefore the real gate for spec success criterion 3: build the
+  # wheel, install it into a venv that has no source checkout, and run the guard
+  # with pythonpath overridden to empty.
+  wheel-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist/
+      - name: Assert the YAML actually shipped
+        run: |
+          python - <<'PY'
+          import zipfile, glob, sys
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          yaml = [n for n in names if n.startswith("edgecv/models/") and n.endswith(".yaml")]
+          print(f"{whl}: {len(yaml)} manifest/profile YAML files")
+          for n in sorted(yaml):
+              print("  ", n)
+          sys.exit(0 if yaml else "NO YAML IN WHEEL — package-data key is wrong")
+          PY
+      - name: Install the wheel clean and run the guard
+        run: |
+          python -m venv /tmp/wheeltest
+          /tmp/wheeltest/bin/python -m pip install -q dist/*.whl pytest
+          /tmp/wheeltest/bin/python -m pytest -o pythonpath= \
+              tests/edgecv/test_package_data.py -q
 ```
+
+The `-o pythonpath=` is load-bearing, not decorative: without it the guard silently
+reads the checkout and this job becomes as vacuous as the one it exists to backstop.
 
 - [ ] **Step 2: Verify the lint scope passes locally first**
 

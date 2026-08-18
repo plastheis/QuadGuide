@@ -10,10 +10,31 @@ and only at model-load time on the device.
 These tests use importlib.resources, which reads through the package's
 declared data rather than the filesystem, so they fail in an installed
 environment where the YAML was not shipped.
+
+pyproject's [tool.pytest.ini_options] pythonpath = ["src"] means an ordinary
+run from this repo resolves `edgecv` to the source checkout, not whatever is
+installed — the same silent vacuity this file exists to guard against, one
+layer up. The module-level check below makes that vacuity loud instead of
+silent: it skips with an explicit reason rather than reporting a "passed"
+that proved nothing. The real check runs in CI's wheel-install job (and
+locally with `pytest -o pythonpath= ...`).
 """
 from importlib import resources
+from pathlib import Path
 
 import pytest
+
+import edgecv
+
+_SRC = Path(__file__).resolve().parents[2] / "src"
+if Path(edgecv.__file__).resolve().is_relative_to(_SRC):
+    pytest.skip(
+        "vacuous here: pyproject's pythonpath=['src'] resolves edgecv to the "
+        "source checkout, where manifests always exist. This guard only proves "
+        "something against an installed distribution — CI runs it that way in a "
+        "separate wheel job. Run locally with: pytest -o pythonpath= ...",
+        allow_module_level=True,
+    )
 
 
 def _names(subdir: str) -> set[str]:
