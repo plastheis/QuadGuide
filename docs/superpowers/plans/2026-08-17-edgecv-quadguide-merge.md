@@ -551,7 +551,7 @@ cd /c/Users/plas/projects/QuadGuide
 git add -A
 git commit -m "test: relocate EdgeCV's test tree to tests/edgecv/
 
-306 tests, unchanged except for 18 lines across 13 files.
+306 tests, unchanged except for 27 lines across 16 files.
 
 14 are relocation path-couplings: 10 helper-import prefixes (tests. ->
 tests.edgecv.), 3 Path(__file__).parents[] expressions (manifests moved
