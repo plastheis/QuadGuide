@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
+from edgecv.core.bbox import BoundingBox
 from edgecv.fusion.calibrator import LinearCalibrator, SigmoidCalibrator
 from edgecv.fusion.policy import DetectorOutput, FusionDecision
 from edgecv.fusion.weighted import WeightedFusionParams, WeightedFusionPolicy
-from edgecv.core.bbox import BoundingBox
 from edgecv.trackers.cf.base import EvalResult
 
 

@@ -32,7 +32,7 @@ class NNDetectorAdapter(ABC):
         worker only calls detect() and build_filter().
         """
 
-    def close(self) -> None:
+    def close(self) -> None:  # noqa: B027 - intentional optional no-op hook
         """Release backend resources (model handles, etc.). Default no-op."""
 
 
@@ -79,7 +79,7 @@ class YoloDetectorAdapter(NNDetectorAdapter):
 
         # Map crop-normalised boxes back to full-frame normalised coords
         frame_boxes, frame_scores = [], []
-        for box_n, sc in zip(det.boxes, det.scores):
+        for box_n, sc in zip(det.boxes, det.scores, strict=False):
             ox1 = box_n[0] * n
             oy1 = box_n[1] * n
             ox2 = (box_n[0] + box_n[2]) * n
@@ -197,10 +197,10 @@ class NanoTrackDetectorAdapter(NNDetectorAdapter):
             self._needs_refresh = False
             # Run one update to get an initial tracked position
             result = self._nanotrack.update(frame)
-            self._last_score = result.confidence
+            self._last_score = result.confidence  # type: ignore[assignment]
         else:
             result = self._nanotrack.update(frame)
-            self._last_score = result.confidence
+            self._last_score = result.confidence  # type: ignore[assignment]
 
         box = result.bbox
 
@@ -212,6 +212,7 @@ class NanoTrackDetectorAdapter(NNDetectorAdapter):
                 meta={"search_roi": search_roi, "status": "lost"},
             )
 
+        assert box is not None  # not LOST => bbox is set
         return DetectorOutput(
             boxes=np.array([[box.x, box.y, box.w, box.h]], np.float32),
             scores=np.array([result.confidence], np.float32),

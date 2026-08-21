@@ -15,7 +15,6 @@ import pytest
 from edgecv.core.bbox import BoundingBox
 from edgecv.core.result import TrackStatus
 from edgecv.runtime.shm.control_channel import Mode
-
 from tests.edgecv._acquire_stubs import FakeNano, FakeYoloDetector, make_frame
 
 
@@ -110,7 +109,8 @@ class TestLockAndDrop:
             (np.array([[0.5, 0.5, 0.1, 0.1]], np.float32), np.array([0.9], np.float32))])
         h = _Harness(t, det, FakeNano(scores=[0.9]))
         try:
-            h.tick(); h.tick()             # acquire a candidate
+            h.tick()
+            h.tick()  # acquire a candidate
             t.init(make_frame(48, 64), BoundingBox(0.25, 0.25, 0.5, 0.5))
             assert t._state == State.LOCKED
             snap = t._control.read_latest()
@@ -124,7 +124,8 @@ class TestLockAndDrop:
         t, State = _build()
         h = _Harness(t, FakeYoloDetector(), FakeNano())  # never detects
         try:
-            h.tick(); h.tick()
+            h.tick()
+            h.tick()
             crop = BoundingBox(0.3, 0.3, 0.2, 0.2)
             t.init(make_frame(48, 64), crop)
             assert t._state == State.LOCKED
@@ -139,7 +140,8 @@ class TestLockAndDrop:
             script=[(np.array([[0.5, 0.5, 0.1, 0.1]], np.float32),
                      np.array([0.9], np.float32))]), FakeNano())
         try:
-            h.tick(); h.tick()
+            h.tick()
+            h.tick()
             t.init(make_frame(48, 64), BoundingBox(0.5, 0.5, 0.1, 0.1))
             assert t._state == State.LOCKED
             t.init(make_frame(48, 64), BoundingBox(0, 0, 0, 0))  # zero → reset
@@ -153,10 +155,11 @@ class TestLockAndDrop:
         nano = FakeNano(scores=[0.9, 0.2, 0.2, 0.2, 0.2])  # locks then drops
         h = _Harness(t, det, nano)
         try:
-            h.tick(); h.tick()
+            h.tick()
+            h.tick()
             t.init(make_frame(48, 64), BoundingBox(0.5, 0.5, 0.1, 0.1))
             # one locked update
-            r = h.tick()
+            h.tick()
             assert t._state == State.LOCKED
             # three sub-threshold updates → drop
             states = []
@@ -177,7 +180,8 @@ class TestReacquire:
             (np.array([[0.5, 0.5, 0.1, 0.1]], np.float32), np.array([0.0], np.float32))])
         nano = FakeNano(scores=[0.9, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1])
         h = _Harness(t, det, nano)
-        h.tick(); h.tick()
+        h.tick()
+        h.tick()
         t.init(make_frame(48, 64), BoundingBox(0.5, 0.5, 0.1, 0.1))
         h.tick()
         for _ in range(3):       # drop into REACQ
@@ -213,7 +217,8 @@ class TestReacquire:
         nano = FakeNano(scores=[0.9, 0.1, 0.1, 0.1])  # lock then drop
         h = _Harness(t, det, nano)
         try:
-            h.tick(); h.tick()
+            h.tick()
+            h.tick()
             t.init(make_frame(48, 64), BoundingBox(0.5, 0.5, 0.1, 0.1))
             seen = set()
             final_gen = None

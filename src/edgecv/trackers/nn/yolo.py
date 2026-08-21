@@ -154,6 +154,7 @@ class YoloTracker(NNTracker):
 
     def update(self, frame: np.ndarray) -> TrackResult:
         assert self._box is not None, "init() first"
+        assert self._init_box is not None, "init() first"
         h_img, w_img = frame.shape[0], frame.shape[1]
         pix = self._box.to_pixels(w_img, h_img)
         cx, cy = pix.center

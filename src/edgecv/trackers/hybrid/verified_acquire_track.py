@@ -32,7 +32,6 @@ import numpy as np
 from edgecv.core.bbox import BoundingBox
 from edgecv.core.result import TrackStatus
 from edgecv.runtime.shm.control_channel import Mode
-
 from edgecv.trackers.hybrid.acquire_track import _FULL_CROP, AcquireTrack, State
 
 

@@ -7,7 +7,7 @@ identity (e.g., class-specific YOLO, or re-identification models).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -35,7 +35,8 @@ class WeightedFusionPolicy(FusionPolicy):
                  nn_cal: ScoreCalibrator | None = None) -> None:
         self._params = params if params is not None else WeightedFusionParams()
         self._cf_cal = cf_cal if cf_cal is not None else LinearCalibrator(low=3.0, high=15.0)
-        self._nn_cal = nn_cal if nn_cal is not None else SigmoidCalibrator(centre=0.4, steepness=12.0)
+        self._nn_cal = (nn_cal if nn_cal is not None
+                        else SigmoidCalibrator(centre=0.4, steepness=12.0))
 
     @property
     def params(self) -> WeightedFusionParams:

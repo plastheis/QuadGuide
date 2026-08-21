@@ -11,8 +11,6 @@ import ctypes
 import gc
 from multiprocessing import shared_memory
 
-import numpy as np
-
 from edgecv.core.bbox import BoundingBox
 from edgecv.runtime.shm.seqlock import SeqLock
 from edgecv.runtime.shm.structs import ABI_VERSION, MAGIC, SearchROIControl, validate_header

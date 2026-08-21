@@ -97,7 +97,6 @@ class TestSearchROIChannel:
     def test_double_close_does_not_crash(self):
         """close() is idempotent-ish (second close without unlink is safe)."""
         ch = SearchROIChannel.create()
-        name = ch.name
         ch.close(unlink=True)
         # The segment is already unlinked; can't close again,
         # but calling close on an already-closed handle should not crash.

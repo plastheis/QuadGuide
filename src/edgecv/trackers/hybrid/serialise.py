@@ -26,7 +26,7 @@ def _serialise_filter_state(fs: FilterState) -> dict[str, np.ndarray]:
     return out
 
 
-def _deserialise_filter_state(data: dict[str, np.ndarray]) -> FilterState:
+def _deserialise_filter_state(data: dict[str, np.ndarray]) -> FilterState | None:
     """Rebuild a FilterState from a payload dict.
 
     Keys prefixed with 'fs_' and known payload metadata keys are excluded

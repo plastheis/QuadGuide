@@ -18,7 +18,6 @@ import pytest
 from edgecv.core.bbox import BoundingBox
 from edgecv.core.result import TrackResult, TrackStatus
 from edgecv.runtime.shm.control_channel import Mode
-
 from tests.edgecv._acquire_stubs import FakeNano, FakeYoloDetector, make_frame
 
 _A = BoundingBox(0.5, 0.5, 0.1, 0.1)   # locked target region
@@ -84,7 +83,8 @@ class _Harness:
         return self.t.update(frame if frame is not None else make_frame(48, 64))
 
     def lock(self, bbox=_A):
-        self.tick(); self.tick()          # acquire a candidate
+        self.tick()
+        self.tick()  # acquire a candidate
         self.t.init(make_frame(48, 64), bbox)
 
 

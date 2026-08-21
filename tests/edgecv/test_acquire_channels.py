@@ -9,13 +9,11 @@ from __future__ import annotations
 
 import ctypes
 import threading
-import time
 
 import pytest
 
 from edgecv.core.bbox import BoundingBox
 from edgecv.core.result import TrackStatus
-
 
 # ── Task 1: structs + ABI bump ──────────────────────────────────────────────
 

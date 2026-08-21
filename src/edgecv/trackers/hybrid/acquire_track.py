@@ -361,7 +361,7 @@ class AcquireTrack(Tracker):
 
     def _best_in_crop(self, boxes, scores, crop):
         best, best_score = None, -1.0
-        for box, sc in zip(boxes, scores):
+        for box, sc in zip(boxes, scores, strict=False):
             sc = float(sc)
             if sc < self._lock_min_score:
                 continue
@@ -380,7 +380,7 @@ class AcquireTrack(Tracker):
         full frame. Used to re-seed NanoTrack during re-acquire (no spatial gate —
         the next confident detection wins)."""
         best, best_score = None, -1.0
-        for box, sc in zip(boxes, scores):
+        for box, sc in zip(boxes, scores, strict=False):
             sc = float(sc)
             if sc < self._lock_min_score:
                 continue

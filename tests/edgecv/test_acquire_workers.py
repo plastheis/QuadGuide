@@ -12,7 +12,6 @@ import pytest
 from edgecv.core.bbox import BoundingBox
 from edgecv.core.result import TrackStatus
 from edgecv.runtime.shm.control_channel import Mode
-
 from tests.edgecv._acquire_stubs import (
     FakeNano,
     FakeYoloDetector,
@@ -20,7 +19,6 @@ from tests.edgecv._acquire_stubs import (
     make_channels,
     make_frame,
 )
-
 
 # ── Task 4: YOLO worker ─────────────────────────────────────────────────────
 

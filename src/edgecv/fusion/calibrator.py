@@ -7,7 +7,7 @@ normalised 0-1 confidence scale for fusion.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 

@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
-from edgecv.fusion.calibrator import LinearCalibrator, SigmoidCalibrator
-from edgecv.fusion.policy import DetectorOutput, FusionDecision
-from edgecv.fusion.psr_gate import PSRGateParams, PSRGatePolicy
 from edgecv.core.bbox import BoundingBox
+from edgecv.fusion.calibrator import LinearCalibrator
+from edgecv.fusion.policy import FusionDecision
+from edgecv.fusion.psr_gate import PSRGateParams, PSRGatePolicy
 from edgecv.trackers.cf.base import EvalResult
 
 
@@ -55,7 +54,8 @@ class TestPSRGatePolicy:
 
     def test_candidate_beats_incumbent_within_margin(self):
         """Candidate must exceed incumbent by more than margin."""
-        policy = PSRGatePolicy(PSRGateParams(margin=0.5), cf_cal=LinearCalibrator(low=0.0, high=10.0))
+        policy = PSRGatePolicy(
+            PSRGateParams(margin=0.5), cf_cal=LinearCalibrator(low=0.0, high=10.0))
         inc = _make_eval(psr=5.0)   # conf=0.5
         cand = _make_eval(psr=5.4)  # conf=0.54, diff=0.04 < 0.5
         decision = policy.fuse(inc, cand, detector_out=None)
@@ -63,7 +63,8 @@ class TestPSRGatePolicy:
 
     def test_candidate_beats_incumbent_exceeds_margin(self):
         """Candidate exceeds incumbent by more than margin -> take."""
-        policy = PSRGatePolicy(PSRGateParams(margin=0.2), cf_cal=LinearCalibrator(low=0.0, high=10.0))
+        policy = PSRGatePolicy(
+            PSRGateParams(margin=0.2), cf_cal=LinearCalibrator(low=0.0, high=10.0))
         inc = _make_eval(psr=5.0)   # conf=0.5
         cand = _make_eval(psr=8.0)  # conf=0.8, diff=0.3 > 0.2
         decision = policy.fuse(inc, cand, detector_out=None)
@@ -128,7 +129,8 @@ class TestPSRGatePolicy:
 
     def test_candidate_equal_to_incumbent_rejected(self):
         """Equal scores should not trigger switching."""
-        policy = PSRGatePolicy(PSRGateParams(margin=0.1), cf_cal=LinearCalibrator(low=0.0, high=10.0))
+        policy = PSRGatePolicy(
+            PSRGateParams(margin=0.1), cf_cal=LinearCalibrator(low=0.0, high=10.0))
         inc = _make_eval(psr=5.0)  # conf=0.5
         cand = _make_eval(psr=5.0) # conf=0.5, diff=0.0 < 0.1
         decision = policy.fuse(inc, cand, detector_out=None)

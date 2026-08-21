@@ -260,6 +260,7 @@ class AcquireKalmanTrack(Tracker):
             self._set_out(bbox, score, TrackStatus.INITIALIZING, src_ts)
 
     def _tick_locked(self) -> None:
+        assert self._kf is not None  # invariant: kf exists while locked
         # Predict every frame (full rate) — this is the reported estimate.
         self._kf.predict()
         self._coast += 1
@@ -291,6 +292,7 @@ class AcquireKalmanTrack(Tracker):
             self._set_out(out, None, TrackStatus.COASTING)
 
     def _tick_reacq(self) -> None:
+        assert self._kf is not None  # invariant: kf exists while re-acquiring
         self._kf.predict()
         self._reacq_frames += 1
         if self._try_relock():
@@ -300,6 +302,7 @@ class AcquireKalmanTrack(Tracker):
             self._enter_lost()
 
     def _tick_lost(self) -> None:
+        assert self._kf is not None  # invariant: kf exists while lost/coasting
         self._kf.predict()
         self._lost_frames += 1
         if self._try_relock():

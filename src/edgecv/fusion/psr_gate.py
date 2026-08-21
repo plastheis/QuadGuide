@@ -7,7 +7,7 @@ generic fusion abstraction for hybrids to build on.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from edgecv.fusion.calibrator import LinearCalibrator, ScoreCalibrator
 from edgecv.fusion.policy import DetectorOutput, FusionDecision, FusionPolicy
