@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from quadguide.core.config import load_config, cfg_platform, cfg_tracker
+from quadguide.core.config import load_config, cfg_platform, cfg_tracker, frame_spec
 
 CONFIG = Path(__file__).resolve().parents[2] / "configs" / "rpi4b.yaml"
 
@@ -43,3 +43,14 @@ def test_rpi4b_failsafe_actions_land_on_loss_and_staleness():
     assert f.watchdog.enabled is True
     assert f.watchdog.action is FailsafeAction.MODE
     assert f.watchdog.custom_mode == 9
+
+
+def test_rpi4b_raw10_preset_is_mono16():
+    """rpi4b_raw10 preset: picamera2 backend with 10-bit raw capture, resolves to mono16."""
+    _REPO = Path(__file__).resolve().parents[2]
+    cfg = load_config(str(_REPO / "configs" / "rpi4b_raw10.yaml"), {})
+    pcfg = cfg_platform(cfg)
+    assert pcfg.camera.backend == "picamera2"
+    assert pcfg.camera.width == 1280 and pcfg.camera.height == 800
+    assert pcfg.camera.bit_depth == 10
+    assert frame_spec(pcfg.camera) == (1, "uint16")

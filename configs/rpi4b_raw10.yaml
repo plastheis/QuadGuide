@@ -1,0 +1,212 @@
+platform:
+  name: rpi4b                # label only; camera backend comes from camera.backend
+  camera:
+    # RPi 4B OV9281 raw 10-bit bring-up (SP1). picamera2 captures a RAW-ONLY stream;
+    # libcamera's tuned AGC drives exposure, we consume the LINEAR uint16 frame.
+    # NOTE: no tracker consumes mono16 until the SP3 seeker exists — verify this
+    # preset with scripts/diag_raw10.py and the HUD (camera + ground only).
+    backend: picamera2
+    pipeline: ""              # ignored by the picamera2 backend
+    width: 1280
+    height: 800
+    fps: 60                   # TARGET; achievable rate is MEASURED on-board (diag_raw10)
+    bit_depth: 10             # drives the uint16 FrameBuffer + picamera2 raw config
+    auto_exposure: true       # libcamera AGC; false → manual gain/exposure (SP2 lock)
+    tuning_file: configs/libcamera/ov9281_mono_quadguide.json
+    analogue_gain: 0.0        # manual operating point, applied only when auto_exposure=false
+    exposure_time_us: 0
+    url: "http://192.168.86.46:8090/camera"   # used when backend=network — dev-machine MJPEG stream
+    raw_tcp_host: "192.168.86.46"   # used when backend=raw_tcp (HIL) — dev-machine frame server host
+    raw_tcp_port: 8091              # used when backend=raw_tcp (HIL) — dev-machine frame server port
+  serial:
+    # MAVLink2 to the ArduPilot FC over the RPi 4B's primary PL011 UART on GPIO14/15.
+    # scripts/firstboot_install_rpi.sh enables it (enable_uart=1 + dtoverlay=disable-bt,
+    # which routes /dev/serial0 → ttyAMA0 and drops the serial login console).
+    # mode=tcp drives the stack from ArduPilot SITL instead of the real FC.
+    mode: uart            # "uart" (real FC) | "tcp" (HIL — MAVLink2 over TCP to SITL)
+    port: /dev/serial0    # PL011 on GPIO14/15 (needs disable-bt; see installer)
+    baud: 921600          # H743 MAVLink2 baud — TODO confirm SERIALn_BAUD (115200 vs 921600)
+    tcp_host: "192.168.86.46"   # used when mode=tcp — host running ArduPilot SITL
+    tcp_port: 5760              # used when mode=tcp — SITL MAVLink TCP port
+    rx_pin: "GPIO15"      # wiring reference only — not used by driver
+    tx_pin: "GPIO14"      # wiring reference only — not used by driver
+  realtime:
+    # RPi 4B = 4× Cortex-A72 (cores 0–3). Pin the tracker and control loops to
+    # separate cores; leave 0–1 for the OS, camera capture, and other workers.
+    tracker_cpu_core: 2
+    control_cpu_core: 3
+    control_sched_fifo: true
+    control_fifo_prio: 80
+
+airframe:
+  name: flix_micro
+  mass_kg: 0.18
+  inertia: [0.0012, 0.0012, 0.0020]
+  control_limits:
+    max_roll_deg: 40
+    max_pitch_deg: 40
+    max_roll_rate_dps: 200
+    max_pitch_rate_dps: 200
+
+tracker:
+  # EdgeCV NanoTrack on the CPU via ONNX Runtime (the RPi 4B has no NPU). The
+  # operator's LOCK seeds NanoTrack on the current box and it tracks until reset.
+  # The .onnx weights are VENDORED in this repo under models/ (committed — see
+  # .gitignore) and resolved via EDGECV_MODEL_DIR (set from model_dir below); the
+  # RK3588 build uses .rknn from a separate EdgeCV checkout instead. `backend: onnx`
+  # forces the CPU runtime — slower than the NPU, see watchdog.target_estimate_ms
+  # if the tracker worker trips the watchdog. To use YOLO-acquire instead, set
+  # tracker: acquire_track and add acquire_crop / lock_pad / lock_min_score (see
+  # configs/rk3588.yaml for the full list).
+  #
+  # `backend: onnx_quant` swaps in the INT8 backbone / FP16 head pair (also
+  # vendored under models/, nanotrack_backbone_int8.onnx + nanotrack_head_fp16.onnx)
+  # on the same CPU runtime. Live on-device A/B (locked, single-core-pinned,
+  # webcam target, 2026-07-04): per-frame latency p50 77ms / p95 84ms / max 119ms,
+  # vs onnx (fp32) p50 93ms / p95 142ms / max 229ms — a modest ~1.2x median
+  # speedup but a much tighter, more predictable tail (p95/max nearly match p50,
+  # unlike fp32's long right tail). Backbone feature correlation vs fp32 is ~0.90
+  # on generic content (lower than the ~0.97 measured on the antiuav domain the
+  # RKNN int8 blob was tuned for); the FP16 head is ~lossless either way. Not yet
+  # flown — swap in once the accuracy tradeoff is validated against real footage,
+  # not just the synthetic bench.
+  import: quadguide.perception.edgecv_adapter:EdgeCVTracker
+  params:
+    tracker: nanotrack           # mosse | nanotrack | siamfc | yolo | acquire_track
+    backend: onnx                 # auto | onnx | onnx_quant | rknn | mock  (RPi 4B = onnx, CPU)
+    model_dir: /home/plas/quadguide/models   # vendored *.onnx in this repo (EDGECV_MODEL_DIR)
+    color: bgr                    # QuadGuide camera frames are BGR; adapter swaps to RGB
+    # NanoTrack confidence thresholds → tracker_health (edgecv nanotrack._status_from):
+    #   conf ≥ score_lock  → LOCKED   → QuadGuide "nominal"
+    #   conf ≥ score_lost  → COASTING → QuadGuide "uncertain"
+    #   conf <  score_lost → LOST     → QuadGuide "lost"  ← drives the target-loss disarm
+    # MEASURED on this camera/lens 2026-08-07 (scripts/diag_track_confidence.py,
+    # quadguide-trace/confidence-labeled-20260807.csv), 482 locked in-frame vs 875
+    # out-of-frame samples:
+    #
+    #   in-frame   min=0.654 p05=0.868 p50=0.967 max=1.000
+    #   out-frame  min=0.326 p05=0.789 p50=0.979 max=0.999
+    #
+    # The out-of-frame MEDIAN (0.979) EXCEEDS the in-frame median (0.967) — bare
+    # NanoTrack re-locks onto background and reports near-perfect confidence on
+    # the wrong box. Best balanced accuracy over ALL thresholds is 57% (coin flip
+    # = 50%), so NO score_lost can classify loss per-frame. Do not attempt to tune
+    # this by raising the threshold: 0.95 gave 31% false-LOST while still missing
+    # 65% of real losses, and would have commanded LAND mid-track.
+    #
+    # Loss detection is therefore delegated to drop_lock_on_lost below, and these
+    # values only decide how eagerly the lock is released.
+    #
+    # ⚠ CURRENT SETTING IS AGGRESSIVE — measured false-drop rate at score_lost=0.90
+    # with drop_lock_frames=2, replayed over the captures above:
+    #   in-frame run1 (96 s):  5 false drops, first at 55.2 s
+    #   in-frame run2 (47 s): 20 false drops, first at 10.6 s   ← ~1 per 2.4 s
+    #   out-of-frame (86 s):  57 drops,       first at 28.7 s
+    # Each false drop latches LOST → target_loss failsafe → LAND after hold_ms.
+    # For reference, score_lost=0.60 gave ZERO false drops across both in-frame
+    # runs (143 s) and still detected the real loss at 40.5 s. Lower this to 0.60
+    # (score_lock 0.70) if you see spurious LOCK DROPPED entries in the tracker log
+    # or unexplained LAND commands — grep "LOCK DROPPED" in the tracker log.
+    score_lock: 0.94
+    score_lost: 0.90
+  # Latch the loss instead of classifying it per frame: the first drop_lock_frames
+  # consecutive frames below score_lost RELEASE the lock permanently — the tracker
+  # stops updating (so it can never drift back onto clutter) and reports LOST until
+  # the operator re-locks. This only has to catch a loss ONCE rather than on every
+  # frame, which is what makes an unreliable confidence signal usable at all.
+  # Measured detection latency on the capture above: ~30-40 s, from a SINGLE loss
+  # event — treat that as one sample, not a characterised latency.
+  # Leave false for acquire_track / verified_acquire_track: they own their own
+  # re-acquire state machine and must keep updating through a loss.
+  drop_lock_on_lost: true
+  drop_lock_frames: 2
+
+guidance:
+  method: pure_pursuit              # "pronav" | "pure_pursuit"
+  fov_horizontal_rad: 1.623    # TODO: set to YOUR USB lens's HORIZONTAL FoV. 1.05 ≈ 60°
+                              # is a placeholder for a typical ~70° diagonal webcam at
+                              # 16:9 — measure or read the spec and correct it.
+  throttle_hold: 0.6         # constant throttle during tracking (0–1)
+  pronav:
+    N: 1.5                    # PN navigation gain (typical 3–5)
+    closing_vel_fallback: 1.0
+    closing_vel_ema_alpha: 0.01       # EMA smoothing for bbox area rate (0=heavy, 1=raw)
+    closing_vel_min_area_rate: 0.001 # fallback if smoothed area rate is below this
+    closing_vel_area_scale: 0.01      # area-rate (normalised/s) → m/s conversion
+  pure_pursuit:
+    K: 15                    # m/s² per radian of LOS angle
+    deadband: 0.03           # centroid half-width (frac of half-FoV) zeroed near boresight
+
+watchdog:
+  target_estimate_ms: 300   # CPU (ONNX) inference is slower than the NPU — raise this
+                            # if the tracker worker trips the watchdog; lower once tuned.
+  fc_attitude_ms: 250
+  fc_imu_ms: 250
+  guidance_accel_ms: 100    # NOT a failsafe/watchdog topic — guidance stops
+                            # publishing accel by design on target loss. This is
+                            # only the freshness gate on the attitude command:
+                            # an accel older than this levels roll/pitch.
+
+failsafe:
+  # Per-condition failsafe actions. Each condition selects a terminal action of
+  # `disarm` (cut motors) or `mode` (command an ArduPilot flight mode and hand
+  # off). Both LATCH until the operator disarms — cycle the ground arm switch
+  # off→on to re-engage. QuadGuide does NOT auto-restore GUIDED_NOGPS; the
+  # operator restores guided mode on the FC before re-arming.
+  target_loss:
+    # Tracker reports LOST (bare NanoTrack conf < score_lost) continuously for
+    # hold_ms while armed → LAND. tracker_health is the confidence gate (see
+    # tracker.params.score_lost); this only debounces + acts.
+    enabled: true
+    action: mode          # disarm | mode
+    mode: LAND            # LAND | ALTHOLD | STABILIZE (GPS-denied-safe allowlist)
+    hold_ms: 300          # continuous LOST before the latch trips. At the measured
+                          # ~10 fps (ONNX/CPU NanoTrack) this is only ~3 frames —
+                          # raise it if you see spurious trips. Once the lock is
+                          # dropped (tracker.drop_lock_on_lost) LOST is permanent
+                          # until re-lock, so this hold no longer has to ride out
+                          # long dips — it only debounces the drop itself.
+  watchdog:
+    # Any watched telemetry/guidance topic stale past its watchdog timeout,
+    # sustained for hold_ms while armed → LAND. Brief blips only level (roll/
+    # pitch → 0) during the debounce; the terminal action needs sustained loss.
+    enabled: true
+    action: mode
+    mode: LAND
+    hold_ms: 200
+
+link:
+  tx_rate_hz: 100          # SET_ATTITUDE_TARGET stream rate (Hz) — keep constant to hold GUIDED setpoints
+  stream_rate_hz: 50      # requested ATTITUDE + RAW_IMU telemetry rate (Hz)
+  system_id: 1            # quadguide MAVLink source system id
+  component_id: 191       # MAV_COMP_ID_ONBOARD_COMPUTER
+  target_system: 1        # FC system id (corrected at runtime from the first HEARTBEAT)
+  target_component: 1     # MAV_COMP_ID_AUTOPILOT1
+  arm_retry_count: 5      # arm/disarm COMMAND_LONG retransmits before giving up
+  heartbeat_wait_s: 5.0   # max wait for the first FC HEARTBEAT before requesting streams
+
+mission:
+  mode: flight             # "flight" | "bench_hil" | "swil"
+  hil:
+    target_model: constant_velocity
+    initial_offset_m: [2.0, 0.0, 0.0]
+    target_speed_mps: 1.5
+
+ground:
+  port: 8080
+  ui_mode: minimal
+  tonemap: percentile        # HUD display: linear | percentile | gamma
+
+logging:
+  level: INFO
+  dir: /var/log/quadguide
+  max_bytes: 10485760         # 10 MB per file
+  backup_count: 3
+
+bus:
+  ring_depth: 8
+
+diag:
+  trace: false        # post-run latency/state trace; enable per-run with `run.py --log`
+  trace_dir: null     # default: {logging.dir}/trace/<timestamp> (resolved by run.py)
+  trace_max_rows: 0   # per-process row cap; 0 = unbounded

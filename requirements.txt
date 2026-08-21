@@ -7,6 +7,9 @@
 # NOT listed here on purpose: opencv. The device uses apt's python3-opencv
 # (GStreamer-enabled) via a --system-site-packages venv; a pip opencv would
 # shadow it and break the CSI camera path.
+#
+# picamera2 (RPi 4B 10-bit raw capture) is a SYSTEM package: `apt install python3-picamera2`
+# (installed by scripts/firstboot_install_rpi.sh; not pip-installable). Not needed on dev machines.
 
 # Core runtime
 pyyaml>=6.0

@@ -58,6 +58,7 @@ apt-get update
 apt-get install -y --no-install-recommends \
     git python3 python3-venv python3-pip python3-dev \
     python3-opencv python3-numpy python3-serial \
+    python3-picamera2 \
     v4l-utils build-essential
 
 # ── 2. clone/update QuadGuide, venv + python deps ─────────────────────────────
