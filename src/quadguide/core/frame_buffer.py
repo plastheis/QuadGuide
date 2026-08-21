@@ -5,6 +5,7 @@ import time
 from multiprocessing.shared_memory import SharedMemory
 
 import numpy as np
+from numpy.typing import DTypeLike
 
 __all__ = ["FrameBuffer"]
 
@@ -34,7 +35,7 @@ class FrameBuffer:
         height: int,
         channels: int = 3,
         n_slots: int = 6,
-        dtype: object = "uint8",
+        dtype: DTypeLike = "uint8",
     ) -> None:
         self._width       = width
         self._height      = height
@@ -51,7 +52,8 @@ class FrameBuffer:
     def write_frame(self, arr: np.ndarray, timestamp_ns: int | None = None) -> None:
         """Write arr into the next ring slot and advance the head.
 
-        arr must have shape (height, width, channels) and dtype matching the buffer.
+        arr must have shape (height, width, channels) for multi-channel or
+        (height, width) for mono (channels==1), and dtype matching the buffer.
         timestamp_ns defaults to monotonic_ns() if not provided.
         """
         if timestamp_ns is None:
