@@ -68,6 +68,10 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
-python_version = "3.11"
+# No python_version pin: mypy targets each CI job's own runtime. Pinning to
+# 3.11 while mypy runs under 3.12 makes it reject numpy's PEP-695 `type`
+# statements in its stubs ("only supported in Python 3.12 and greater"), a
+# fatal error that stops checking. The 3.11 floor is still enforced by
+# requires-python and exercised by the 3.11 matrix leg.
 ignore_missing_imports = true
 warn_unused_ignores = false
