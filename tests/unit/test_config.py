@@ -8,6 +8,7 @@ from quadguide.core.config import (
     cfg_guidance, cfg_watchdog, cfg_mission,
     cfg_logging, cfg_bus, cfg_diag, cfg_failsafe,
     BusConfig, DiagConfig, FailsafeConfig, ConditionFailsafe, FailsafeAction,
+    CameraConfig, frame_spec,
 )
 
 CONFIG_PATH = str(pathlib.Path(__file__).parents[2] / "configs" / "config.yaml")
@@ -175,3 +176,21 @@ class TestAccessors:
         d = {"failsafe": {"disarm_on_lost": True, "lost_hold_ms": 300}}
         with pytest.raises(ValueError, match="legacy"):
             cfg_failsafe(d)
+
+
+def _cam(**kw) -> CameraConfig:
+    base = dict(backend="gstreamer", pipeline="", width=1280, height=800, fps=30)
+    base.update(kw)
+    return CameraConfig(**base)
+
+
+def test_frame_spec_defaults_to_bgr_uint8():
+    assert frame_spec(_cam()) == (3, "uint8")
+
+
+def test_frame_spec_picamera2_backend_is_mono16():
+    assert frame_spec(_cam(backend="picamera2", bit_depth=10)) == (1, "uint16")
+
+
+def test_frame_spec_high_bit_depth_forces_mono16():
+    assert frame_spec(_cam(bit_depth=10)) == (1, "uint16")

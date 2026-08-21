@@ -119,7 +119,7 @@ def main() -> int:
         overrides["logging.dir"] = args.log_dir
 
     from quadguide.core.bus import Bus
-    from quadguide.core.config import cfg_bus, cfg_platform, load_config
+    from quadguide.core.config import cfg_bus, cfg_platform, load_config, frame_spec
     from quadguide.core.frame_buffer import FrameBuffer
 
     try:
@@ -140,7 +140,10 @@ def main() -> int:
     pcfg = cfg_platform(config)
 
     bus = Bus(ring_depth=bcfg.ring_depth)
-    frame_buffer = FrameBuffer(pcfg.camera.width, pcfg.camera.height)
+    _ch, _dt = frame_spec(pcfg.camera)
+    frame_buffer = FrameBuffer(
+        pcfg.camera.width, pcfg.camera.height, channels=_ch, dtype=_dt
+    )
 
     procs = _start_workers(config, bus, frame_buffer, ground=not args.no_ground)
     print(f"[orchestrator] started {len(procs)} workers: {[p.name for p in procs]}")

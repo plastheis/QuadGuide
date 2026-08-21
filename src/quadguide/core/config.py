@@ -174,6 +174,7 @@ class CameraConfig:
                                   # (defines the AE metering/exposure/constraint modes available
                                   # to the fields above). Relative paths resolve from the repo
                                   # root. "" = use the sensor's stock tuning file.
+    bit_depth: int = 8          # 8 = BGR uint8 path; >8 (e.g. 10) = raw mono uint16
 
 
 @dataclass(frozen=True)
@@ -244,6 +245,7 @@ def cfg_platform(d: dict) -> PlatformConfig:
             analogue_gain=cam.get("analogue_gain", 0.0),
             exposure_time_us=cam.get("exposure_time_us", 0),
             tuning_file=cam.get("tuning_file", ""),
+            bit_depth=cam.get("bit_depth", 8),
         ),
         serial=SerialConfig(
             # port/baud are irrelevant in tcp (HIL) mode — tolerate their absence.
@@ -339,6 +341,17 @@ def cfg_logging(d: dict) -> LoggingConfig:
         max_bytes=lg["max_bytes"],
         backup_count=lg["backup_count"],
     )
+
+
+def frame_spec(camera: CameraConfig) -> tuple[int, str]:
+    """(channels, dtype) for the FrameBuffer backing this camera source.
+
+    The raw picamera2 path (or any bit_depth > 8) carries one uint16 mono
+    plane; every other backend keeps the legacy 3-channel BGR uint8 frame.
+    """
+    if camera.backend == "picamera2" or camera.bit_depth > 8:
+        return 1, "uint16"
+    return 3, "uint8"
 
 
 def cfg_bus(d: dict) -> BusConfig:
