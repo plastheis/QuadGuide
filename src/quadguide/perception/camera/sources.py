@@ -8,7 +8,7 @@ import numpy as np
 
 __all__ = [
     "CameraSource", "USBCamera", "CSICamera", "CSIY10Camera", "VirtualCamera",
-    "unpack_raw10_to_gray8",
+    "Picamera2RawCamera", "unpack_raw10_to_gray8",
 ]
 
 
@@ -593,3 +593,83 @@ class VirtualCamera(CameraSource):
 
     def close(self) -> None:
         pass
+
+
+class Picamera2RawCamera(CameraSource):
+    """OV9281 mono global-shutter CSI camera on the RPi 4B, raw 10-bit via picamera2.
+
+    Captures a RAW-ONLY stream (no ISP/main stream) so libcamera's tuned AGC still
+    drives sensor exposure but we consume the LINEAR uint16 frame before gamma/
+    tonemap. picamera2 returns an already-unpacked (H, W) uint16 array, so there is
+    no custom RAW10 bit-unpacking. Selected via config: platform.camera.backend =
+    "picamera2". Mono uint16 flows through the dtype-aware FrameBuffer; the HUD
+    tonemaps it for display.
+    """
+
+    _TUNING_ENV = "LIBCAMERA_RPI_TUNING_FILE"
+
+    def __init__(self, config) -> None:
+        self._width  = getattr(config, "width",  1280)
+        self._height = getattr(config, "height", 800)
+        self._fps    = getattr(config, "fps",    0)
+        self._auto_exposure   = getattr(config, "auto_exposure", True)
+        self._gain            = float(getattr(config, "analogue_gain", 0.0) or 0.0)
+        self._exposure_us     = int(getattr(config, "exposure_time_us", 0) or 0)
+        self._tuning_file     = CSICamera._resolve_tuning_file(
+            getattr(config, "tuning_file", ""))
+        self._picam = None
+
+    def open(self) -> None:
+        import os
+        from picamera2 import Picamera2   # board-only; MUST stay inside open()
+        if self._tuning_file:
+            os.environ[self._TUNING_ENV] = self._tuning_file
+        self._picam = Picamera2()
+        cfg = self._picam.create_video_configuration(
+            raw={"size": (self._width, self._height)},
+            buffer_count=6,
+        )
+        self._picam.configure(cfg)
+        self._apply_exposure()
+        self._picam.start()
+
+    def _apply_exposure(self) -> None:
+        controls = {}
+        if not self._auto_exposure:
+            controls["AeEnable"] = False
+            if self._exposure_us:
+                controls["ExposureTime"] = self._exposure_us
+            if self._gain:
+                controls["AnalogueGain"] = self._gain
+        else:
+            controls["AeEnable"] = True
+        if self._fps:
+            frame_us = int(1_000_000 / self._fps)
+            controls["FrameDurationLimits"] = (frame_us, frame_us)
+        if controls:
+            self._picam.set_controls(controls)
+
+    def set_exposure(self, *, auto: bool, exposure_us: int = 0,
+                     gain: float = 0.0) -> None:
+        """Runtime auto<->lock switch. SP2's sky-calibration button drives this."""
+        self._auto_exposure = auto
+        if exposure_us:
+            self._exposure_us = exposure_us
+        if gain:
+            self._gain = gain
+        if self._picam is not None:
+            self._apply_exposure()
+
+    def read(self) -> tuple[np.ndarray, int]:
+        arr = self._picam.capture_array("raw")   # (H, W) uint16, libcamera-unpacked
+        ts = time.monotonic_ns()
+        return arr, ts
+
+    def close(self) -> None:
+        if self._picam is not None:
+            try:
+                self._picam.stop()
+                self._picam.close()
+            except Exception:
+                pass
+            self._picam = None

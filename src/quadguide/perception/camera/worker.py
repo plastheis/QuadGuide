@@ -8,7 +8,7 @@ from quadguide.core.logging import setup_logging
 from quadguide.core.shutdown import install_shutdown_handler
 from quadguide.core.messages import HealthReport, ProcessState
 from quadguide.perception.camera.sources import (
-    CameraSource, USBCamera, CSICamera, CSIY10Camera, VirtualCamera,
+    CameraSource, USBCamera, CSICamera, CSIY10Camera, VirtualCamera, Picamera2RawCamera,
 )
 from quadguide.perception.camera.network_source import NetworkCamera
 from quadguide.perception.camera.raw_frame_source import RawFrameCamera
@@ -19,6 +19,7 @@ _SOURCES = {
     "v4l2": USBCamera,
     "gstreamer": CSICamera,
     "csi": CSIY10Camera,         # OV9281 mono Y10 via direct V4L2 (ROCK 5C / rkcif)
+    "picamera2": Picamera2RawCamera,   # OV9281 raw 10-bit mono (RPi 4B, picamera2)
     "virtual": VirtualCamera,
     "network": NetworkCamera,    # HIL: HTTP MJPEG from the dev machine
     "raw_tcp": RawFrameCamera,   # HIL: raw BGR frames over TCP (low-latency)
