@@ -20,11 +20,12 @@ class FrameBuffer:
 
     Layout per slot:
         [0:8]       timestamp_ns  (big-endian uint64)
-        [8:8+N]     frame bytes   (width × height × channels, row-major uint8)
+        [8:8+N]     frame bytes   (width × height × channels, row-major, dtype configurable)
 
     The camera worker is the sole writer. Readers call read_latest() which
     returns a numpy view into the live shared memory — callers must not hold
     the view past the next write cycle (~100 ms at 60 fps with 6 slots).
+    For mono frames (channels==1), returns (H, W); for multi-channel, (H, W, C).
     """
 
     def __init__(
@@ -33,12 +34,15 @@ class FrameBuffer:
         height: int,
         channels: int = 3,
         n_slots: int = 6,
+        dtype: object = "uint8",
     ) -> None:
         self._width       = width
         self._height      = height
         self._channels    = channels
         self._n_slots     = n_slots
-        self._frame_bytes = width * height * channels
+        self._dtype       = np.dtype(dtype)
+        self._count       = width * height * channels
+        self._frame_bytes = self._count * self._dtype.itemsize
         self._slot_bytes  = _TS_SIZE + self._frame_bytes
 
         self._shm  = SharedMemory(create=True, size=n_slots * self._slot_bytes)
@@ -47,7 +51,7 @@ class FrameBuffer:
     def write_frame(self, arr: np.ndarray, timestamp_ns: int | None = None) -> None:
         """Write arr into the next ring slot and advance the head.
 
-        arr must have shape (height, width, channels) and dtype uint8.
+        arr must have shape (height, width, channels) and dtype matching the buffer.
         timestamp_ns defaults to monotonic_ns() if not provided.
         """
         if timestamp_ns is None:
@@ -59,7 +63,7 @@ class FrameBuffer:
         _TS_FMT.pack_into(self._shm.buf, offset, timestamp_ns)
         frame_start = offset + _TS_SIZE
         # tobytes() is an O(N) copy — unavoidable when writing numpy → shm buf
-        data = np.ascontiguousarray(arr, dtype=np.uint8).tobytes()
+        data = np.ascontiguousarray(arr, dtype=self._dtype).tobytes()
         self._shm.buf[frame_start : frame_start + self._frame_bytes] = data
 
         self._head.value = slot  # atomic store; readers see consistent slot
@@ -68,7 +72,8 @@ class FrameBuffer:
         """Return (frame_view, timestamp_ns) for the most recently written slot.
 
         frame_view is a zero-copy numpy view into shared memory.  Reshape is
-        performed here so callers always receive (H, W, C) uint8 arrays.
+        performed here so callers receive (H, W) for mono (channels==1) or
+        (H, W, C) for multi-channel, both in the buffer's configured dtype.
         Returns (None, 0) if no frame has been written yet.
         """
         h = self._head.value
@@ -77,12 +82,15 @@ class FrameBuffer:
 
         offset = h * self._slot_bytes
         ts     = _TS_FMT.unpack_from(self._shm.buf, offset)[0]
-        frame  = np.frombuffer(
+        flat = np.frombuffer(
             self._shm.buf,
-            dtype=np.uint8,
-            count=self._frame_bytes,
+            dtype=self._dtype,
+            count=self._count,
             offset=offset + _TS_SIZE,
-        ).reshape(self._height, self._width, self._channels)
+        )
+        shape = ((self._height, self._width) if self._channels == 1
+                 else (self._height, self._width, self._channels))
+        frame = flat.reshape(shape)
         return frame, ts
 
     def close(self) -> None:
