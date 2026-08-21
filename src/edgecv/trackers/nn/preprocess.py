@@ -16,7 +16,7 @@ from edgecv.backends.base import TensorSpec
 try:  # optional accelerator: cv2 SIMD crop+resize (~50-100x the numpy gather).
     import cv2 as _cv2  # QuadGuide hard dep / EdgeCV `fast` extra; absent in CI.
 except Exception:  # pragma: no cover - exercised by the numpy-fallback path
-    _cv2 = None
+    _cv2 = None  # type: ignore[assignment]
 
 
 def _sample_clamped(img: np.ndarray, gx: np.ndarray, gy: np.ndarray) -> np.ndarray:
