@@ -58,6 +58,18 @@ def tonemap(
     return stretched
 
 
+def to_display_bgr(frame: np.ndarray, tonemap_mode: str = "percentile") -> np.ndarray:
+    """Normalise a frame-buffer frame to BGR uint8 for the MJPEG overlay/JPEG path.
+
+    Legacy BGR uint8 frames pass straight through; a mono uint16 (H,W) frame is
+    tonemapped to 8-bit and expanded to 3-channel so the coloured overlay works.
+    """
+    if frame.ndim == 3:
+        return frame                                   # already BGR uint8
+    gray8 = tonemap(frame, mode=tonemap_mode)
+    return cv2.cvtColor(gray8, cv2.COLOR_GRAY2BGR)
+
+
 def acquire_crop_from_config(config: dict | None) -> float | None:
     """Central acquire-crop side fraction to draw as a HUD guideline, or None.
 

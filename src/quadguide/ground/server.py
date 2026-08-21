@@ -54,6 +54,7 @@ _NO_SIGNAL_JPEG: bytes = cv2.imencode(
 def create_app(bus, frame_buffer, config: dict | None = None) -> FastAPI:
     acquire_crop = overlay.acquire_crop_from_config(config)
     ui_mode = (config or {}).get("ground", {}).get("ui_mode", "verbose")
+    tonemap_mode = (config or {}).get("ground", {}).get("tonemap", "percentile")
     index_file = "minimal.html" if ui_mode == "minimal" else "index.html"
 
     @asynccontextmanager
@@ -61,6 +62,7 @@ def create_app(bus, frame_buffer, config: dict | None = None) -> FastAPI:
         app.state.bus            = bus
         app.state.frame_buffer   = frame_buffer
         app.state.acquire_crop   = acquire_crop
+        app.state.tonemap_mode   = tonemap_mode
         app.state.lockon_seq     = 0
         app.state.ui             = dict(_UI_DEFAULTS)
         app.state.ui_seq         = 0
@@ -198,6 +200,7 @@ async def _mjpeg(app: FastAPI):
         if frame is None:
             jpeg = _NO_SIGNAL_JPEG
         else:
+            frame = overlay.to_display_bgr(frame, app.state.tonemap_mode)
             estimate = app.state.bus.latest("target/estimate")
             jpeg = overlay.draw_overlay(
                 frame, estimate, app.state.acquire_crop,

@@ -5,7 +5,7 @@ import pytest
 from quadguide.core.messages import (
     BoundingBox, TrackerEstimate, TrackerHealth,
 )
-from quadguide.ground.overlay import acquire_crop_from_config, draw_overlay
+from quadguide.ground.overlay import acquire_crop_from_config, draw_overlay, to_display_bgr
 
 
 def _black_frame() -> np.ndarray:
@@ -147,3 +147,18 @@ def test_show_bbox_false_suppresses_acquire_guide():
 def test_show_bbox_defaults_to_drawing():
     frame = _black_frame()
     assert draw_overlay(frame, _estimate(TrackerHealth.NOMINAL)) != _plain_jpeg(frame)
+
+
+# ── to_display_bgr adapter ──────────────────────────────────────────────────
+
+def test_to_display_bgr_converts_mono16():
+    frame = np.full((8, 10), 800, dtype=np.uint16)
+    out = to_display_bgr(frame, tonemap_mode="percentile")
+    assert out.dtype == np.uint8
+    assert out.shape == (8, 10, 3)
+
+
+def test_to_display_bgr_passthrough_for_bgr8():
+    frame = np.zeros((8, 10, 3), dtype=np.uint8)
+    out = to_display_bgr(frame)
+    assert out is frame          # legacy path: no copy, no conversion
