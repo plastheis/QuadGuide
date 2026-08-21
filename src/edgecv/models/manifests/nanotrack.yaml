@@ -1,0 +1,63 @@
+name: nanotrack
+task: sot_template_matching
+# NanoTrack V3 (HonglinChu/SiamTrackers). Split backbone+head architecture:
+# backbone model (255x255 -> 96ch 16x16), head model (z_f 8x8 + x_f 16x16 ->
+# cls, loc). mobilenetv3_small_v3 + depthwise cross-correlation.
+# Trained on raw [0,255] crops (no /255, no mean/std); to_input preserves
+# channel order. Exemplar feature centre-cropped 16->8 before head.
+# exemplar/search are CONCEPTUAL crop-ratio sizes; model_input is the
+# actual backbone input size (both crops resized to this).
+preprocessing:
+  color: rgb
+  scale: 1.0
+  exemplar: 127
+  search: 255
+  model_input: 255
+  context: 0.5
+  stride: 16
+  base_size: 7
+  penalty_k: 0.138
+  window_influence: 0.455
+  size_lr: 0.348
+# Combined exemplar/search -> cls/loc spec (documentation; the runtime uses the
+# split backbone/head artifacts below, which carry their own per-model io).
+io:
+  inputs:
+    - { name: exemplar, shape: [1, 3, 127, 127], dtype: float32 }
+    - { name: search,   shape: [1, 3, 255, 255], dtype: float32 }
+  outputs:
+    - { name: cls, shape: [1, 2, 15, 15], dtype: float32 }
+    - { name: loc, shape: [1, 4, 15, 15], dtype: float32 }
+# Split two-model artifacts. Each carries per-backend paths (onnx for host/CI,
+# rknn for the Rockchip NPU) and its own io. The rknn {target} token is filled
+# with the active SoC (EDGECV_RKNN_TARGET, else device-tree autodetect, else
+# rk3588) so one manifest serves every board: blobs live in
+# models/nanotrack_quant_<soc>/ (rk3588, rk3566 committed). Backbone is INT8
+# (antiuav-trained; ~0.97 feature corr vs onnx). Head is FP16: the INT8 head was
+# rejected — its quantised cls branch carries a fg-vs-bg logit bias that caps the
+# softmax foreground prob at ~0.085 (< the tracker's score_lost=0.35 band), so it
+# never locks. FP16 head is effectively lossless (cls/loc corr 1.0 vs onnx).
+# Input order MUST match the compiled graph: backbone (one image in -> 16x16
+# feature out); head (z_f 8x8, x_f 16x16 in -> cls, loc out). RKNNLite returns
+# outputs positionally, so the io.outputs order is the compiled-model output order.
+artifacts:
+  backbone:
+    onnx: { path: nanotrackv3_backbone.onnx }
+    # npu_core 2 pins NanoTrack to its own NPU core (YOLO takes core 1) for the
+    # AcquireTrack two-core placement; the head shares this core (spec §11.4).
+    rknn: { path: "nanotrack_quant_{target}/nanotrack_backbone_yolocrop.rknn", quant: int8, npu_core: 2 }
+    io:
+      inputs:
+        - { name: input, shape: [1, 3, 255, 255], dtype: float32 }
+      outputs:
+        - { name: output, shape: [1, 96, 16, 16], dtype: float32 }
+  head:
+    onnx: { path: nanotrackv3_head.onnx }
+    rknn: { path: "nanotrack_quant_{target}/nanotrack_head.rknn", quant: fp16, npu_core: 2 }
+    io:
+      inputs:
+        - { name: input1, shape: [1, 96, 8, 8],   dtype: float32 }
+        - { name: input2, shape: [1, 96, 16, 16], dtype: float32 }
+      outputs:
+        - { name: output1, shape: [1, 2, 15, 15], dtype: float32 }
+        - { name: output2, shape: [1, 4, 15, 15], dtype: float32 }

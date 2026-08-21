@@ -4,7 +4,7 @@
 
 **Goal:** Fold the EdgeCV tracking library into the QuadGuide repository as a pure relocation, with zero behaviour change, so that later work on the 10-bit pixel path and the classical seeker happens inside one repo.
 
-**Architecture:** EdgeCV lands at `src/edgecv/` as a *second top-level package* alongside `src/quadguide/`, not nested inside it. EdgeCV's 57 modules use only absolute `from edgecv.x import y` imports (verified: zero relative imports), and its backend plugins register via `edgecv.backends` entry points, so this placement requires **no source-file edits at all**. Only the test tree needs touching, and only on 14 enumerated path-coupling lines.
+**Architecture:** EdgeCV lands at `src/edgecv/` as a *second top-level package* alongside `src/quadguide/`, not nested inside it. EdgeCV's 57 modules use only absolute `from edgecv.x import y` imports (verified: zero relative imports), and its backend plugins register via `edgecv.backends` entry points, so this placement requires **no edits under `src/edgecv/` at all**. Touched elsewhere: 27 enumerated lines in the relocated test tree, plus exactly two non-test lines (`tools/track_webcam.py:51` and the adapter's `np.float32` leak).
 
 **Tech Stack:** Python 3.11+, setuptools (src-layout), pytest, ruff, mypy, GitHub Actions.
 
@@ -16,8 +16,11 @@
 - **`requires-python = ">=3.11"`** — QuadGuide's floor, matching the device. EdgeCV drops its 3.10 support.
 - **CI matrix: `["3.11", "3.12"]`** on `ubuntu-latest` only. `src/quadguide` imports `fcntl` and `select` and calls `os.sched_setaffinity` — it cannot run on Windows or macOS.
 - **`cv2` must NOT be a base dependency.** The device uses apt's GStreamer-enabled `python3-opencv` via `--system-site-packages`; a pip-installed opencv shadows it and breaks `CSICamera`. CI gets `opencv-python-headless` in the `test` extra only.
-- **No EdgeCV source file under `src/edgecv/` is edited in this plan.** Verify with `git diff --stat src/edgecv/` → empty.
-- **Test edits are capped at the 14 lines enumerated in Task 3.** `git diff tests/` must show no assertion, fixture, or logic changes.
+- **No EdgeCV source file under `src/edgecv/` is edited in this plan.** Verify by diffing against the source of truth — `diff -r /c/Users/plas/projects/EdgeCV/edgecv src/edgecv --exclude="__pycache__"` must print nothing (Task 2 Step 7). Do **not** use `git diff src/edgecv/`: these are newly-added files, so that command is trivially empty once committed and proves nothing.
+- **Test edits are capped at the 27 lines enumerated in Task 3** — 14 relocation path-couplings (Steps 3–5a), 4 stale manifest assertions (5b), and 9 CWD-relative manifest paths (5c). No other test may be touched: no new assertions, no fixture changes, no logic changes.
+- **Two non-test files are also in scope, and only these two:** `tools/track_webcam.py:51` (Step 5d — hardcodes the old layout) and `src/quadguide/perception/edgecv_adapter.py` (Step 5e — the `np.float32` protocol leak). Neither is under `src/edgecv/`, so neither violates the no-source-edit rule.
+- **One deliberate exception to "zero behaviour change":** Step 5e is a real behaviour fix. It is admitted because the merge is what exposed the bug — `tests/unit/test_edgecv_adapter.py:11` calls `pytest.importorskip("edgecv")`, so those 6 tests never ran while EdgeCV lived in a separate repo — and because Task 6's CI gate cannot go green without it. Approved by the human partner on 2026-08-17.
+- **`sed -i` rewrites line endings on this box** (CRLF → LF on every file it touches), so a plain `diff -r` against the EdgeCV checkout reports every touched file as wholly changed. Always pass `--strip-trailing-cr` when diffing relocated tests.
 - Work happens in the **QuadGuide** repo (`github.com/plastheis/QuadGuide`) on a branch. The EdgeCV repo (`github.com/plastheis/EdgeCV`) is read-only source material until Task 8.
 
 ## Baseline facts (measured 2026-08-17, do not re-derive)
@@ -27,7 +30,8 @@
 | EdgeCV commits | 1 (`b03eae6 kalman`) — no history to preserve |
 | EdgeCV modules | 57 `.py` under `edgecv/` |
 | EdgeCV relative imports | **0** — all absolute |
-| EdgeCV tests | 44 `test_*.py` + 5 support files (`conftest.py`, `__init__.py`, `_acquire_stubs.py`, `_nn_stubs.py`, `_onnx_synth.py`) = 49 `.py`; **306 tests collected** |
+| EdgeCV tests | 44 `test_*.py` + 5 support files (`conftest.py`, `__init__.py`, `_acquire_stubs.py`, `_nn_stubs.py`, `_onnx_synth.py`) = 49 `.py`; **306 collected**; on Windows **292 passed, 9 failed, 9 skipped** |
+| EdgeCV's 9 Windows failures | **7 are Windows-only** (seqlock/shm — no `os.sched_yield` on Windows, see Task 3 Step 6) and **2 are real stale assertions** repaired in Task 3 Step 5b |
 | QuadGuide tests | **276 collected, 6 collection errors on Windows** (all `ModuleNotFoundError: fcntl` — Linux-only, expected) |
 | QuadGuide CI | none — no `.github/` on any branch |
 | Git LFS | not used by either repo; both commit real blobs |
@@ -35,7 +39,7 @@
 
 **Where verification runs.** WSL is not installed on this dev box, so QuadGuide's suite cannot fully run locally — its 6 `fcntl` errors are permanent on Windows. Verification is therefore tiered:
 
-- **Local (Windows):** EdgeCV's 306 tests must pass fully. QuadGuide's collection must stay at exactly *276 collected, 6 errors*.
+- **Local (Windows):** EdgeCV's suite must reach `294 passed, 7 failed, 9 skipped` (the 7 are the documented seqlock/`sched_yield` set). QuadGuide's suite moves from *276 collected* to *282 collected, 6 errors, 1 failure* — the extra 6 are `test_edgecv_adapter.py`, un-hidden because `edgecv` is now importable past its `pytest.importorskip`; the 1 remaining failure is Windows-only `fcntl`.
 - **Linux:** the CI workflow added in Task 6 is the first real Linux run of QuadGuide's suite. This is the gate.
 - **Device (ROCK 5C):** Task 8 smoke test.
 
@@ -88,7 +92,9 @@ python -m pytest -q 2>&1 | tail -20 > "$SCRATCH/baseline-edgecv.txt"
 cat "$SCRATCH/baseline-edgecv.txt"
 ```
 
-Expected: a passing summary ending in `306 passed` (or `306 passed, N skipped`). Record the exact line. If tests *fail* here, stop — you are not merging a broken baseline; report the failures.
+Expected: `9 failed, 292 passed, 9 skipped`. Record the exact line **and the list of failing test IDs**.
+
+This baseline is **known-red and that is accepted** — see the baseline facts table. Do not attempt to fix anything. Any deviation from 9 failures, or a different set of failing IDs, is what you should report.
 
 - [ ] **Step 2: Record the QuadGuide suite**
 
@@ -102,15 +108,21 @@ Expected: `276 tests collected, 6 errors`. The 6 errors are `ModuleNotFoundError
 
 - [ ] **Step 3: Record the bench_tracker oracle**
 
+Two things make this oracle work, and it is useless without both:
+
+- **`edgecv` must be importable.** Pre-merge it is not installed in QuadGuide's venv, so a bare run dies with `ModuleNotFoundError: No module named 'edgecv'`. Put the EdgeCV checkout on the path for the baseline run only.
+- **Only three lines are deterministic.** The latency table (`p50`/`p95`/`max`/`mean`) varies run to run and must never be diffed. The locked-fraction and IoU lines are stable — verified identical across repeated same-seed runs.
+
 ```bash
 cd /c/Users/plas/projects/QuadGuide
-.venv/Scripts/python.exe scripts/bench_tracker.py track \
-    --frames 150 --width 480 --height 360 --seed 0 --no-plot \
-    > "$SCRATCH/baseline-bench.txt" 2>&1
-tail -20 "$SCRATCH/baseline-bench.txt"
+PYTHONPATH=/c/Users/plas/projects/EdgeCV .venv/Scripts/python.exe \
+    scripts/bench_tracker.py track \
+    --frames 150 --width 480 --height 360 --seed 0 --no-plot 2>&1 \
+  | grep -E "locked fraction|bbox IoU" > "$SCRATCH/baseline-bench.txt"
+cat "$SCRATCH/baseline-bench.txt"
 ```
 
-The sequence is synthesized and seeded (`--seed 0`), so this is deterministic. If it errors because model files or onnxruntime are missing, note that and skip — record the failure text as the baseline instead, so Task 6 Step 5 can confirm the *same* failure rather than a new one.
+Expected: exactly 3 lines — `locked fraction:`, `bbox IoU between variants:`, `bbox IoU vs ground truth:`. If the file is empty or has fewer than 3 lines, the run failed; capture the unfiltered output instead and report it, because Task 6 Step 5 has no oracle without this.
 
 - [ ] **Step 4: Create the working branch**
 
@@ -244,21 +256,27 @@ Tests move separately in the next commit."
 
 ---
 
-## Task 3: Relocate the EdgeCV test tree and fix its 14 path couplings
+## Task 3: Relocate the EdgeCV test tree, fix its 14 path couplings and 4 stale assertions
 
 This is the only task that edits test files. The edits are enumerated exhaustively below — there are no others.
 
 **Files:**
 - Create: `tests/edgecv/**` (49 test files, 3 helper modules, `conftest.py`, `__init__.py`)
-- Modify: `tests/edgecv/conftest.py` (1 line)
-- Modify: 10 test files (import prefix)
-- Modify: 3 test files (path expression)
+- Modify: `tests/edgecv/conftest.py` (1 line — `tools/` path)
+- Modify: 10 test files (1 helper-import prefix each)
+- Modify: 3 test files (1 `Path(__file__)` expression each)
+- Modify: `tests/edgecv/test_manifests_nn.py` (3 stale assertions) and `tests/edgecv/test_nanotrack_rknn.py` (1 stale assertion)
+
+`test_nanotrack_rknn.py` appears twice — it takes both a path fix (Step 5a) and a stale assertion (Step 5b). Total edited files: 13. Total edited lines: 18.
 
 **Interfaces:**
 - Consumes: `src/edgecv/` and `tools/` from Task 2.
 - Produces: 306 EdgeCV tests collectable from the QuadGuide repo root.
 
-**Why these edits exist:** EdgeCV's tests import shared helpers as an absolute `tests.` package (`from tests._nn_stubs import ...`) and reach for `tools/` and `edgecv/models/manifests/` by relative filesystem path. Nesting one directory deeper shifts both.
+**Why these edits exist — two unrelated causes, kept separate on purpose:**
+
+- **Steps 3–5a (14 lines), caused by the move.** EdgeCV's tests import shared helpers as an absolute `tests.` package (`from tests._nn_stubs import ...`) and reach for `tools/` and `edgecv/models/manifests/` by relative filesystem path. Nesting one directory deeper shifts both.
+- **Step 5b (4 lines), pre-existing rot.** Four assertions contradict the `nanotrack.yaml` shipped beside them. They fail in EdgeCV today, they are platform-independent, and they would keep Task 6's CI gate red forever. Approved for repair by the human partner on 2026-08-17.
 
 - [ ] **Step 1: Copy the test tree**
 
@@ -307,13 +325,18 @@ Replace the file's path line:
 import sys
 from pathlib import Path
 
-# tools/ is not an installed package; put it on sys.path so `import convert_lib`
-# works. This file lives at tests/edgecv/conftest.py, so the repo root is 3
-# parents up (edgecv -> tests -> repo root).
+# tools/ is not an installed package; put it on sys.path so `import convert_lib` works.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 ```
 
-- [ ] **Step 5: Fix the 3 filesystem-path expressions**
+**Change exactly one line** — `parent.parent` → `parents[2]`, because this file
+now sits one directory deeper. Leave the comment on a single line: Step 8's
+diff-count assertion depends on this being a 1-line change.
+
+- [ ] **Step 5: Fix the 3 filesystem-path expressions, then the 4 stale manifest assertions**
+
+### 5a — path expressions (caused by the move)
+
 
 `tests/edgecv/test_nanotrack_rknn.py` line ~22 — the manifest moved under `src/`:
 
@@ -340,6 +363,113 @@ cd /c/Users/plas/projects/QuadGuide
 grep -rn "parent\.parent\|parents\[1\]" tests/edgecv/*.py    # expect NO output
 ```
 
+### 5b — stale manifest assertions (pre-existing rot, NOT caused by the move)
+
+EdgeCV's `nanotrack.yaml` manifest was updated to the v3 backbone and the
+yolocrop RKNN blob, but two tests still assert the old names. They fail today in
+EdgeCV and would fail on Linux CI, blocking Task 6's gate. The **manifest is
+correct** — every file it names exists (`models/nanotrackv3_backbone.onnx`,
+`models/nanotrack_quant_rk3588/nanotrack_backbone_yolocrop.rknn`). The tests are
+stale. Fix the tests, never the manifest.
+
+Note that pytest stops at a test's first failing assert, which masked the
+siblings: fixing only the first line will just surface the next.
+
+In `tests/edgecv/test_manifests_nn.py`, three lines in `test_nanotrack_manifest_loads`:
+
+```python
+    assert bb["onnx"]["path"] == "nanotrackv3_backbone.onnx"
+    assert bb["rknn"]["path"] == "nanotrack_quant_{target}/nanotrack_backbone_yolocrop.rknn"
+    assert bb["rknn"]["quant"] == "int8"                       # already correct — leave
+    assert hd["onnx"]["path"] == "nanotrackv3_head.onnx"
+    assert hd["rknn"]["path"] == "nanotrack_quant_{target}/nanotrack_head.rknn"   # correct — leave
+    assert hd["rknn"]["quant"] == "fp16"                       # already correct — leave
+```
+
+In `tests/edgecv/test_nanotrack_rknn.py`, one line in the sorted-paths list:
+
+```python
+    assert [Path(p).name for p in paths] == [
+        "nanotrack_backbone_yolocrop.rknn",
+        "nanotrack_head.rknn",
+    ]
+```
+
+`yolocrop` still sorts before `head` (`b` < `h`), so the list order is unchanged.
+
+**Change exactly these 4 lines.** Do not "improve" neighbouring assertions, and
+do not touch any manifest.
+
+### 5c — CWD-relative manifest paths (a SECOND relocation idiom, 9 lines)
+
+Steps 3–5a caught the `Path(__file__).parents[...]` idiom. A different one also
+assumes the old layout: string literals resolved relative to the **current working
+directory**, i.e. `"edgecv/models/manifests/..."` meaning repo-root/`edgecv/`. After
+Task 2 that directory is `src/edgecv/`. Prefix each with `src/`, changing nothing
+else on the line:
+
+| File:line | Change |
+|---|---|
+| `test_manifests_nn.py:5` | `Path("edgecv/models/manifests")` → `Path("src/edgecv/models/manifests")` |
+| `test_convert_yolo.py:38` | `load_manifest("edgecv/...")` → `load_manifest("src/edgecv/...")` |
+| `test_nn_base.py:35` | `NNTracker("edgecv/...")` → `NNTracker("src/edgecv/...")` |
+| `test_nn_base.py:44` | same |
+| `test_nn_onnx.py:26` | `_manifest_with_artifact("edgecv/...")` → `"src/edgecv/..."` |
+| `test_nn_onnx.py:39` | same |
+| `test_nn_onnx.py:54` | same |
+| `test_nn_onnx.py:66` | same |
+| `test_pp_precedence.py:21` | `manifest_preprocessing("edgecv/...")` → `"src/edgecv/..."` |
+
+`test_manifests_nn.py:5` is a single module-level constant that causes **6** test
+failures on its own — one line, six greens.
+
+Confirm none remain:
+
+```bash
+cd /c/Users/plas/projects/QuadGuide
+grep -rn '"edgecv/\|Path("edgecv' tests/edgecv/*.py     # expect NO output
+```
+
+### 5d — `tools/track_webcam.py` (1 line, not a test)
+
+`tools/track_webcam.py:51` hardcodes the pre-merge layout, which breaks the tool
+itself and 2 tests. `_ROOT` is the repo root (`Path(__file__).resolve().parent.parent`):
+
+```python
+MANIFESTS_DIR = _ROOT / "src" / "edgecv" / "models" / "manifests"
+```
+
+Leave `MODELS_DIR = _ROOT / "models"` on the next line alone — that path is still correct.
+
+### 5e — the `np.float32` protocol leak (1 line, not a test)
+
+`tests/unit/test_edgecv_adapter.py` asserts every bbox component reaching
+QuadGuide's tracker protocol is a Python `float`, but MOSSE returns `np.float32`
+and the adapter passes it straight through. These 6 tests have **never run** —
+line 11 is `pytest.importorskip("edgecv")`, and EdgeCV was never installed in
+QuadGuide's venv — so the merge is what exposed this.
+
+Fix it at the boundary that owns the protocol. In
+`src/quadguide/perception/edgecv_adapter.py`, in `update()`, the final return:
+
+```python
+        b = res.bbox
+        return _TrackerOutput(
+            _BBox(float(b.x), float(b.y), max(0.0, float(b.w)), max(0.0, float(b.h))),
+            self._normalize_confidence(res.confidence),
+            health,
+            origin_ns,
+        )
+```
+
+This is the right layer: the module's own docstring calls it "the impedance match
+between the two", and it already coerces confidence via `_normalize_confidence`.
+Do **not** fix this in `src/edgecv/core/bbox.py` — that is barred by the
+no-source-edit constraint, and EdgeCV is entitled to its own numeric types.
+
+(For context, not a task: `struct.pack` accepts `np.float32` happily, so this was
+a contract defect, not silent wire corruption.)
+
 - [ ] **Step 6: Run the EdgeCV suite to verify it passes**
 
 ```bash
@@ -347,18 +477,40 @@ cd /c/Users/plas/projects/QuadGuide
 python -m pytest tests/edgecv -q 2>&1 | tail -10
 ```
 
-Expected: the same pass count as `$SCRATCH/baseline-edgecv.txt` — **306 passed** (plus the same skip count). Any difference in count is a regression; investigate before proceeding.
+Expected on **Windows**: `294 passed, 7 failed, 9 skipped`.
+
+Reconcile that against the baseline (`292 passed, 9 failed, 9 skipped`) as follows:
+
+- **+2 passed / −2 failed** — the two manifest tests you repaired in Step 5b.
+- **The remaining 7 failures are Windows-only and must persist unchanged**:
+  `test_acquire_channels` (×4), `test_search_roi` (×2), `test_seqlock` (×1). All
+  are seqlock-backed. `edgecv/runtime/shm/seqlock.py:23` does
+  `_yield = getattr(os, "sched_yield", lambda: None)`, and Windows has no
+  `os.sched_yield`, so the yield degrades to a no-op and the reader starves —
+  precisely the spurious livelock EdgeCV's ARCHITECTURE §7.3 documents. **These
+  are expected. Do not attempt to fix them.** They pass on Linux, which CI proves
+  in Task 6.
+
+Any *other* difference is a real regression — investigate before proceeding.
 
 - [ ] **Step 7: Verify QuadGuide's own suite is untouched**
 
 ```bash
 cd /c/Users/plas/projects/QuadGuide
-.venv/Scripts/python.exe -m pytest tests/unit tests/integration tests/hil --collect-only -q 2>&1 | tail -5
+.venv/Scripts/python.exe -m pytest tests/unit tests/integration tests/hil -q 2>&1 | tail -5
 ```
 
-Expected: `276 tests collected, 6 errors` — byte-identical to `$SCRATCH/baseline-quadguide.txt`.
+Expected: **`282 tests collected, 6 errors`**, with exactly **1 failure**
+(`test_loadable_via_tracker_worker_load_tracker`, a Windows-only `fcntl` import).
 
-- [ ] **Step 8: Verify the edit surface is exactly 14 lines**
+Do not be alarmed that this exceeds Task 1's `276` baseline. The extra 6 are
+`tests/unit/test_edgecv_adapter.py`, which line 11 gates behind
+`pytest.importorskip("edgecv")`. EdgeCV was never installed in QuadGuide's venv, so
+those 6 tests **had never executed**; Task 2 made `edgecv` importable from `src/`
+and un-hid them. That is the merge working as intended, not a regression. One of
+the two that failed is repaired in Step 5e; the other is the `fcntl` platform case.
+
+- [ ] **Step 8: Verify the edit surface is exactly 27 lines**
 
 ```bash
 cd /c/Users/plas/projects/QuadGuide
@@ -368,11 +520,29 @@ git diff --cached --stat tests/edgecv/ | tail -3
 
 Since these are new files, the stat shows additions only. Instead, diff against the source of truth:
 
+**`--strip-trailing-cr` is mandatory here.** `sed -i` rewrites CRLF to LF on every
+file it touches on this box, so without it `diff -r` reports whole files as changed
+and the count is meaningless.
+
 ```bash
-diff -r /c/Users/plas/projects/EdgeCV/tests tests/edgecv --exclude="__pycache__" | grep "^[<>]" | wc -l
+diff -r --strip-trailing-cr /c/Users/plas/projects/EdgeCV/tests tests/edgecv \
+     --exclude="__pycache__" | grep "^[<>]" | wc -l
 ```
 
-Expected: **28** (14 changed lines × 2, one `<` and one `>` each). If higher, something beyond the enumerated set was edited — find it and revert it.
+Expected: **54** (27 changed lines × 2, one `<` and one `>` each) — 14 relocation
+couplings (Steps 3–5a) + 4 stale assertions (5b) + 9 CWD-relative paths (5c). If
+higher, something beyond the enumerated set was edited; find it and revert it. If
+lower, an enumerated edit was missed.
+
+The two non-test files are tracked, so plain `git diff` works for them and each
+must show exactly one changed line:
+
+```bash
+git diff --stat tools/track_webcam.py src/quadguide/perception/edgecv_adapter.py
+```
+
+Expected: `tools/track_webcam.py | 2 +-` and
+`src/quadguide/perception/edgecv_adapter.py | 2 +-` (1 insertion, 1 deletion each).
 
 - [ ] **Step 9: Commit**
 
@@ -381,12 +551,19 @@ cd /c/Users/plas/projects/QuadGuide
 git add -A
 git commit -m "test: relocate EdgeCV's test tree to tests/edgecv/
 
-306 tests, unchanged except for 14 path-coupling lines: 10 helper-import
-prefixes (tests. -> tests.edgecv.), 3 Path(__file__).parents[] expressions
-(manifests moved under src/, tools/ is one level further up), and the
-conftest sys.path insert for tools/.
+306 tests, unchanged except for 27 lines across 16 files.
 
-No assertion, fixture, or logic changes."
+14 are relocation path-couplings: 10 helper-import prefixes (tests. ->
+tests.edgecv.), 3 Path(__file__).parents[] expressions (manifests moved
+under src/, tools/ is one level further up), and the conftest sys.path
+insert for tools/.
+
+4 repair stale assertions that fail in EdgeCV today and would block CI:
+nanotrack.yaml was updated to the v3 backbone and the yolocrop RKNN blob
+without updating test_manifests_nn.py (3 lines) or test_nanotrack_rknn.py
+(1 line). The manifest is correct — every file it names exists.
+
+No fixture or logic changes; no manifest changes."
 ```
 
 ---
@@ -530,7 +707,16 @@ cd /c/Users/plas/projects/QuadGuide
 /tmp/qg-probe/Scripts/python.exe -m pytest --collect-only -q 2>&1 | tail -5
 ```
 
-Expected: `582 tests collected, 6 errors` (306 EdgeCV + 276 QuadGuide; the 6 are the Windows `fcntl` errors). If the total is not 582, a test file was lost in the move.
+Expected: **`592 tests collected, 6 errors`** — 310 from `tests/edgecv` plus 282 from QuadGuide's own suite. The 6 are the Windows `fcntl` collection errors.
+
+**The collected total is environment-dependent, so do not treat a mismatch as a lost test file without checking why.** Three `pytest.importorskip` gates have moved during this merge, each admitting tests that were previously invisible:
+
+- 276 → 282 (Task 2): `tests/unit/test_edgecv_adapter.py:11` gates on `edgecv`, which was never installed in QuadGuide's venv. Those 6 tests had never executed in the project's history.
+- 306 → 310 (this task): several EdgeCV modules gate on `onnx` at module level. The repo's `.venv` has `onnxruntime` but **not** `onnx`; the `test` extra installs `onnx>=1.15`, so 4 more modules collect in the probe venv.
+
+Measured in the repo `.venv` (no `onnx`) the figure is 588; in a venv with the `test` extra it is 592. Both are correct for their environment. If you see a number outside these two, then investigate.
+
+Add `--continue-on-collection-errors`, or pytest aborts on the first collection error and reports zero tests.
 
 - [ ] **Step 6: Verify the backend entry points still resolve**
 
@@ -599,27 +785,31 @@ from importlib import resources
 import pytest
 
 
-def _names(pkg: str) -> set[str]:
-    return {p.name for p in resources.files(pkg).iterdir()}
+def _names(subdir: str) -> set[str]:
+    # Anchor on edgecv.models — a REAL package (it has __init__.py) — and reach
+    # the data directory with joinpath. Do not use resources.files() directly on
+    # "edgecv.models.manifests": that directory has no __init__.py, so it is at
+    # best a namespace package and the call is not reliable across environments.
+    return {p.name for p in resources.files("edgecv.models").joinpath(subdir).iterdir()}
 
 
 def test_manifests_ship_as_package_data():
-    names = _names("edgecv.models.manifests")
+    names = _names("manifests")
     assert {"nanotrack.yaml", "siamfc_generic.yaml", "yolo11n.yaml"} <= names
 
 
 def test_profiles_ship_as_package_data():
-    names = _names("edgecv.models.profiles")
+    names = _names("profiles")
     assert {"dev.yaml", "rk3588.yaml"} <= names
 
 
 @pytest.mark.parametrize("name", ["nanotrack.yaml", "yolo11n.yaml"])
 def test_manifest_is_readable_and_nonempty(name):
-    text = resources.files("edgecv.models.manifests").joinpath(name).read_text()
+    text = (resources.files("edgecv.models")
+            .joinpath("manifests", name)
+            .read_text(encoding="utf-8"))
     assert "artifacts" in text
 ```
-
-`edgecv.models.manifests` and `edgecv.models.profiles` are directories without `__init__.py`. `resources.files()` handles namespace-style data directories on 3.11+, but if it raises, add empty `__init__.py` files to both — and note that doing so also requires adding them to `package-data` patterns.
 
 - [ ] **Step 2: Run the test in the source checkout**
 
@@ -714,7 +904,50 @@ jobs:
         run: mypy src/edgecv
       - name: Test
         run: pytest -q
+
+  # The package-data guard CANNOT do its job in the job above. pyproject's
+  # [tool.pytest.ini_options] pythonpath = ["src"] puts the source tree first for
+  # every pytest run made from this repo, so tests/edgecv/test_package_data.py
+  # reads src/edgecv and passes even when the built wheel ships no YAML at all.
+  # Proven by negative control in Task 5: deleting the installed wheel's
+  # manifests/ directory still gave "4 passed" without isolation.
+  #
+  # This job is therefore the real gate for spec success criterion 3: build the
+  # wheel, install it into a venv that has no source checkout, and run the guard
+  # with pythonpath overridden to empty.
+  wheel-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist/
+      - name: Assert the YAML actually shipped
+        run: |
+          python - <<'PY'
+          import zipfile, glob, sys
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          yaml = [n for n in names if n.startswith("edgecv/models/") and n.endswith(".yaml")]
+          print(f"{whl}: {len(yaml)} manifest/profile YAML files")
+          for n in sorted(yaml):
+              print("  ", n)
+          sys.exit(0 if yaml else "NO YAML IN WHEEL — package-data key is wrong")
+          PY
+      - name: Install the wheel clean and run the guard
+        run: |
+          python -m venv /tmp/wheeltest
+          /tmp/wheeltest/bin/python -m pip install -q dist/*.whl pytest
+          /tmp/wheeltest/bin/python -m pytest -o pythonpath= \
+              tests/edgecv/test_package_data.py -q
 ```
+
+The `-o pythonpath=` is load-bearing, not decorative: without it the guard silently
+reads the checkout and this job becomes as vacuous as the one it exists to backstop.
 
 - [ ] **Step 2: Verify the lint scope passes locally first**
 
@@ -746,21 +979,36 @@ cd /c/Users/plas/projects/QuadGuide
 gh run watch
 ```
 
-Expected: green on both 3.11 and 3.12. The test step must report **582 passed** with **zero errors** — the 6 `fcntl` collection errors seen on Windows must not appear on Linux. If they do, something other than platform is wrong.
+Expected: green on both 3.11 and 3.12, with **zero failures and zero errors**.
+
+Record the actual `N passed, M skipped` line in your report — do not assert a
+hardcoded pass count. Collection totals (306 + 276 = 582) are known and additive,
+but the pass/skip split is not: the Windows baseline reports more results than
+collected items because some tests are parametrized at runtime.
+
+What the Linux run must prove:
+
+- The 6 `fcntl` collection errors seen on Windows are **absent** (Linux has `fcntl`).
+- The 7 seqlock/shm failures seen on Windows are **absent** (Linux has `os.sched_yield`).
+- The 4 assertions repaired in Task 3 Step 5b **pass**.
+
+Any failure at all means something other than platform is wrong — stop and report it.
 
 This is spec success criteria 1 and 2 satisfied on the platform that matters.
 
 - [ ] **Step 5: Run the bench oracle and diff against baseline**
 
+No `PYTHONPATH` this time — the probe venv has the merged repo installed editable, so `edgecv` resolves from `src/`. Filter to the same three deterministic lines the baseline captured.
+
 ```bash
 cd /c/Users/plas/projects/QuadGuide
 /tmp/qg-probe/Scripts/python.exe scripts/bench_tracker.py track \
-    --frames 150 --width 480 --height 360 --seed 0 --no-plot \
-    > /tmp/after-bench.txt 2>&1
-diff "$SCRATCH/baseline-bench.txt" /tmp/after-bench.txt && echo "IDENTICAL"
+    --frames 150 --width 480 --height 360 --seed 0 --no-plot 2>&1 \
+  | grep -E "locked fraction|bbox IoU" > "$SCRATCH/after-bench.txt"
+diff "$SCRATCH/baseline-bench.txt" "$SCRATCH/after-bench.txt" && echo "IDENTICAL"
 ```
 
-Expected: `IDENTICAL`. Timing lines may differ run-to-run; if so, diff only the drift/correlation metrics and confirm those match exactly. This satisfies spec success criterion 2.
+Expected: `IDENTICAL`. This is the strongest evidence in the plan that the relocation changed no behaviour — the same synthetic sequence, through the same two ONNX model pairs, producing bit-identical tracking geometry before and after the move. If it differs, **stop**: something in the relocation altered tracker behaviour. Satisfies spec success criterion 2.
 
 ---
 

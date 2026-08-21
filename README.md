@@ -51,6 +51,58 @@ Latency lineage rides the message chain via `origin_ns` (the frame capture
 timestamp), so any stage — and the trace — can report the true glass→actuation
 age. The HUD's latency field shows the cumulative glass→control age.
 
+## Tracking library (edgecv)
+
+`quadguide.perception.edgecv_adapter` wires the trackers in `src/edgecv/`
+(formerly the standalone `edgecv` package, merged into this repo 2026-08-17)
+into the perception worker. See
+[`docs/architecture-edgecv.md`](docs/architecture-edgecv.md) for the
+library's own design, and [`ARCHITECTURE.md` §11](ARCHITECTURE.md#11-adding-a-new-tracker)
+for how it's wired in.
+
+### Install
+
+The tracking library's backends are optional extras on the `quadguide`
+package itself — there's no separate install:
+
+```bash
+pip install -e .            # core: numpy CF runtime, fusion abstractions, mock backend
+pip install -e ".[onnx]"    # ONNXRuntime CPU/dev backend
+pip install -e ".[rknn]"    # registers the RKNN backend (see device note below)
+pip install -e ".[test]"    # test + lint tooling
+```
+
+### RKNN on-device note
+
+`rknn-toolkit-lite2` is **not on PyPI** and is **installed manually on the
+device** (Rockchip release archive). The `[rknn]` extra only registers the
+backend adapter; it does not and cannot pull the runtime.
+
+### Models & conversion
+
+Trackers never load a weight file directly — they load a **manifest**
+(`src/edgecv/models/manifests/*.yaml`) that maps one logical model to
+per-backend artifacts plus its preprocessing/IO spec. Weight blobs live in
+`models/` at the repo root and are committed directly (real files, not
+LFS/pointers — see `.gitignore`'s negations).
+
+Conversion runs offline on x86 via one manifest-driven dispatcher
+(`tools/convert.py`), run from the repo root:
+
+```bash
+pip install -e ".[dev]"        # torch + onnx for export/validation
+
+# PyTorch checkpoint -> ONNX (writes the manifest's resolved artifact path under models/)
+python tools/convert.py --model siamfc_generic --checkpoint models/siamfc_alexnet_e50.pth
+
+# ...and chain to an RK3588 INT8 RKNN (needs rknn-toolkit2 + calibration images)
+python tools/convert.py --model siamfc_generic --checkpoint models/siamfc_alexnet_e50.pth \
+    --rknn --calib calib/
+```
+
+Full mechanics, the add-a-tracker recipe, the preprocessing contract, and
+INT8 calibration notes are in [`tools/CONVERSION.md`](tools/CONVERSION.md).
+
 ## Tests
 
 ```bash

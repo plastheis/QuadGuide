@@ -1,31 +1,26 @@
-# quadguide runtime + dev dependencies
-# Install with: pip install -r requirements.txt
-# For production SBC deploys, RKNN backend deps (rknnlite / rknn-toolkit2) and
-# onnxruntime-gpu are installed separately — see ARCHITECTURE.md.
+# quadguide runtime + dev dependencies.
+#
+# pyproject.toml is now AUTHORITATIVE for dependencies — this file exists for
+# device provisioning convenience and must stay in sync with it.
+# Prefer:  pip install -e .[onnx,ground]
+#
+# NOT listed here on purpose: opencv. The device uses apt's python3-opencv
+# (GStreamer-enabled) via a --system-site-packages venv; a pip opencv would
+# shadow it and break the CSI camera path.
 
 # Core runtime
 pyyaml>=6.0
 numpy>=2.0
-opencv-python>=4.10
 pyserial>=3.5
 pymavlink>=2.4        # MAVLink2 codec for the ArduPilot link (link/mavlink_codec.py)
 
 # Ground station (FastAPI + uvicorn)
 fastapi>=0.115
 uvicorn[standard]>=0.30
+pydantic>=2.0
 
 # Inference (CPU backend; GPU/NPU backends installed per-target)
 onnxruntime>=1.20
-
-# EdgeCV tracker library (separate repo) — provides the pluggable trackers used
-# via quadguide.perception.edgecv_adapter:EdgeCVTracker (configs/rk3588.yaml).
-# Not on PyPI; install from the local checkout. On a normal venv:
-#     pip install -e /home/radxa/EdgeCV --no-deps
-# On a PEP 668 system python (e.g. the RK3588 device image) without a build
-# backend, expose it on the import path with a user .pth instead:
-#     echo /home/radxa/EdgeCV > ~/.local/lib/python3.11/site-packages/edgecv.pth
-# RKNN inference additionally needs rknn-toolkit-lite2 installed on the device
-# (manual, not on PyPI — see EdgeCV ARCHITECTURE §12).
 
 # Test
 pytest>=8.0

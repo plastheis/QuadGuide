@@ -1,0 +1,22 @@
+name: yolo26n
+task: detection
+# Ultralytics YOLO26n, COCO-80, class-agnostic use (the class id is discarded;
+# score = max over class columns). Exported with the ONE-TO-MANY head (nms=False)
+# so the onnx (x86) and rknn (device) backends emit the same (1, 4+nc, N) tensor
+# (the NMS-free end-to-end head is unavailable on RKNN). See the design spec §3.
+preprocessing:
+  color: rgb
+  input: 640
+  scale: 0.00392156862745098     # 1/255
+  output_format: yolov8
+  class_agnostic: true
+  conf_thresh: 0.25
+  iou_thresh: 0.45
+io:
+  inputs:
+    - { name: images, shape: [1, 3, 640, 640], dtype: float32 }
+  outputs:
+    - { name: output0, shape: [1, 84, -1], dtype: float32 }   # (1, 4+nc, N); N dynamic
+artifacts:
+  onnx: { path: yolo26n.onnx }
+  rknn: { path: yolo26n.rk3588.rknn, quant: int8 }

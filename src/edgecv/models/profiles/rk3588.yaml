@@ -1,0 +1,26 @@
+# Shipped default board profile for RK3588 (ARCHITECTURE.md §7.6).
+# User-overridable: pass your own YAML to edgecv.runtime.placement.load_profile.
+board: rk3588
+processes:
+  caller:                       # CF + fusion run inline here; sets output rate
+    cpu_affinity: [4, 5, 6, 7]            # A76 big cores
+    sched: {policy: FIFO, priority: 80}   # optional; needs CAP_SYS_NICE
+  detector:                     # the async NPU worker
+    cpu_affinity: [0, 1]                  # A55 little cores for pre/post-processing
+    npu_core: 0                           # one of the RK3588's three NPU cores
+    backend: rknn
+
+  # AcquireTrack hybrid: two mutually-exclusive NN workers, each on its own NPU
+  # core + an A76 (NN cost is CPU crop/resize, not the NPU — pin to big cores and
+  # use cv2/RGA). The light state-machine parent runs on an A55. npu_core here is
+  # informational; the rknn backend reads each model's npu_core from its manifest.
+  yolo:
+    cpu_affinity: [4, 5]                  # A76
+    npu_core: 1
+    backend: rknn
+  nanotrack:
+    cpu_affinity: [6, 7]                  # A76
+    npu_core: 2
+    backend: rknn
+  acquire_caller:                # AcquireTrack parent: state machine + SHM I/O
+    cpu_affinity: [0]                     # A55 little core

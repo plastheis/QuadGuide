@@ -6,11 +6,25 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-# Model blobs are large — keep them out of git, EXCEPT .onnx weights, which the
-# RPi 4B (ONNX/CPU) tracker loads. .rknn and other blobs stay ignored.
+.mypy_cache/
+.ruff_cache/
+.eggs/
+.venv-convert/
+runs/
+calib_naive/
+calib_nanotrack/
+*.rknn
+*.onnx
+# Model blobs are large — keep them out of git, EXCEPT:
+#   *.onnx           — the RPi 4B (ONNX/CPU) tracker loads these
+#   nanotrack_quant_rk*/*.rknn — the committed per-SoC NPU blobs (from EdgeCV)
+# A file cannot be un-ignored while its parent directory is excluded, which is
+# why the directory negations come before the file negations.
 models/**
 !models/**/
 !models/**/*.onnx
+!models/nanotrack_quant_rk3588/*.rknn
+!models/nanotrack_quant_rk3566/*.rknn
 quadguide-trace/
 quadguide-logs/
 hil-test/
