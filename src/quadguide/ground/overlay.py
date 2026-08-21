@@ -26,6 +26,38 @@ _COLOR_BY_HEALTH = {
 }
 
 
+def _percentile_stretch(frame: np.ndarray, p_lo: float, p_hi: float) -> np.ndarray:
+    lo = float(np.percentile(frame, p_lo))
+    hi = float(np.percentile(frame, p_hi))
+    if hi <= lo:
+        hi = lo + 1.0
+    out = (frame.astype(np.float32) - lo) * (255.0 / (hi - lo))
+    return np.clip(out, 0.0, 255.0).astype(np.uint8)
+
+
+def tonemap(
+    frame: np.ndarray,
+    mode: str = "percentile",
+    p_lo: float = 1.0,
+    p_hi: float = 99.5,
+    gamma: float = 2.2,
+) -> np.ndarray:
+    """Reduce a mono uint16 (H,W) frame to a mono uint8 (H,W) for display.
+
+    Display-only — never applied to the detector's raw feed.
+      linear     : v >> 2 (naive, matches the old 10→8 truncation)
+      percentile : stretch [p_lo, p_hi] then clip (robust to a flat bright sky)
+      gamma      : percentile stretch, then a gamma curve for a photographic look
+    """
+    if mode == "linear":
+        return (frame >> 2).astype(np.uint8)
+    stretched = _percentile_stretch(frame, p_lo, p_hi)
+    if mode == "gamma":
+        lut = (((np.arange(256) / 255.0) ** (1.0 / gamma)) * 255.0).astype(np.uint8)
+        return lut[stretched]
+    return stretched
+
+
 def acquire_crop_from_config(config: dict | None) -> float | None:
     """Central acquire-crop side fraction to draw as a HUD guideline, or None.
 
